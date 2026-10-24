@@ -657,6 +657,20 @@ export default async function runDetailsView(container, ctx) {
     renderResult();
   }
 
+  function failedCaseCount() {
+    return state.cases.items.filter((item) =>
+      item.baseline?.passed === false
+      || item.candidate?.passed === false
+      || item.passed === false
+    ).length;
+  }
+
+  function baselineCounts() {
+    const passed = state.cases.items.filter((item) => item.baseline?.passed === true).length;
+    const failed = state.cases.items.filter((item) => item.baseline?.passed === false).length;
+    return { passed, failed };
+  }
+
   function renderResultLoading() {
     mount(resultHost, loadingState('正在汇总运行结果…'));
   }
@@ -716,38 +730,78 @@ export default async function runDetailsView(container, ctx) {
           'div.overview-grid',
           null,
           sectionCard({
-            title: '案例变化',
-            description: isBaselineMode ? '基线运行没有候选，可在概览中启动单轮优化。' : '新增通过与新增失败反映候选的实际影响。',
+            title: isBaselineMode ? '基线案例结果' : '案例变化',
+            description: isBaselineMode ? '本次只运行了基线，可直接筛选失败案例查看具体参数差异。' : '新增通过与新增失败反映候选的实际影响。',
             actions: hasCaseData
-              ? [button({ label: '查看全部案例', variant: 'ghost', size: 'sm', onClick: () => switchTab('cases') })]
+              ? [
+                  failedCaseCount()
+                    ? button({
+                        label: `只看失败案例（${failedCaseCount()}）`,
+                        variant: 'primary',
+                        size: 'sm',
+                        iconName: 'alert',
+                        onClick: () => {
+                          state.cases.onlyFailed = true;
+                          switchTab('cases');
+                        },
+                      })
+                    : null,
+                  button({ label: '查看全部案例', variant: 'ghost', size: 'sm', onClick: () => switchTab('cases') }),
+                ].filter(Boolean)
               : [],
             body: !hasCaseData
-              ? h('p.muted.small', { text: state.cases.loading ? '正在统计案例变化…' : '暂时没有可统计的案例结果。' })
-              : h(
-                  'div.case-transition',
-                  null,
-                  h(
-                    `div.transition-card${transitions.fixed ? ' transition-card--good' : ''}`,
+              ? h('p.muted.small', { text: state.cases.loading ? '正在统计案例结果…' : '暂时没有可统计的案例结果。' })
+              : isBaselineMode
+                ? h(
+                    'div.case-transition',
                     null,
-                    h('div.transition-card__label', { text: '新增通过' }),
-                    h('div.transition-card__value', { text: String(transitions.fixed) }),
-                    h('div.xsmall.muted', { text: '基线失败 → 候选通过' })
-                  ),
-                  h(
-                    `div.transition-card${transitions.regressed ? ' transition-card--bad' : ''}`,
-                    null,
-                    h('div.transition-card__label', { text: '新增失败（回归）' }),
-                    h('div.transition-card__value', { text: String(transitions.regressed) }),
-                    h('div.xsmall.muted', { text: '基线通过 → 候选失败' })
-                  ),
-                  h(
-                    'div.transition-card',
-                    null,
-                    h('div.transition-card__label', { text: '仍然失败' }),
-                    h('div.transition-card__value', { text: String(transitions.unchangedFail) }),
-                    h('div.xsmall.muted', { text: '基线失败 → 候选仍失败' })
+                    h(
+                      'div.transition-card transition-card--good',
+                      null,
+                      h('div.transition-card__label', { text: '基线通过' }),
+                      h('div.transition-card__value', { text: String(baselineCounts().passed) }),
+                      h('div.xsmall.muted', { text: '实际结果与数据集预期一致' })
+                    ),
+                    h(
+                      'div.transition-card transition-card--bad',
+                      null,
+                      h('div.transition-card__label', { text: '基线失败' }),
+                      h('div.transition-card__value', { text: String(baselineCounts().failed) }),
+                      h('div.xsmall.muted', { text: '点击上方按钮查看失败字段' })
+                    ),
+                    h(
+                      'div.transition-card',
+                      null,
+                      h('div.transition-card__label', { text: '未执行/无结果' }),
+                      h('div.transition-card__value', { text: String(Math.max(0, state.cases.items.length - baselineCounts().passed - baselineCounts().failed)) }),
+                      h('div.xsmall.muted', { text: '案例尚未返回结果' })
+                    )
                   )
-                ),
+                : h(
+                    'div.case-transition',
+                    null,
+                    h(
+                      `div.transition-card${transitions.fixed ? ' transition-card--good' : ''}`,
+                      null,
+                      h('div.transition-card__label', { text: '新增通过' }),
+                      h('div.transition-card__value', { text: String(transitions.fixed) }),
+                      h('div.xsmall.muted', { text: '基线失败 → 候选通过' })
+                    ),
+                    h(
+                      `div.transition-card${transitions.regressed ? ' transition-card--bad' : ''}`,
+                      null,
+                      h('div.transition-card__label', { text: '新增失败（回归）' }),
+                      h('div.transition-card__value', { text: String(transitions.regressed) }),
+                      h('div.xsmall.muted', { text: '基线通过 → 候选失败' })
+                    ),
+                    h(
+                      'div.transition-card',
+                      null,
+                      h('div.transition-card__label', { text: '仍然失败' }),
+                      h('div.transition-card__value', { text: String(transitions.unchangedFail) }),
+                      h('div.xsmall.muted', { text: '基线失败 → 候选仍失败' })
+                    )
+                  ),
           }),
           sectionCard({
             title: '执行与成本',
@@ -1089,16 +1143,27 @@ export default async function runDetailsView(container, ctx) {
                 h('td', null, sideCell(item.baseline, { label: '基线' })),
                 h('td', null, sideCell(item.candidate, { label: '候选' })),
                 h(
-                  'td.nowrap',
+                  'td',
                   null,
                   h(
                     'div.row',
                     { style: { gap: '6px' } },
-                    statusBadge(item.changeType, 'change'),
+                    state.run.mode === 'baseline' && item.baseline
+                      ? statusBadge(item.baseline.passed ? 'pass' : 'fail', 'case')
+                      : statusBadge(item.changeType, 'change'),
+                    state.run.mode === 'baseline' && item.baseline
+                      ? h('span.xsmall.muted', { text: '基线结果' })
+                      : null,
                     (item.diagnostics || []).length
                       ? h('span.xsmall.muted', { text: `${item.diagnostics.length} 项差异` })
                       : null
-                  )
+                  ),
+                  (item.diagnostics || []).length
+                    ? h('div.xsmall.muted.cell-mono', {
+                        style: { marginTop: '4px', maxWidth: '220px' },
+                        text: item.diagnostics[0].field_path || item.diagnostics[0].category || '查看差异',
+                      })
+                    : null
                 )
               )
             )
