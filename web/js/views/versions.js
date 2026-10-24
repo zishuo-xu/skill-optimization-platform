@@ -26,25 +26,25 @@ const TYPES = {
   dataset: { label: '数据集', iconName: 'dataset', route: 'dataset' },
 };
 
-function normalizeVersions(payload) {
-  if (Array.isArray(payload)) return payload.map(normalizeVersionItem);
-  if (payload && Array.isArray(payload.items)) return payload.items.map(normalizeVersionItem);
+function normalizeVersions(payload, project) {
+  if (Array.isArray(payload)) return payload.map((item) => normalizeVersionItem(item, project));
+  if (payload && Array.isArray(payload.items)) return payload.items.map((item) => normalizeVersionItem(item, project));
   const items = [];
   if (payload && typeof payload === 'object') {
     for (const version of payload.skill_versions || payload.skillVersions || []) {
-      items.push(normalizeVersionItem({ ...version, type: 'skill' }));
+      items.push(normalizeVersionItem({ ...version, type: 'skill' }, project));
     }
     for (const version of payload.environments || []) {
-      items.push(normalizeVersionItem({ ...version, type: 'environment' }));
+      items.push(normalizeVersionItem({ ...version, type: 'environment' }, project));
     }
     for (const version of payload.datasets || []) {
-      items.push(normalizeVersionItem({ ...version, type: 'dataset' }));
+      items.push(normalizeVersionItem({ ...version, type: 'dataset' }, project));
     }
   }
   return items;
 }
 
-function normalizeVersionItem(item) {
+function normalizeVersionItem(item, project) {
   const type = item.type || item.kind || 'skill';
   return {
     ...item,
@@ -53,13 +53,25 @@ function normalizeVersionItem(item) {
     versionLabel:
       item.version_label ||
       item.versionLabel ||
-      (type === 'skill' ? String(item.id || '').replace('skillv_', 'v') : item.version_seq ? `v${item.version_seq}` : String(item.id || '').slice(-6)),
+      (type === 'skill'
+        ? shortenId(item.id || '', 14)
+        : item.version_seq
+        ? `v${item.version_seq}`
+        : shortenId(item.id || '', 10)),
     status: item.status || 'published',
     parentId: item.parent_id || item.parentId || null,
     sourceRunId: item.source_run_id || item.sourceRunId || null,
     createdAt: item.created_at || item.createdAt || null,
     message: item.message || '',
-    isCurrent: Boolean(item.is_current ?? item.isCurrent),
+    isCurrent: Boolean(
+      item.is_current ??
+        item.isCurrent ??
+        (type === 'skill'
+          ? item.id === project?.current_skill_version_id
+          : type === 'environment'
+          ? item.id === project?.current_environment_id
+          : item.id === project?.current_dataset_id)
+    ),
     hash: item.content_hash || item.hash || '',
     caseCount: item.case_count ?? item.caseCount ?? null,
     metrics: item.metrics || null,
@@ -190,6 +202,8 @@ export default async function versionsView(container, ctx) {
           button({ label: '比较', variant: 'ghost', size: 'sm', iconName: 'versions', onClick: () => openCompare(version) }),
           version.isCurrent
             ? h('span.chip.chip--neutral', { text: '已是当前' })
+            : version.status === 'candidate'
+            ? h('span.chip.chip--warning', { title: '未达标的候选版本不能设为当前', text: '候选未应用' })
             : button({ label: '设为当前', variant: 'ghost', size: 'sm', iconName: 'check', onClick: () => setCurrent(version) }),
           version.type === 'skill'
             ? button({
@@ -460,7 +474,7 @@ export default async function versionsView(container, ctx) {
     renderTable();
     try {
       const payload = await api.listVersions(project.id);
-      state.versions = normalizeVersions(payload).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+      state.versions = normalizeVersions(payload, project).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     } catch (error) {
       state.error = error;
     } finally {

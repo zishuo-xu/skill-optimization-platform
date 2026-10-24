@@ -314,6 +314,17 @@ function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, 
         if (nextBody) container.appendChild(nextBody);
       }
     },
+    setFooter(nextFooter) {
+      let footerEl = panel.querySelector(`.${variant}__footer`);
+      if (!footerEl && nextFooter) {
+        footerEl = h('footer', { class: `${variant}__footer` });
+        panel.appendChild(footerEl);
+      }
+      if (footerEl) {
+        footerEl.replaceChildren();
+        if (nextFooter) footerEl.appendChild(nextFooter);
+      }
+    },
   };
 }
 

@@ -270,7 +270,7 @@ function renderTopbar() {
       h(
         'span.topbar__version',
         { title: '当前 Skill 版本' },
-        `${(version.id || '').replace('skillv_', 'v')} · ${version.status === 'draft' ? '草稿' : '已发布'}`
+        `${shortenId(version.id || '', 12)} · ${version.status === 'draft' ? '草稿' : '已发布'}`
       )
     );
   }

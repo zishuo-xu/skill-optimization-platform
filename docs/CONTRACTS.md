@@ -38,7 +38,8 @@
   `absolute_path` `symlink` `encoding_error` `unsafe_zip` `too_large`。
 - `validate_manifest(manifest, files) -> list[error]`。
 - `build_zip(files, manifest) -> bytes`。
-- `apply_edits(files: dict[str, bytes], edits) -> (new_files, issues)`。
+- 补丁应用与静态检查在 `app/patch.py`：`apply_edits(files, edits, allowed_paths)`
+  与 `static_check(base_files, patched_files, manifest, case_ids)`。
 
 ### 2.2 案例（Case）
 

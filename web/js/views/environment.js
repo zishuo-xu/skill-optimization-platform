@@ -217,45 +217,49 @@ export default async function environmentView(container, ctx) {
       ['optimizer_config.max_tokens', 'optimizer_max_tokens'],
     ];
     void numberFields;
+    const num = (value, fallback = null) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
     const payload = {
       prompt: form.prompt,
       model_config: {
         ...modelConfig,
-        temperature: Number(modelConfig.temperature),
-        max_tokens: Number(modelConfig.max_tokens),
-        timeout_s: Number(modelConfig.timeout_s || 120),
+        temperature: num(modelConfig.temperature, 0),
+        max_tokens: num(modelConfig.max_tokens, null),
+        timeout_s: num(modelConfig.timeout_s, 120),
         stream: Boolean(modelConfig.stream),
       },
       optimizer_config: {
         ...optimizerConfig,
-        temperature: Number(optimizerConfig.temperature),
-        max_tokens: Number(optimizerConfig.max_tokens),
+        temperature: num(optimizerConfig.temperature, 0),
+        max_tokens: num(optimizerConfig.max_tokens, null),
       },
       tool_schema: toolSchema,
       loader_config: {
         ...form.loader_config,
-        max_steps: Number(form.loader_config.max_steps),
-        max_model_calls: Number(form.loader_config.max_model_calls),
-        max_context_chars: Number(form.loader_config.max_context_chars),
+        max_steps: num(form.loader_config.max_steps, 8),
+        max_model_calls: num(form.loader_config.max_model_calls, 12),
+        max_context_chars: num(form.loader_config.max_context_chars, 60000),
       },
       run_config: {
         ...form.run_config,
-        concurrency: Number(form.run_config.concurrency),
-        case_timeout_s: Number(form.run_config.case_timeout_s),
-        repeats_baseline: Number(form.run_config.repeats_baseline),
-        repeats_validation: Number(form.run_config.repeats_validation),
+        concurrency: num(form.run_config.concurrency, 3),
+        case_timeout_s: num(form.run_config.case_timeout_s, 120),
+        repeats_baseline: num(form.run_config.repeats_baseline, 1),
+        repeats_validation: num(form.run_config.repeats_validation, 3),
       },
       budget_config: {
         ...form.budget_config,
-        max_tokens: form.budget_config.max_tokens === '' || form.budget_config.max_tokens === null ? null : Number(form.budget_config.max_tokens),
-        max_cost: form.budget_config.max_cost === '' || form.budget_config.max_cost === null ? null : Number(form.budget_config.max_cost),
-        max_duration_s: Number(form.budget_config.max_duration_s),
+        max_tokens: form.budget_config.max_tokens === '' || form.budget_config.max_tokens === null ? null : num(form.budget_config.max_tokens, null),
+        max_cost: form.budget_config.max_cost === '' || form.budget_config.max_cost === null ? null : num(form.budget_config.max_cost, null),
+        max_duration_s: num(form.budget_config.max_duration_s, 3600),
       },
       scorer_config: { ...form.scorer_config },
       acceptance_config: {
         ...form.acceptance_config,
         require_critical_cases: Boolean(form.acceptance_config.require_critical_cases),
-        validation_repeats: Number(form.acceptance_config.validation_repeats),
+        validation_repeats: num(form.acceptance_config.validation_repeats, 3),
       },
     };
     if (includeStatus) payload.status = includeStatus;

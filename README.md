@@ -29,11 +29,12 @@ bash scripts/setup.sh          # 创建 .venv 并安装纯 Python 依赖
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 218 passed
+.venv/bin/python -m pytest -q        # 219 passed
 ```
 
 接口与事件契约见 [`docs/CONTRACTS.md`](docs/CONTRACTS.md)，示例数据说明见
-[`app/samples/README.md`](app/samples/README.md)。
+[`app/samples/README.md`](app/samples/README.md)，验收执行记录见
+[`docs/VERIFICATION.md`](docs/VERIFICATION.md)。
 
 ---
 
@@ -221,7 +222,8 @@ SQLite 元数据 + 磁盘不可变包；事件单运行严格递增、先持久�
 | A12 拆分/合并事件、空 delta、尾部 usage、中断、分片参数 | `tests/test_a12_stream_assembly.py` |
 | A13 仅分发能力时 A 未评估 | `tests/test_a13_capabilities.py` |
 | A14 取消/超时/重试不重复计分、适配器变更使缓存失效 | `tests/test_a14_cache.py`、`test_a13_capabilities.py` |
-| A15–A20 运行记录定位/筛选/并发不串线/刷新续接/取消重启/脱敏 | 前端 `web/js/views/runLog.js` + `tests/test_a08/a14/a19/a20` |
+| A15–A18 运行记录定位/筛选/并发不串线/刷新续接 | 前端 `web/js/views/runLog.js`，人工联调记录见 [docs/VERIFICATION.md](docs/VERIFICATION.md) |
+| A19–A20 取消重启、脱敏 | `tests/test_a19_cancel_restart.py`、`test_a20_security.py` |
 
 ---
 

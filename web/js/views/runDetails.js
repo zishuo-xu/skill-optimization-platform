@@ -1127,15 +1127,29 @@ export default async function runDetailsView(container, ctx) {
         api.getRunCases(state.run.id, { phase: 'validation_baseline', limit: 200 }),
         api.getRunCases(state.run.id, { phase: 'validation_candidate', limit: 200 }),
       ]);
+      const hasSideData = (side) =>
+        Boolean(
+          side &&
+            (side.passed !== undefined ||
+              side.status ||
+              side.selected_skills ||
+              side.tool_calls ||
+              side.error_code ||
+              side.action)
+        );
       const baselineById = new Map();
       for (const raw of asItems(baselinePayload)) {
         const item = normalizeCaseItem(raw);
-        if (!item.baseline && (item.repeat_index || 1) === 1) baselineById.set(item.case_id, item.baseline || item);
+        if ((item.repeat_index || 1) !== 1) continue;
+        const side = item.baseline || (hasSideData(item) ? item : null);
+        if (side) baselineById.set(item.case_id, side);
       }
       const candidateById = new Map();
       for (const raw of asItems(candidatePayload)) {
         const item = normalizeCaseItem(raw);
-        if (!item.candidate && (item.repeat_index || 1) === 1) candidateById.set(item.case_id, item.candidate || item);
+        if ((item.repeat_index || 1) !== 1) continue;
+        const side = item.candidate || (hasSideData(item) ? item : null);
+        if (side) candidateById.set(item.case_id, side);
       }
       for (const item of items) {
         if (item.baseline && item.candidate) continue;
@@ -1203,10 +1217,12 @@ export default async function runDetailsView(container, ctx) {
       ),
     });
     try {
-      const [detail, history] = await Promise.all([
+      const [rawDetail, history] = await Promise.all([
         api.getRunCase(state.run.id, caseId),
         api.getEventHistory(state.run.id, { caseId, limit: 200 }).catch(() => ({ items: [] })),
       ]);
+      const rowItem = state.cases.items.find((item) => item.case_id === caseId) || {};
+      const detail = { ...rowItem, ...rawDetail, ...(rawDetail.case || {}) };
       let expected = detail.expected;
       if (!expected && state.run.snapshot?.dataset?.id) {
         try {

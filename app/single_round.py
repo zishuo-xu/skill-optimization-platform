@@ -534,7 +534,11 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                or budget_config.get("max_seconds")),
           "预算上限已冻结" if budget_config else "未设置预算上限", level="error",
           next_action="在执行环境配置 Token/金额/时长上限。")
-    fixture_cases = _fixture_gap_cases(cases)
+    relevant_splits = {"optimize"} if mode == "baseline" else (
+        {"final_test"} if mode == "final_test" else {"optimize", "validation"})
+    fixture_cases = _fixture_gap_cases(
+        [case for case in cases
+         if (case.get("split") or "optimize") in relevant_splits])
     if fixture_cases:
         emitter.issue("fixture_coverage_warning",
                       error_code="fixture_miss",
@@ -645,15 +649,14 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
             "duration_ms": actual.get("duration_ms"),
         }
         if score.get("status") == "fail" or score.get("status") == "invalid":
-            issue = event_types.issue(
-                (actual.get("error") or {}).get("code") or "case_failed",
-                "案例未通过",
-                _score_reason(score),
-                impact="该案例计入指标分母并按失败统计。",
-                next_action="查看案例详情与评分差异。")
+            # An ordinary metric failure is a *result*, not an operational issue:
+            # keep it as an info record so the issue summary only surfaces
+            # problems that actually affect the run (§44).
             emitter.emit(event_types.CASE_FAILED, {
-                **case_emitter_payload, "issue": issue},
-                level="warning", case_id=case["case_id"],
+                **case_emitter_payload,
+                "failure_reason": _score_reason(score),
+                "diagnostic_count": len(score.get("diagnostics") or []),
+            }, level="info", case_id=case["case_id"],
                 split=case.get("split"), repeat_index=repeat)
         elif score.get("status") == "infra":
             emitter.issue(event_types.CASE_FAILED,

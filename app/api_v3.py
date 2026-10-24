@@ -204,6 +204,26 @@ async def create_skill_version(request: Request) -> Response:
     body: dict[str, Any] = {}
     zip_bytes = None
     content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            raise ValidationError("multipart 上传缺少 file 字段", field_path="file")
+        zip_bytes = await upload.read() if hasattr(upload, "read") else bytes(upload)
+        body = {
+            "status": form.get("status") or "published",
+            "message": form.get("message") or "",
+            "parent_id": form.get("parent_id") or None,
+            "set_current": str(form.get("set_current", "true")).lower()
+            not in ("false", "0", "no"),
+        }
+        if not zip_bytes:
+            raise ValidationError("上传的 Skill 包为空")
+        version = services.create_skill_version(
+            project_id, zip_bytes=zip_bytes, files_payload=None,
+            status=body["status"], message=body["message"],
+            parent_id=body["parent_id"], set_current=body["set_current"])
+        return ok(services.skill_version_detail(version["id"]), status_code=201)
     body_bytes = await request.body()
     if "application/json" in content_type:
         body = await json_body(request)

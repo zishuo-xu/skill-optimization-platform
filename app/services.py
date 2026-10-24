@@ -269,8 +269,19 @@ def activate_environment(environment_id: str,
     return persistence.get_environment(environment_id)
 
 
-_SECRET_KEY_MARKERS = ("api_key", "apikey", "authorization", "token", "secret",
-                       "password", "cookie")
+_SECRET_KEYS = {"api_key", "apikey", "authorization", "access_token",
+                "refresh_token", "id_token", "token", "secret", "client_secret",
+                "password", "passwd", "cookie", "set-cookie"}
+
+
+def _is_secret_key(key: str) -> bool:
+    lowered = key.lower()
+    if lowered.endswith("_ref"):
+        return False  # server-side credential references are not secrets
+    if lowered in _SECRET_KEYS:
+        return True
+    return lowered.endswith(("_api_key", "_secret", "_password", "_token")) \
+        and lowered not in ("max_tokens", "total_tokens", "token_budget")
 
 
 def redact_secrets(value: Any) -> Any:
@@ -278,9 +289,7 @@ def redact_secrets(value: Any) -> Any:
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
         for key, item in value.items():
-            lowered = str(key).lower()
-            if any(marker in lowered for marker in _SECRET_KEY_MARKERS) \
-                    and not lowered.endswith("_ref"):
+            if _is_secret_key(str(key)):
                 out[key] = "***" if item not in (None, "") else item
             else:
                 out[key] = redact_secrets(item)
@@ -410,8 +419,7 @@ def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dic
     report["ok"] = not report.get("errors")
     report["format"] = fmt
     report["filename"] = filename
-    if project:
-        coverage_stats = dataset_module.coverage(cases, skill_ids, tools)
+    coverage_stats = dataset_module.coverage(cases, skill_ids, tools)
     coverage_stats["single_route_cases"] = max(
         0, int(coverage_stats.get("total") or 0)
         - int(coverage_stats.get("multi_route_cases") or 0))

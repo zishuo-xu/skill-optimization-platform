@@ -40,6 +40,7 @@ import {
   eventLabel,
   isOptimizerEvent,
   TERMINAL_STATUSES,
+  RULE_LABELS,
 } from '../eventTypes.js';
 
 const HISTORY_PAGE_SIZE = 200;
@@ -103,7 +104,7 @@ function eventTitle(event) {
     return `静态检查：${payload.name || '检查项'}`;
   }
   if (event.type === 'rule_evaluated' && payload.rule) {
-    return `接受规则：${payload.rule}`;
+    return `接受规则：${RULE_LABELS[payload.rule] || payload.rule}`;
   }
   return meta.label;
 }
@@ -156,6 +157,7 @@ function eventSummary(event) {
     if (p.detail || p.message) bits.push(p.detail || p.message);
   }
   if (event.type === 'rule_evaluated') {
+    if (p.rule) bits.push(RULE_LABELS[p.rule] || p.rule);
     bits.push(p.ok ? '通过' : '未通过');
     if (p.detail) bits.push(p.detail);
   }
@@ -216,6 +218,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     focusSeq: null,
     truncatedRange: null,
     pendingCalls: new Set(),
+    expandedIssueGroups: new Set(),
     runWidePending: false,
   };
 
@@ -323,18 +326,49 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
 
   function buildIssueGroups() {
     const bySeq = new Map(state.issues.map((issue) => [issue.seq, issue]));
-    const roots = [];
-    const childByRoot = new Map();
-    for (const issue of state.issues) {
-      if (issue.causeSeq && bySeq.has(issue.causeSeq) && issue.causeSeq !== issue.seq) {
-        const root = bySeq.get(issue.causeSeq);
-        if (!childByRoot.has(root.seq)) childByRoot.set(root.seq, []);
-        childByRoot.get(root.seq).push(issue);
-      } else {
-        roots.push(issue);
+    const roots = state.issues.filter(
+      (issue) => !(issue.causeSeq && bySeq.has(issue.causeSeq) && issue.causeSeq !== issue.seq)
+    );
+    const groups = new Map();
+    const ensureGroup = (issue) => {
+      const key = issue.errorCode || `title:${issue.title}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          key,
+          title: issue.title,
+          errorCode: issue.errorCode,
+          level: issue.level,
+          message: issue.message,
+          impact: issue.impact,
+          nextAction: issue.nextAction,
+          stage: issue.stage,
+          caseIds: new Set(),
+          instances: [],
+          related: [],
+        };
+        groups.set(key, group);
       }
+      if (issue.level === 'error') group.level = 'error';
+      if (issue.case_id) group.caseIds.add(issue.case_id);
+      return group;
+    };
+    for (const root of roots) {
+      const group = ensureGroup(root);
+      group.instances.push(root);
     }
-    return roots.map((root) => ({ root, children: childByRoot.get(root.seq) || [] }));
+    for (const issue of state.issues) {
+      if (!(issue.causeSeq && bySeq.has(issue.causeSeq) && issue.causeSeq !== issue.seq)) continue;
+      const root = bySeq.get(issue.causeSeq);
+      const group = ensureGroup(root);
+      group.related.push(issue);
+    }
+    for (const group of groups.values()) {
+      group.instances.sort((a, b) => a.seq - b.seq);
+      group.related.sort((a, b) => a.seq - b.seq);
+      group.level = group.instances.some((issue) => issue.level === 'error') ? 'error' : 'warning';
+    }
+    return [...groups.values()].sort((a, b) => b.instances.length - a.instances.length || a.instances[0].seq - b.instances[0].seq);
   }
 
   function issueField(label, value) {
@@ -351,12 +385,13 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     const errorCount = state.issueCounts.error || state.issues.filter((issue) => issue.level === 'error').length;
     const warningCount = state.issueCounts.warning || state.issues.filter((issue) => issue.level === 'warning').length;
     const tone = errorCount > 0 ? 'error' : 'warning';
+    const totalRecords = state.issues.length;
     const summary =
       groups.length === 1
-        ? groups[0].root.message || groups[0].root.title
+        ? groups[0].message
         : groups
             .slice(0, 2)
-            .map((group) => `${group.root.title}${group.root.message ? `：${truncate(group.root.message, 50)}` : ''}`)
+            .map((group) => `${group.title}${group.message ? `：${truncate(group.message, 46)}` : ''}`)
             .join('；');
 
     mount(
@@ -373,13 +408,14 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
             h(
               'div.log-issues__title-row',
               null,
-              h('span.log-issues__icon', null, icon(tone === 'error' ? 'alert' : 'alert', { size: 17 })),
+              h('span.log-issues__icon', null, icon('alert', { size: 17 })),
               h('span.log-issues__title', {
-                text: groups.length === 1 ? `运行遇到问题：${groups[0].root.title}` : `发现 ${groups.length} 个独立问题`,
+                text:
+                  groups.length === 1
+                    ? `运行遇到问题：${groups[0].title}${groups[0].instances.length > 1 ? `（${groups[0].instances.length} 条记录）` : ''}`
+                    : `发现 ${groups.length} 类问题（共 ${totalRecords} 条记录）`,
               }),
-              h('span.log-issues__count', {
-                text: `${errorCount} 错误 / ${warningCount} 警告`,
-              })
+              h('span.log-issues__count', { text: `${errorCount} 错误 / ${warningCount} 警告` })
             ),
             h('p.log-issues__summary', { text: summary })
           ),
@@ -388,52 +424,95 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
             variant: 'secondary',
             size: 'sm',
             iconName: 'arrowRight',
-            onClick: () => locateIssue(groups[0].root),
+            onClick: () => locateIssue(groups[0].instances[0]),
           })
         ),
         h(
           'div.issue-list',
           null,
           ...groups.map((group) => {
-            const root = group.root;
+            const first = group.instances[0];
+            const expanded = state.expandedIssueGroups.has(group.key);
+            const caseText =
+              group.caseIds.size > 1
+                ? `${[...group.caseIds].slice(0, 2).join('、')} 等 ${group.caseIds.size} 个案例`
+                : group.caseIds.size === 1
+                ? [...group.caseIds][0]
+                : '';
             return h(
               'div.issue-card',
               null,
               h(
                 'div.issue-card__head',
                 null,
-                h('div', { style: { minWidth: '0' } }, h('div.issue-card__title', { text: root.title })),
-                h('span.xsmall.muted', { text: `${STAGE_LABELS[root.stage] || root.stage || '整轮'} · #${root.seq}` })
+                h(
+                  'div',
+                  { style: { minWidth: '0' } },
+                  h(
+                    'div',
+                    { class: 'row', style: { gap: '8px' } },
+                    h('div.issue-card__title', { text: group.title }),
+                    group.instances.length > 1
+                      ? h('span.log-issues__count', { text: `${group.instances.length} 条` })
+                      : null,
+                    group.errorCode ? chip(group.errorCode, 'danger') : null
+                  )
+                ),
+                h('span.xsmall.muted', { text: `${STAGE_LABELS[first.stage] || first.stage || '整轮'} · #${first.seq}` })
               ),
               h(
                 'dl.issue-card__fields',
                 null,
-                ...issueField('失败位置', [STAGE_LABELS[root.stage] || root.stage, root.type ? eventLabel(root.type) : '', root.case_id].filter(Boolean).join(' · ')),
-                ...issueField('直接原因', root.message),
-                ...issueField('影响范围', root.impact),
-                ...issueField('后续处理', root.nextAction)
+                ...issueField(
+                  '失败位置',
+                  [STAGE_LABELS[first.stage] || first.stage, first.type ? eventLabel(first.type) : '', caseText].filter(Boolean).join(' · ')
+                ),
+                ...issueField('直接原因', group.message),
+                ...issueField('影响范围', group.impact),
+                ...issueField('后续处理', group.nextAction)
               ),
-              group.children.length
+              group.related.length
                 ? h(
                     'p.issue-card__merged',
                     null,
-                    `已合并 ${group.children.length} 条因果相关记录：${group.children.map((child) => child.title).join('；')}`
+                    `已合并 ${group.related.length} 条因果相关记录：${group.related.map((child) => child.title).join('；')}`
                   )
                 : null,
               h(
                 'div.issue-card__actions',
                 null,
-                button({ label: '定位错误', variant: 'ghost', size: 'sm', iconName: 'arrowRight', onClick: () => locateIssue(root) }),
-                ...group.children.map((child) =>
-                  button({
-                    label: `定位：${truncate(child.title, 20)}`,
-                    variant: 'ghost',
-                    size: 'sm',
-                    onClick: () => locateIssue(child),
-                  })
-                ),
-                root.errorCode ? chip(root.errorCode, 'danger') : null
-              )
+                button({ label: '定位错误', variant: 'ghost', size: 'sm', iconName: 'arrowRight', onClick: () => locateIssue(first) }),
+                group.instances.length > 1
+                  ? button({
+                      label: expanded ? '收起逐项定位' : `逐项定位（${group.instances.length}）`,
+                      variant: 'ghost',
+                      size: 'sm',
+                      iconName: expanded ? 'chevronDown' : 'chevronRight',
+                      onClick: () => {
+                        if (expanded) state.expandedIssueGroups.delete(group.key);
+                        else state.expandedIssueGroups.add(group.key);
+                        renderIssues();
+                      },
+                    })
+                  : null,
+                ...(group.related.length
+                  ? [button({ label: `定位关联回退（${group.related.length}）`, variant: 'ghost', size: 'sm', onClick: () => locateIssue(group.related[0]) })]
+                  : [])
+              ),
+              expanded
+                ? h(
+                    'div',
+                    { class: 'row', style: { gap: '6px', marginTop: '8px', flexWrap: 'wrap' } },
+                    ...group.instances.map((instance) =>
+                      button({
+                        label: `${instance.ts ? formatTime(instance.ts) : `#${instance.seq}`}${instance.case_id ? ` · ${instance.case_id}` : ''}`,
+                        variant: 'ghost',
+                        size: 'sm',
+                        onClick: () => locateIssue(instance),
+                      })
+                    )
+                  )
+                : null
             );
           })
         )
@@ -544,13 +623,17 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
 
   function renderBanners() {
     const items = [];
-    if (state.connection === 'error' && !isTerminal()) {
+    if (state.connection === 'error') {
       items.push(
         h(
           'div.log-banner.log-banner--warning',
           null,
           h('span.spinner.spinner--sm'),
-          h('span', { text: '实时连接中断，正在重连…已保留已收到的记录；任务状态独立展示。' })
+          h('span', {
+            text: isTerminal()
+              ? '实时连接中断，正在重连…已加载的历史记录不受影响，任务状态独立展示。'
+              : '实时连接中断，正在重连…已保留已收到的记录；任务状态独立展示。',
+          })
         )
       );
     }

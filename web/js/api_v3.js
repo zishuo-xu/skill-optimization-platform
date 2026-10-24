@@ -236,8 +236,21 @@ export const api = {
       body: { set_current: setCurrent },
     });
   },
-  getSkillFile(versionId, filePath) {
-    return request('GET', `/skill-versions/${encodeURIComponent(versionId)}/files/${encodePath(filePath)}`);
+  async getSkillFile(versionId, filePath) {
+    const data = await request(
+      'GET',
+      `/skill-versions/${encodeURIComponent(versionId)}/files/${encodePath(filePath)}`
+    );
+    if (typeof data === 'string') return { path: filePath, content: data, encoding: 'utf-8' };
+    if (data && typeof data === 'object') {
+      return {
+        ...data,
+        path: data.path || filePath,
+        content: data.content ?? data.text ?? '',
+        encoding: data.encoding || 'utf-8',
+      };
+    }
+    return { path: filePath, content: '', encoding: 'utf-8' };
   },
   saveSkillFile(versionId, filePath, content) {
     return request('PUT', `/skill-versions/${encodeURIComponent(versionId)}/files/${encodePath(filePath)}`, {

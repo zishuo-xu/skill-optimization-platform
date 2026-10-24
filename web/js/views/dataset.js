@@ -39,6 +39,31 @@ function asItems(payload) {
   return [];
 }
 
+/** Dataset list rows use flat expected_action/routes/tools; detail rows use `expected`. */
+function normalizeDatasetCase(item) {
+  if (!item) return item;
+  const expected =
+    item.expected && typeof item.expected === 'object'
+      ? item.expected
+      : {
+          action: item.expected_action || 'tool_call',
+          routes: item.expected_routes || [],
+          tool_calls: (item.expected_tools || []).map((name) => ({ name, arguments: {} })),
+          missing_fields: [],
+          call_match: 'ordered_exact',
+        };
+  const status =
+    item.status ||
+    item.validation?.status ||
+    (item.validation?.warnings?.length ? 'warning' : 'valid');
+  return {
+    ...item,
+    expected,
+    status,
+    validation: item.validation && typeof item.validation === 'object' ? item.validation : { status },
+  };
+}
+
 const SPLITS = ['optimize', 'validation', 'final_test'];
 
 const SPLIT_STYLES = {
@@ -208,8 +233,9 @@ export default async function datasetView(container, ctx) {
     const routes = expected.routes || [];
     const toolCalls = expected.tool_calls || [];
     const tags = item.tags || [];
-    const validation = item.validation || {};
-    const warning = validation.status === 'warning' || validation.warnings?.length;
+    const statusValue = item.status || item.validation?.status || 'valid';
+    const warning = statusValue === 'warning' || item.validation?.warnings?.length;
+    const invalid = statusValue === 'invalid';
     return h(
       'tr.is-clickable',
       {
@@ -258,7 +284,11 @@ export default async function datasetView(container, ctx) {
         'td.nowrap',
         null,
         item.critical ? chip('关键案例', 'warning', { iconName: 'alert' }) : null,
-        warning ? chip('有警告', 'info', { iconName: 'info' }) : chip('有效', 'success', { iconName: 'check' })
+        invalid
+          ? chip('无效', 'danger', { iconName: 'x' })
+          : warning
+          ? chip('有警告', 'info', { iconName: 'info' })
+          : chip('有效', 'success', { iconName: 'check' })
       )
     );
   }
@@ -633,7 +663,7 @@ export default async function datasetView(container, ctx) {
     const fileState = { file: null, content: '', filename: '' };
     const zoneText = h('div', null, h('div', { text: '点击选择文件，或将 JSONL / JSON 文件拖到此处' }), h('div.xsmall.muted', { style: { marginTop: '4px' }, text: '支持 .jsonl 与 .json（数组）；容忍 BOM 与空行。' }));
     const fileLabel = h('div.upload-zone__file');
-    const fileInput = h('input', { type: 'file', accept: '.jsonl,.json,application/json' });
+    const fileInput = h('input', { type: 'file', accept: '.jsonl,.json,application/json', style: { display: 'none' } });
     const zone = h(
       'div.upload-zone',
       {
@@ -656,7 +686,8 @@ export default async function datasetView(container, ctx) {
       },
       icon('upload', { size: 22 }),
       zoneText,
-      fileLabel
+      fileLabel,
+      fileInput
     );
 
     const optimizeInput = h('input.input', { type: 'number', value: '70', min: '0', max: '100' });
@@ -947,7 +978,11 @@ export default async function datasetView(container, ctx) {
               h(
                 'ul.small',
                 { style: { paddingLeft: '1.2em', color: 'var(--text-2)' } },
-                ...warnings.slice(0, 12).map((warning) => h('li', { text: `第 ${warning.line ?? '?'} 行：${warning.message || warning.code}` }))
+                ...warnings.slice(0, 12).map((warning) =>
+                  h('li', {
+                    text: warning.line ? `第 ${warning.line} 行：${warning.message || warning.code}` : warning.message || warning.code,
+                  })
+                )
               )
             )
           : null,
@@ -1024,7 +1059,7 @@ export default async function datasetView(container, ctx) {
         limit: 200,
         offset: 0,
       });
-      let items = asItems(payload);
+      let items = asItems(payload).map(normalizeDatasetCase);
       state.total = payload?.total ?? items.length;
       const allItems = items.slice();
       if (state.filters.skill) {
@@ -1034,10 +1069,10 @@ export default async function datasetView(container, ctx) {
         items = items.filter((item) => ((item.expected || {}).tool_calls || []).some((call) => call.name === state.filters.tool));
       }
       if (state.filters.status === 'warning') {
-        items = items.filter((item) => item.validation?.status === 'warning' || item.validation?.warnings?.length);
+        items = items.filter((item) => item.status === 'warning' || item.validation?.status === 'warning' || item.validation?.warnings?.length);
       }
       if (state.filters.status === 'valid') {
-        items = items.filter((item) => !item.validation?.status && !(item.validation?.warnings?.length));
+        items = items.filter((item) => item.status !== 'warning' && item.status !== 'invalid');
       }
       state.cases = items;
       const options = computeFilterOptions(allItems);
@@ -1047,6 +1082,7 @@ export default async function datasetView(container, ctx) {
         tools: options.tools.length ? options.tools : state.filterOptions.tools,
       };
       renderFilters();
+      renderSummary();
       renderTable();
     } catch (error) {
       state.error = error;

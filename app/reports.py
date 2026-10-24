@@ -11,7 +11,9 @@ def _redact(value: Any) -> Any:
     """Remove credential-like fields from report payloads."""
     import re
 
-    pattern = re.compile(r"(api[_-]?key|authorization|token|secret|password)", re.I)
+    pattern = re.compile(
+        r"(^|_)(api[_-]?key|authorization|access_token|refresh_token|id_token|"
+        r"bearer|token|secret|password|passwd|cookie)($|_)", re.I)
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
         for key, item in value.items():

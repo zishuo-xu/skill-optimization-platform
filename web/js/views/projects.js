@@ -182,7 +182,7 @@ export default async function projectsView(container, ctx) {
       h(
         'div.project-card__meta',
         null,
-        version ? chip(`Skill ${version.id.replace('skillv_', 'v')}`, 'accent', { iconName: 'skill' }) : chip('未导入 Skill 包', 'warning', { iconName: 'alert' }),
+        version ? chip(`Skill ${shortenId(version.id, 10)}`, 'accent', { iconName: 'skill' }) : chip('未导入 Skill 包', 'warning', { iconName: 'alert' }),
         latest ? statusBadge(latest.status, 'run') : chip('尚无运行', 'neutral', { iconName: 'clock' }),
         h('span', { text: `${project.run_count || 0} 次运行` })
       ),

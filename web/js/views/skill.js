@@ -20,7 +20,7 @@ import {
   copyButton,
   jsonViewer,
 } from '../components.js';
-import { formatDateTime, relativeTime, truncate } from '../format.js';
+import { formatDateTime, relativeTime, shortenId, truncate } from '../format.js';
 
 function asItems(payload) {
   if (Array.isArray(payload)) return payload;
@@ -209,7 +209,7 @@ export default async function skillView(container, ctx) {
             value: item.id,
             selected: item.id === version.id,
           },
-          `${item.id.replace('skillv_', 'v')} · ${item.status === 'draft' ? '草稿' : '已发布'} · ${truncate(item.message || item.id, 26)}`
+          `${shortenId(item.id, 14)} · ${item.status === 'draft' ? '草稿' : item.status === 'candidate' ? '候选' : '已发布'} · ${truncate(item.message || item.id, 26)}`
         )
       )
     );
@@ -600,7 +600,7 @@ export default async function skillView(container, ctx) {
             h(
               'span',
               { style: { minWidth: 0, flex: 1 } },
-              h('span.mono.xsmall', { text: version.id.replace('skillv_', 'v') }),
+              h('span.mono.xsmall', { text: shortenId(version.id, 14) }),
               h('span.xsmall', { style: { display: 'block', color: 'var(--text-4)' } }, version.message || '无版本说明'),
               h(
                 'span.xsmall',

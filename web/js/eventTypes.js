@@ -199,6 +199,7 @@ export const CHANGE_TYPE_META = {
 export const VERSION_STATUS_META = {
   published: { label: '已发布', tone: 'success', icon: 'check' },
   draft: { label: '草稿', tone: 'warning', icon: 'edit' },
+  candidate: { label: '候选（未应用）', tone: 'accent', icon: 'spark' },
   archived: { label: '已归档', tone: 'neutral', icon: 'archive' },
 };
 

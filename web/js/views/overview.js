@@ -50,7 +50,9 @@ export default async function overviewView(container, ctx) {
   function primaryActionView() {
     const completeness = overview?.completeness;
     const baseline = overview?.baseline;
-    const active = overview?.active_run;
+    const active =
+      overview?.active_run ||
+      (overview?.recent_runs?.items || []).find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
     const primary = overview?.primary_action;
     const ready = completeness?.ready;
 
@@ -355,7 +357,9 @@ export default async function overviewView(container, ctx) {
   }
 
   function activeRunBanner() {
-    const active = overview?.active_run;
+    const active =
+      overview?.active_run ||
+      (overview?.recent_runs?.items || []).find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
     if (!active) return null;
     return callout({
       tone: 'accent',
@@ -448,7 +452,7 @@ export default async function overviewView(container, ctx) {
           null,
           h('h3', { text: '版本快照' }),
           kvList([
-            { label: 'Skill 包', value: skillVersion ? `${skillVersion.id} · ${skillVersion.status === 'draft' ? '草稿' : '已发布'}` : '—', mono: true },
+            { label: 'Skill 包', value: skillVersion ? `${skillVersion.label || shortenId(skillVersion.id, 14)} · ${skillVersion.status === 'draft' ? '草稿' : '已发布'}` : '—', mono: true },
             { label: '执行环境', value: environment ? `v${environment.version_seq} · ${environment.hash || ''}` : '—', mono: true },
             { label: '数据集', value: dataset ? `v${dataset.version_seq} · ${dataset.case_count ?? 0} 条案例` : '—', mono: true },
             { label: '评分器', value: environment?.scorer_config?.scorer_version || 'score-v1', mono: true },

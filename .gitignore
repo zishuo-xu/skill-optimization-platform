@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+.playwright-mcp/
+.playwright-mcp-*.png
+*.log

@@ -141,9 +141,18 @@ export function h(tag, attrs, ...children) {
   appendChildren(el, children);
 
   if ('value' in deferred) {
-    if (el instanceof HTMLSelectElement) el.value = String(deferred.value);
-    else if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+    if (el instanceof HTMLOptionElement) {
+      el.value = String(deferred.value);
+    } else if (el instanceof HTMLSelectElement) {
+      el.value = String(deferred.value);
+    } else if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
       el.value = deferred.value;
+    } else {
+      try {
+        el.value = deferred.value;
+      } catch {
+        el.setAttribute('value', String(deferred.value));
+      }
     }
   }
   if ('checked' in deferred) el.checked = Boolean(deferred.checked);
