@@ -6,7 +6,8 @@ conditions to a canned response (see ``docs/CONTRACTS.md`` §2.2/§2.5).
 
 Matching semantics (frozen for this release):
 
-* tool name must be equal;
+* tool name must be equal, or the fixture name may be ``"*"`` as a fallback
+  for any business tool;
 * ``match`` is a *deep subset* of the actual arguments: every key declared in
   ``match`` must exist in the arguments and match recursively. Extra argument
   keys are allowed (a fixture may cover many call variants of one tool);
@@ -140,7 +141,7 @@ class FixtureMatcher:
               arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
         args: dict[str, Any] = dict(arguments) if isinstance(arguments, Mapping) else {}
         for entry in self._entries:
-            if entry["name"] != name:
+            if entry["name"] not in (name, "*"):
                 continue
             if entry["index"] in self._consumed:
                 continue

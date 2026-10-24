@@ -495,13 +495,10 @@ def test_compact_shorthand_with_path_alias_function_name_and_auto_fixture():
         "name": "list_tasks",
         "arguments": {"project_id": "P1", "status": "in_progress"},
     }]
-    fixtures = {item["name"]: item for item in case["fixtures"]}
-    assert set(fixtures) == {"list_tasks", "search_tasks"}
-    assert fixtures["list_tasks"] == {
-        "name": "list_tasks", "match": {}, "response": {"tasks": []},
+    assert case["fixtures"] == [{
+        "name": "*", "match": {}, "response": {"tasks": []},
         "consume": "always",
-    }
-    assert fixtures["search_tasks"]["response"] == {"tasks": []}
+    }]
 
 
 def test_compact_clarify_no_action_and_flat_route():
@@ -565,3 +562,13 @@ def test_sample_dataset_is_valid_compact_input():
     missing = next(case for case in result["cases"]
                    if case["case_id"] == "fin_003")
     assert missing["fixtures"] == []
+
+
+def test_wildcard_fixture_matches_any_business_tool():
+    matcher = FixtureMatcher([{"name": "*", "match": {},
+                               "response": {"ok": True}}])
+    first = matcher.match("list_tasks", {"project_id": "P1"})
+    second = matcher.match("query_stats", {"project_id": "P1"})
+    assert first["matched"] and second["matched"]
+    assert first["response"] == {"ok": True}
+    assert second["tool"] == "query_stats"

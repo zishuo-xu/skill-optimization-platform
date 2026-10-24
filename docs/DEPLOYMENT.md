@@ -135,7 +135,7 @@ location / {
 ## 8. 测试与 CI
 
 ```bash
-.venv/bin/python -m pytest -q        # 227 passed
+.venv/bin/python -m pytest -q        # 228 passed
 for f in web/js/*.js web/js/views/*.js; do node --check "$f"; done
 ```
 

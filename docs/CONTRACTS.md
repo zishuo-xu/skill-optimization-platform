@@ -91,6 +91,9 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `variants`: `[{"routes": ..., "tool_calls": ..., "call_match": ..., "route_ordered": ...}]`
   可选，用于多种有效调用序列，逐个完整匹配。
 - `fixtures[].consume` ∈ `always`（默认）/ `once`（按调用次序消费）。
+- `fixtures[].name` 可以是具体业务工具名，也可以是 `"*"`：作为任意业务工具的通配回退。
+  `mock` 简写会生成一条 `name: "*"` 的通配 fixture，避免每个案例重复堆叠所有工具的模拟返回；
+  显式工具名 fixture 优先级高于通配 fixture。
 - `split` ∈ `optimize` / `validation` / `final_test`。
 - `critical: true` 可出现在 case 顶层或 `expected` 内，表示关键案例（不得从通过变失败）。
 

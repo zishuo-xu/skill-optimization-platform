@@ -137,9 +137,9 @@ your-skill.zip
   如果不同分支的工具调用也不同，用完整格式的 `expected.variants`。
 - 再次强调：`select_skill`/等价路由事件才会进入 R；`read_skill` 加载 reference 只是运行时上下文。
 
-- 不写 `fixtures` 时：默认按 `expected.tool_calls` 自动生成通配模拟返回；提供了 `mock`
-  则**所有业务工具**都用这个统一返回（错误分发也能继续产出路由诊断）；只提供了 `mocks`
-  时覆盖指定工具 + 预期调用。想故意测试缺模拟返回，请显式写 `"fixtures": []`。
+- 不写 `fixtures` 时：默认按 `expected.tool_calls` 自动生成模拟返回；提供了 `mock`
+  则生成**一条** `name: "*"` 的通配模拟返回，覆盖所有业务工具（错误分发也能继续产出路由诊断）；
+  `mocks` 按工具配置的返回优先于通配返回。想故意测试缺模拟返回，请显式写 `"fixtures": []`。
 - 也可以写 `fixtures` 映射：`{"tool_name": {"whatever":"response"}}`，或传统数组。
 - 完整写法（`expected` + `fixtures` 数组）继续完全兼容，适合多路线、多工具、variants、严格比较规则等高级场景。
 
@@ -153,7 +153,8 @@ your-skill.zip
 - `no_action`：不能有 routes / tool_calls / missing_fields
 - `tool_calls` 是完整业务工具序列；内部工具 `select_skill/read_skill/finish` 不计分
 - `routes` 必须对应当前 Skill 包 manifest；导入前先发布 Skill 与执行环境
-- `fixtures` 未命中记 `fixture_miss`，不会访问真实服务
+- `fixtures` 的 `name` 可以是具体工具名，也可以是 `"*"`（任意业务工具的通配回退）；
+  未命中记 `fixture_miss`，不会访问真实服务
 - `split` 缺省按 `group_id` 固定种子划分（默认 70/20/10；<10 条时退化）
 - 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应修复或在导入时明确剔除
 
@@ -165,7 +166,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 227 passed
+.venv/bin/python -m pytest -q        # 228 passed
 ```
 
 ### 文档导航

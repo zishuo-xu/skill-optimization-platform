@@ -462,7 +462,7 @@ def _validate_fixtures(fixtures: Any, tools: Sequence[str], line: int | None,
         if not isinstance(name, str) or not name:
             add(f"{fixture_path}.name", "invalid_fixture", "fixture 缺少 name")
             continue
-        if tools and name not in tools:
+        if name != "*" and tools and name not in tools:
             add(f"{fixture_path}.name", "unknown_tool", f"未知的工具: {name}")
             continue
         match = fixture.get("match")
@@ -555,18 +555,22 @@ def _auto_fixtures(calls: Any, raw: Mapping[str, Any],
             name = call.get("name") or call.get("functionName")
             if isinstance(name, str) and name and name not in names:
                 names.append(name)
-    # A generic mock means "any business tool may be called"; an explicit
-    # mocks map also covers intermediate calls that are not in expected.
-    if has_default_mock:
-        extras = list(tools or [])
-    elif isinstance(mocks, Mapping):
-        extras = list(mocks.keys())
-    else:
-        extras = []
-    for name in extras:
-        if isinstance(name, str) and name and name not in names:
-            names.append(name)
     fixtures: list[dict[str, Any]] = []
+    if has_default_mock:
+        # One wildcard fixture covers every business tool, including wrong-route
+        # calls; per-tool mocks are kept as higher-priority overrides.
+        if isinstance(mocks, Mapping):
+            for name, response in mocks.items():
+                if isinstance(name, str) and name:
+                    fixtures.append({"name": name, "match": {},
+                                     "response": response, "consume": "always"})
+        fixtures.append({"name": "*", "match": {},
+                         "response": default_response, "consume": "always"})
+        return fixtures
+    if isinstance(mocks, Mapping):
+        for name in mocks.keys():
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
     for name in names:
         response = default_response
         if isinstance(mocks, Mapping) and name in mocks:

@@ -75,7 +75,7 @@
 | A19 | `tests/test_a19_cancel_restart.py` | 通过 |
 | A20 | `tests/test_a20_security.py` | 通过 |
 
-全量命令与结果：`.venv/bin/python -m pytest -q` → **227 passed**。
+全量命令与结果：`.venv/bin/python -m pytest -q` → **228 passed**。
 
 ## 3. 实现口径与差异说明
 

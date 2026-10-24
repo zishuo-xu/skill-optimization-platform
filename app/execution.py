@@ -157,7 +157,7 @@ class _LocalFixtureRuntime:
     def resolve(self, name: str, arguments: Mapping[str, Any] | None) -> dict[str, Any] | None:
         args = dict(arguments or {})
         for index, fixture in enumerate(self._fixtures):
-            if fixture.get("name") != name:
+            if fixture.get("name") not in (name, "*"):
                 continue
             consume = str(fixture.get("consume") or "always")
             if consume == "once" and index in self._consumed:
