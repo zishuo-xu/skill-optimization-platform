@@ -13,6 +13,8 @@
   4 个 reference 子技能）、`imageEditWorkflow` 工具协议、15 条简化格式数据集；
   新增确定性图片编辑模拟器 `app/adapters/demo_image.py`（通过 `model=demo-image-v1`
   选择）。基线 R 50% / A 12.5% / J 11.1%，单轮优化后 R/A/J 均 100%，`decision=accept`。
+  4 个子技能 reference 按实际调用格式（functionName/skillName/method/script/request/args）
+  重写并补齐适用场景、参数表、映射与约束；数据集只校验 `args`。
 - **一键启动**：`./start.sh`（macOS/Linux）与 `start.bat`（Windows 10/11）自动**停止旧服务**、
   检查 Python、创建 `.venv`、安装依赖、首次初始化示例（基线 + 单轮优化）、启动并打开浏览器；
   支持 `--reset/--no-open/--seed-only/--no-kill/--port/--host/--help`；macOS 可双击

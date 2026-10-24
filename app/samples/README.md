@@ -5,6 +5,9 @@
 - `system_prompt.md`：需求文档 §31 的固定业务系统 Prompt 模板。
 - `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/预算/接受规则等）。
 - `image_skill_package/`：第二个示例 Skill 包（主 Skill + 4 个渐进式修图子技能）。
+  每个子技能 reference 都按真实业务格式说明固定调用（`functionName=imageEditWorkflow`、
+  `skillName=gallery-image-editor`、`method`、`script`、`request.query`、`args`），
+  数据集按 `tool.args` 只比较子技能参数。
 - `image_tool_schema.json`：图片编辑工具协议（`imageEditWorkflow`）。
 - `image_system_prompt.md` / `image_environment.json`：图片编辑示例环境
   （provider=`demo_scripted`，model=`demo-image-v1`，domain=image）。
