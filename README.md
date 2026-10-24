@@ -114,13 +114,28 @@ your-skill.zip
 
 | 写法 | 等价含义 |
 | --- | --- |
-| `skill` | 单个选中子技能；可写 manifest `skill_id`，也可直接写 `references/xxx.md` 路径（自动映射）；`skill_ordered` 多步路线写成 `["a","b"]` |
+| `skill` | 单个选中子技能；可写 manifest `skill_id`，也可直接写 `references/xxx.md` 路径（自动映射）；多步路线写成 `["a","b"]`，顺序敏感时同时设置 `route_ordered: true` |
 | `route` / `routes` | `routes` 可写平铺数组（一条路线）或二维数组（多条可选路线）；未写 `route_ordered` 时按集合比较 |
 | `tool` / `tools` | 业务工具调用；可直接用 `functionName` 代替 `name`；`arguments` 原样比较 |
 | `mock` / `mocks` | 自动生成该案例所有业务工具的模拟返回；`mock` 是统一响应，`mocks` 是 `{工具名: 响应}` |
 | `action` | 省略时默认 `tool_call`；有 `missing` 时推断为 `clarify`；`no_action` 需显式写 |
 | `missing` | 等价于 `missing_fields`（clarify 必填） |
 | `id` / `group_id` / `split` / `tags` / `context` | 可选；`id` 缺省自动生成，`split` 缺省按 group 固定种子划分 |
+
+#### 渐进式 Skill 的写法
+
+渐进式 Skill 的特点是先选中子技能，再按需通过 `read_skill` 读取更多 reference。
+平台**只把显式子技能选择计入 R**，读取更多 reference 不计分、也不需要写进数据集：
+
+- 只选一次子技能（最常见）：用上面的最小示例即可，`skill` 写那一个子技能。
+- 固定多跳：`"skill": ["references/a.md", "references/b.md"], "route_ordered": true`
+  表示完整路线按顺序执行；不设置 `route_ordered` 时按集合比较。
+- 不同输入走不同分支：用多条允许路线
+  ```json
+  "routes": [["a"], ["a", "b"], ["a", "c"]]
+  ```
+  如果不同分支的工具调用也不同，用完整格式的 `expected.variants`。
+- 再次强调：`select_skill`/等价路由事件才会进入 R；`read_skill` 加载 reference 只是运行时上下文。
 
 - 不写 `fixtures` 时，会按 `expected.tool_calls` 自动生成通配模拟返回（未写 `mock` 时返回 `{"ok":true}`）。
   想故意测试缺模拟返回，请显式写 `"fixtures": []`。
