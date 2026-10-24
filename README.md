@@ -101,6 +101,29 @@ your-skill.zip
   macOS/Linux 可在 Skill 目录内执行 `zip -r ../skill.zip .`，Windows 可在文件夹内全选后
   “发送到 → 压缩(zipped)文件夹”。浏览器直接选择文件夹上传的 UI 暂未提供，请使用 ZIP。
 
+### 数据集格式
+
+支持 `.jsonl`（推荐，每行一个案例）与 `.json`（数组，或 `{"cases":[...]}`），UTF-8 编码。
+每行示例：
+
+```json
+{"id":"case_001","query":"查询项目 P123 中进行中的任务","group_id":"g_status_query","split":"optimize","tags":["状态映射"],"context":{"timezone":"Asia/Shanghai"},"expected":{"action":"tool_call","routes":[["task_query"]],"route_ordered":false,"call_match":"ordered_exact","tool_calls":[{"name":"list_tasks","arguments":{"project_id":"P123","status":"in_progress"}}],"missing_fields":[]},"fixtures":[{"name":"list_tasks","match":{},"response":{"tasks":[]},"consume":"always"}]}
+```
+
+- `query`、`expected` 必填；`id` 缺省时按 query/group 生成稳定 ID
+- `expected.action`：`tool_call`（默认）/ `clarify` / `no_action`
+  - `clarify` 必须有 `missing_fields`，不能有业务 `tool_calls`
+  - `no_action` 不能有 routes / tool_calls / missing_fields
+- `routes` 是允许的完整子技能路线列表（`[["task_query"]]`），skill_id 必须来自当前 Skill 包 manifest；
+  clarify 可携带 routes 以便优化器归因
+- `tool_calls` 为完整业务工具序列（工具名必须在当前执行环境的工具协议中）；
+  内部工具 `select_skill/read_skill/finish` 不计分
+- `fixtures` 按工具名 + `match` 参数条件返回模拟结果；未命中记 `fixture_miss`，不会访问真实服务
+- `split` 可显式指定 `optimize` / `validation` / `final_test`；不写时按 `group_id` 以固定种子
+  划分（默认 70/20/10，<10 条时退化且提示无最终测试集）
+- 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应先修复或在导入时明确剔除
+- 导入前请先发布 Skill 包与执行环境，校验会使用当前 manifest 与工具协议
+
 打开页面左侧的示例项目「示例项目：任务管理」，进入「运行详情」查看基线与优化运行。
 
 **测试：**
