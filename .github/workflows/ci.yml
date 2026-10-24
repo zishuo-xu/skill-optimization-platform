@@ -53,3 +53,27 @@ jobs:
 
       - name: start.bat --seed-only (one-click setup + demo seed)
         run: cmd /c start.bat --seed-only
+
+      - name: start.bat server smoke (health + SPA)
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "cmd.exe" -ArgumentList '/c start.bat --no-open' -PassThru -NoNewWindow
+          $healthy = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:8765/api/v3/healthz'
+              if ($r.StatusCode -eq 200) { $healthy = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 1
+          }
+          if (-not $healthy) {
+            & taskkill /PID $proc.Id /T /F | Out-Null
+            throw 'server did not become healthy'
+          }
+          $page = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 'http://127.0.0.1:8765/'
+          if ($page.StatusCode -ne 200) {
+            & taskkill /PID $proc.Id /T /F | Out-Null
+            throw 'index.html was not served'
+          }
+          & taskkill /PID $proc.Id /T /F | Out-Null
+          Write-Host 'Windows one-click startup OK'
