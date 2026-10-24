@@ -154,7 +154,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | POST | `/projects/{pid}/datasets` | 发布数据集版本（有错误需 `exclude_invalid=true` 明确剔除） |
 | GET | `/datasets/{did}` | 详情 + split_counts + coverage |
 | GET | `/datasets/{did}/cases?split=&search=&tag=&limit=&offset=` | 案例列表 |
-| GET | `/datasets/{did}/cases/{cid}` | 案例详情（expected/fixtures） |
+| GET | `/datasets/{did}/cases/{cid}` | 案例详情（expected/fixtures；工具调用可带 `arguments_path`） |
 | GET | `/datasets/{did}/coverage` | 子技能/工具/动作/多路线覆盖 |
 | POST | `/datasets/{did}/publish` | 发布（通常创建时已发布，用于“设为当前”） |
 | POST | `/datasets/{did}/activate` | `{expected_current_version?}` 设为当前 |
@@ -196,7 +196,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | POST | `/runs/{rid}/cancel` | 取消；queued 直接 cancelled，running 先 cancel_requested |
 | POST | `/runs/{rid}/apply` | `{expected_current_version, candidate_id?}` 应用候选；冲突 409 |
 | GET | `/runs/{rid}/cases?phase=&only_failed=&search=&changed=&limit=&offset=` | 案例对比（默认聚合基线/候选与验证集配对） |
-| GET | `/runs/{rid}/cases/{cid}` | 单案例详情（结果 + 事件） |
+| GET | `/runs/{rid}/cases/{cid}` | 单案例详情（`baseline`/`candidate` 实际结果 + 事件） |
 | GET | `/runs/{rid}/diff` | 候选文件差异、诊断、假设、检查 |
 | GET | `/runs/{rid}/issues` | 问题摘要（warning/error 且带 issue 的事件） |
 | GET | `/runs/{rid}/events` | SSE 事件流，`id: <seq>`；支持 `Last-Event-ID`/`?after_seq=` |

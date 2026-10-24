@@ -146,7 +146,7 @@ GitHub Actions 工作流 `.github/workflows/ci.yml` 在 push / PR 时执行同�
 | 现象 | 原因/处理 |
 | --- | --- |
 | 启动报 `Address already in use` | 端口被占用：`SKILLOPT_PORT=8766 ./run.sh` 或停止旧进程 |
-| 页面样式/行为异常、点击无反应 | 浏览器缓存旧 JS：强制刷新（⌘⇧R / Ctrl+F5）或清缓存 |
+| 页面样式/行为异常、点击无反应 | 前端静态资源已默认 `Cache-Control: no-store` 并带版本号；仍异常时关闭标签重开，或强制刷新（⌘⇧R / Ctrl+F5） |
 | 运行一直 `queued` | Worker 未启动（检查 `SKILLOPT_DISABLE_WORKER` 未设置、查看启动日志） |
 | 运行日志不实时 | 反向代理缓冲了 SSE：按第 5 节关闭 `proxy_buffering` |
 | ZIP 导入返回 422 | 查看 `error.details`：路径穿越、缺失 SKILL.md/manifest、失效引用、重复 skill_id 等 |
