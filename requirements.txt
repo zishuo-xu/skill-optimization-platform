@@ -1,0 +1,6 @@
+# 后端依赖（纯 Python wheel，无需编译；避免 pydantic 原生扩展的签名问题）
+starlette>=0.37,<2
+uvicorn>=0.30,<1
+httpx>=0.27,<1
+websockets>=12,<18
+pytest>=8,<10

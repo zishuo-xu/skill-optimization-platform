@@ -207,6 +207,15 @@ CREATE TABLE IF NOT EXISTS candidates (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_log(project_id, created_at);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "main": "SKILL.md",
+  "subskills": [
+    {"skill_id": "task_query", "name": "任务查询", "path": "references/task_query.md", "description": "查询项目或成员的任务列表、任务详情与状态"},
+    {"skill_id": "task_create", "name": "任务创建", "path": "references/task_create.md", "description": "在项目中创建任务，设置标题、优先级等"},
+    {"skill_id": "task_update_status", "name": "任务状态更新", "path": "references/task_update_status.md", "description": "更新任务状态，如完成、进行中、待开始"},
+    {"skill_id": "task_assign", "name": "任务指派", "path": "references/task_assign.md", "description": "把任务指派或转交给负责人"},
+    {"skill_id": "task_priority", "name": "优先级设置", "path": "references/task_priority.md", "description": "设置任务优先级"},
+    {"skill_id": "project_query", "name": "项目查询", "path": "references/project_query.md", "description": "查询项目基本信息"},
+    {"skill_id": "project_members", "name": "项目成员", "path": "references/project_members.md", "description": "列出项目成员"},
+    {"skill_id": "task_comment", "name": "任务评论", "path": "references/task_comment.md", "description": "在任务下添加评论或留言"},
+    {"skill_id": "task_attachment", "name": "附件管理", "path": "references/task_attachment.md", "description": "给任务上传附件"},
+    {"skill_id": "task_time_log", "name": "工时登记", "path": "references/task_time_log.md", "description": "登记任务工时"},
+    {"skill_id": "task_dependency", "name": "任务依赖", "path": "references/task_dependency.md", "description": "设置任务之间的依赖关系"},
+    {"skill_id": "task_milestone", "name": "里程碑", "path": "references/task_milestone.md", "description": "创建项目里程碑"},
+    {"skill_id": "task_tag", "name": "标签管理", "path": "references/task_tag.md", "description": "给任务添加标签"},
+    {"skill_id": "task_search", "name": "任务搜索", "path": "references/task_search.md", "description": "按关键词搜索任务"},
+    {"skill_id": "task_batch", "name": "批量操作", "path": "references/task_batch.md", "description": "批量更新任务状态等字段"},
+    {"skill_id": "task_export", "name": "任务导出", "path": "references/task_export.md", "description": "导出项目任务"},
+    {"skill_id": "task_stats", "name": "任务统计", "path": "references/task_stats.md", "description": "统计项目任务数量与分布"},
+    {"skill_id": "task_reminder", "name": "任务提醒", "path": "references/task_reminder.md", "description": "创建任务提醒"},
+    {"skill_id": "task_template", "name": "模板创建", "path": "references/task_template.md", "description": "从模板创建任务"},
+    {"skill_id": "task_archive", "name": "任务归档", "path": "references/task_archive.md", "description": "归档任务"},
+    {"skill_id": "permission_check", "name": "权限校验", "path": "references/permission_check.md", "description": "校验当前用户对任务的操作权限"}
+  ]
+}

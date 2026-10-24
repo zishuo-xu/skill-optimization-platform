@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Skill 优化平台：单轮评测与优化">
+  <title>Skill 优化平台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2320242a'/%3E%3Cpath d='M9 21V11h4.2c2.6 0 4.1 1.1 4.1 3 0 1.2-.6 2.1-1.7 2.6 1.4.4 2.2 1.4 2.2 2.7 0 2-1.6 3.2-4.4 3.2H9zm2.6-5.9h1.5c1.1 0 1.7-.5 1.7-1.3s-.6-1.3-1.7-1.3h-1.5v2.6zm0 4.6h1.8c1.2 0 1.9-.5 1.9-1.4 0-.9-.7-1.4-1.9-1.4h-1.8v2.8z' fill='%2379aef8'/%3E%3Ccircle cx='23' cy='22' r='3' fill='%2363c69b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#view">跳到主内容</a>
+  <div id="app" class="app-shell" aria-busy="true">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span class="brand-text">
+          <strong>Skill 优化平台</strong>
+          <small>单轮评测与优化</small>
+        </span>
+      </div>
+      <div class="sidebar-placeholder">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在加载…</span>
+      </div>
+    </aside>
+    <div class="app-main">
+      <header class="topbar"></header>
+      <main id="view" class="content" tabindex="-1">
+        <div class="boot-loading">
+          <span class="spinner" aria-hidden="true"></span>
+          <p>正在加载平台…</p>
+        </div>
+      </main>
+    </div>
+  </div>
+  <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
+  <div id="overlay-root"></div>
+  <noscript>
+    <p class="noscript">本界面需要启用 JavaScript 才能运行。</p>
+  </noscript>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

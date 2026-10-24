@@ -69,6 +69,8 @@
 ```
 
 - `action` ∈ `tool_call` / `clarify` / `no_action`（缺失视为 `tool_call`）。
+- clarify 案例可以携带 `routes`（记录本应发起澄清的子技能，仅供优化器上下文，
+  不参与 R 指标），但不得携带业务 `tool_calls`；no_action 三者均不得携带。
 - `routes`: 允许的完整子技能路线列表，命中任意一条即通过；集合模式去重比较，
   `route_ordered=true` 时严格按顺序且额外调用算错。
 - `tool_calls`: 完整业务调用序列（辅助查询工具也算业务工具；内部工具

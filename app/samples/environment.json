@@ -1,0 +1,55 @@
+{
+  "prompt": "@prompt.md",
+  "model_config": {
+    "provider": "demo_scripted",
+    "model": "demo-scripted-v1",
+    "model_version": "fixed:demo-scripted-v1",
+    "temperature": 0.0,
+    "max_tokens": 768,
+    "timeout_s": 30,
+    "max_retries": 2
+  },
+  "optimizer_config": {
+    "provider": "heuristic",
+    "model": "frozen-heuristic-v1",
+    "temperature": 0.0,
+    "max_tokens": 2048,
+    "note": "示例环境未连接真实优化模型；运行时记录 optimizer_not_configured 并使用冻结启发式回退。"
+  },
+  "loader_config": {
+    "inject_main_skill": true,
+    "subskill_index": "manifest",
+    "select_skill_tool": true,
+    "read_skill_tool": true,
+    "finish_tool": true,
+    "max_steps": 8,
+    "max_context_chars": 60000,
+    "context_overflow": "error"
+  },
+  "run_config": {
+    "concurrency": 3,
+    "max_model_calls": 12,
+    "case_timeout_s": 120,
+    "max_retries": 2,
+    "base_repeats": 1,
+    "validation_repeats": 3
+  },
+  "budget_config": {
+    "max_tokens": 300000,
+    "max_cost": null,
+    "max_seconds": 1800
+  },
+  "scorer_config": {
+    "version": "score-v1",
+    "route_compare": "set",
+    "param_compare": "strict_json",
+    "seed": 42
+  },
+  "acceptance_config": {
+    "rules_version": "accept-v1",
+    "validation_repeats": 3,
+    "require_critical_no_regression": true,
+    "require_no_infra_errors": true
+  },
+  "reproducibility_note": "示例环境使用 demo_scripted 确定性模型适配器；接入真实网关后需记录实际响应模型标识并标注可复现性限制。"
+}

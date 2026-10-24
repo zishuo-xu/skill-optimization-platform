@@ -116,7 +116,7 @@ def list_projects(include_archived: bool = False) -> list[dict[str, Any]]:
 
 def update_project(project_id: str, **fields: Any) -> dict[str, Any]:
     allowed = {"name", "description", "archived"}
-    updates = {k: v for k, v in fields.items() if k in allowed}
+    updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not updates:
         return get_project(project_id)
     updates["updated_at"] = now_iso()
@@ -188,6 +188,31 @@ def create_skill_version(project_id: str, files: Mapping[str, bytes], manifest: 
     return get_skill_version(version_id)
 
 
+def update_skill_version_files(skill_version_id: str, files: Mapping[str, bytes],
+                               manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Rewrite a draft version's files in place (drafts only, no version bump)."""
+    version = get_skill_version(skill_version_id)
+    if version["status"] != "draft":
+        raise ConflictError("只有草稿版本可以原地编辑", code="version_read_only")
+    target = skill_files_dir(skill_version_id)
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    for rel, data in files.items():
+        path = target / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    content_hash = hashing.hash_files(files)
+    with transaction() as conn:
+        conn.execute(
+            "UPDATE skill_versions SET files_json = ?, content_hash = ?,"
+            " manifest_json = COALESCE(?, manifest_json) WHERE id = ?",
+            (_dumps(hashing.file_hashes(files)), content_hash,
+             _dumps(dict(manifest)) if manifest is not None else None,
+             skill_version_id))
+    return get_skill_version(skill_version_id)
+
+
 def get_skill_version(skill_version_id: str) -> dict[str, Any]:
     return _get_or_404("skill_versions", skill_version_id, "Skill 版本")
 
@@ -229,7 +254,8 @@ def export_skill_zip(skill_version_id: str, dest: Path | None = None) -> Path:
         for path in sorted(root.rglob("*")):
             if path.is_file():
                 zf.write(path, path.relative_to(root).as_posix())
-        zf.writestr("manifest.json", _dumps(version["manifest"]))
+        if "manifest.json" not in {entry["path"] for entry in version.get("files") or []}:
+            zf.writestr("manifest.json", _dumps(version["manifest"]))
     tmp.replace(dest)
     return dest
 
@@ -1023,6 +1049,26 @@ def mark_decision_applied(decision_id: str, expected_current_version: str,
             (now_iso(), applied_by, expected_current_version, decision_id),
         )
     return get_decision(decision_id)
+
+
+# --------------------------------------------------------------------------- #
+# audit log
+# --------------------------------------------------------------------------- #
+def append_audit(project_id: str, action: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    stamp = now_iso()
+    with transaction() as conn:
+        cursor = conn.execute(
+            "INSERT INTO audit_log (project_id, action, payload_json, created_at)"
+            " VALUES (?, ?, ?, ?)", (project_id, action, _dumps(payload or {}), stamp))
+        audit_id = cursor.lastrowid
+    return {"id": audit_id, "project_id": project_id, "action": action,
+            "payload": dict(payload or {}), "created_at": stamp}
+
+
+def list_audit(project_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    return _fetchall(
+        "SELECT * FROM audit_log WHERE project_id = ? ORDER BY id DESC LIMIT ?",
+        (project_id, limit))
 
 
 # --------------------------------------------------------------------------- #

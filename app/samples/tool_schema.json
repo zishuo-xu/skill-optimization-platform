@@ -1,0 +1,449 @@
+[
+  {
+    "name": "list_tasks",
+    "description": "查询任务列表或任务详情",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "in_progress",
+            "done",
+            "todo"
+          ]
+        },
+        "assignee_id": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_task",
+    "description": "在项目中创建任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "high",
+            "normal",
+            "low"
+          ]
+        }
+      },
+      "required": [
+        "title",
+        "project_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "update_task_status",
+    "description": "更新任务状态",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "in_progress",
+            "done",
+            "todo"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "assign_task",
+    "description": "把任务指派给负责人",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "assignee_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "assignee_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_priority",
+    "description": "设置任务优先级",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "high",
+            "normal",
+            "low"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "priority"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_project",
+    "description": "查询项目详情",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_members",
+    "description": "列出项目成员",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "add_comment",
+    "description": "在任务下添加评论",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "comment"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "add_attachment",
+    "description": "给任务上传附件",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "filename": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "filename"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "log_work",
+    "description": "登记任务工时",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "hours": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "task_id",
+        "hours"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "add_dependency",
+    "description": "设置任务依赖",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "depends_on": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_milestone",
+    "description": "为项目创建里程碑",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "due_date": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "add_tag",
+    "description": "给任务添加标签",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "tag"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "search_tasks",
+    "description": "按关键词搜索任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "keyword": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "batch_update_tasks",
+    "description": "批量更新任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "in_progress",
+            "done",
+            "todo"
+          ]
+        }
+      },
+      "required": [
+        "task_ids",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "export_tasks",
+    "description": "导出项目任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "xlsx",
+            "csv"
+          ]
+        }
+      },
+      "required": [
+        "project_id",
+        "format"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "query_stats",
+    "description": "统计项目任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_reminder",
+    "description": "创建任务提醒",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "app",
+            "email",
+            "sms"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "channel"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_from_template",
+    "description": "从模板创建任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "archive_task",
+    "description": "归档任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "check_permission",
+    "description": "校验任务操作权限",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "assign",
+            "update",
+            "archive"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  }
+]
