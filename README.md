@@ -137,8 +137,9 @@ your-skill.zip
   如果不同分支的工具调用也不同，用完整格式的 `expected.variants`。
 - 再次强调：`select_skill`/等价路由事件才会进入 R；`read_skill` 加载 reference 只是运行时上下文。
 
-- 不写 `fixtures` 时，会按 `expected.tool_calls` 自动生成通配模拟返回（未写 `mock` 时返回 `{"ok":true}`）。
-  想故意测试缺模拟返回，请显式写 `"fixtures": []`。
+- 不写 `fixtures` 时：默认按 `expected.tool_calls` 自动生成通配模拟返回；提供了 `mock`
+  则**所有业务工具**都用这个统一返回（错误分发也能继续产出路由诊断）；只提供了 `mocks`
+  时覆盖指定工具 + 预期调用。想故意测试缺模拟返回，请显式写 `"fixtures": []`。
 - 也可以写 `fixtures` 映射：`{"tool_name": {"whatever":"response"}}`，或传统数组。
 - 完整写法（`expected` + `fixtures` 数组）继续完全兼容，适合多路线、多工具、variants、严格比较规则等高级场景。
 
@@ -156,12 +157,15 @@ your-skill.zip
 - `split` 缺省按 `group_id` 固定种子划分（默认 70/20/10；<10 条时退化）
 - 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应修复或在导入时明确剔除
 
+仓库示例 `app/samples/dataset.jsonl` 已改用上述简化写法（45 条，约 14KB），
+可直接打开参考；导入后平台内部自动展开为完整的 `expected`/`fixtures`。
+
 打开页面左侧的示例项目「示例项目：任务管理」，进入「运行详情」查看基线与优化运行。
 
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 226 passed
+.venv/bin/python -m pytest -q        # 227 passed
 ```
 
 ### 文档导航

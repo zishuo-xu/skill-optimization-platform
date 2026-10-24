@@ -31,13 +31,15 @@
 - **安全**：执行器不接收 expected/答案、优化器不读验证/最终测试集、补丁白名单与静态检查、
   凭据脱敏、fixture 未命中不访问真实服务。
 - **文档**：README、架构、API、部署、演示、契约、验收记录、需求追溯、样例说明。
-- **测试**：226 条 pytest 用例（A01–A20），GitHub Actions CI。
+- **测试**：227 条 pytest 用例（A01–A20），GitHub Actions CI。
 
 ### Changed
 
 - **数据集支持简化写法**：可直接写 `query + skill + tool/arguments (+ mock)`，导入时自动展开为
   canonical `expected`/`fixtures`；`skill` 支持 reference 路径自动映射、`tool` 支持
   `functionName`；缺省 `fixtures` 自动生成通配模拟返回，显式 `fixtures: []` 可关闭。
+  示例数据集同步改为简化写法（45 条 / 约 14KB），指标与判定保持不变；`mock` 作为统一
+  模拟返回时会覆盖全部业务工具，便于错误分发仍产出清晰的路由诊断。
 - **Skill 包导入兼容常见结构**：根目录 `SKILL.md` / `skill.md` 均可（自动规范化），
   `reference/` 与 `references/` 均可，支持嵌套 `<子技能>/SKILL.md`；无 `manifest.json`
   时自动生成 `skill_id`、展示名与描述，显式 manifest 仍优先；导入响应返回生成/规范化警告。

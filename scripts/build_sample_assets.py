@@ -103,20 +103,6 @@ def call(tool_name: str, **arguments) -> dict:
     return {"name": tool_name, "arguments": arguments}
 
 
-def fixtures_for(*_calls: dict) -> list[dict]:
-    """Wildcard fixtures for every business tool.
-
-    Empty ``match`` conditions accept any arguments, so a wrong-route/wrong-args
-    call still receives a simulated result and the deterministic grader can show
-    the real routing/parameter difference instead of hiding it behind
-    ``fixture_miss``.  ``fin_003`` intentionally omits fixtures to exercise the
-    missing-fixture path.
-    """
-
-    return [{"name": item["name"], "match": {}, "response": {"ok": True}}
-            for item in TOOL_SCHEMA]
-
-
 def case(case_id: str, query: str, group_id: str, split: str, tags: list[str],
          expected_action: str = "tool_call", routes: list[list[str]] | None = None,
          calls: list[dict] | None = None, missing_fields: list[str] | None = None,
@@ -124,30 +110,58 @@ def case(case_id: str, query: str, group_id: str, split: str, tags: list[str],
          route_ordered: bool = False, call_match: str = "ordered_exact",
          variants: list[dict] | None = None,
          fixture_calls: list[dict] | None = None) -> dict:
+    """Emit the compact dataset shorthand consumed by the platform importer."""
     routes = routes or []
     calls = calls or []
-    expected = {
-        "action": expected_action,
-        "routes": routes,
-        "route_ordered": route_ordered,
-        "call_match": call_match,
-        "tool_calls": calls,
-        "missing_fields": missing_fields or [],
-        "variants": variants or [],
-    }
-    fixture_source = fixture_calls if fixture_calls is not None else calls
-    fixtures = fixtures_for(*fixture_source) if with_fixtures else []
-    return {
+    out = {
         "id": case_id,
         "query": query,
         "group_id": group_id,
         "split": split,
         "tags": tags,
         "context": {"timezone": "Asia/Shanghai"},
-        "expected": expected,
-        "fixtures": fixtures,
-        "critical": critical,
     }
+    if expected_action == "tool_call":
+        if routes:
+            if len(routes) == 1:
+                route = list(routes[0])
+                out["skill"] = route[0] if len(route) == 1 else route
+            else:
+                out["routes"] = [list(route) for route in routes]
+        if calls:
+            normalised = [{"name": item["name"], "arguments": item["arguments"]}
+                          for item in calls]
+            if len(normalised) == 1:
+                out["tool"] = normalised[0]
+            else:
+                out["tools"] = normalised
+        if with_fixtures:
+            # Generic mock covers all business tools, so wrong-route calls still
+            # receive a simulated result and produce routing diagnostics.
+            out["mock"] = {"ok": True}
+        else:
+            out["fixtures"] = []
+    elif expected_action == "clarify":
+        out["action"] = "clarify"
+        out["missing"] = list(missing_fields or [])
+        if routes:
+            route = list(routes[0])
+            out["skill"] = route[0] if len(route) == 1 else route
+        if with_fixtures:
+            out["mock"] = {"ok": True}
+        else:
+            out["fixtures"] = []
+    elif expected_action == "no_action":
+        out["action"] = "no_action"
+    if route_ordered:
+        out["route_ordered"] = True
+    if call_match != "ordered_exact":
+        out["call_match"] = call_match
+    if variants:
+        out["variants"] = variants
+    if critical:
+        out["critical"] = True
+    return out
 
 
 CASES = [

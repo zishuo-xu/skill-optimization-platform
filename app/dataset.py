@@ -542,18 +542,32 @@ def _normalise_tool_list(value: Any, fallback_arguments: Any = None) -> Any:
     return [_normalise_tool_entry(entry, fallback_arguments) for entry in value]
 
 
-def _auto_fixtures(calls: Any, raw: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _auto_fixtures(calls: Any, raw: Mapping[str, Any],
+                   tools: Sequence[str] | None = None) -> list[dict[str, Any]]:
     mocks = raw.get("mocks")
-    default_response = raw["mock"] if "mock" in raw else {"ok": True}
+    has_default_mock = "mock" in raw
+    default_response = raw["mock"] if has_default_mock else {"ok": True}
+    names: list[str] = []
+    if _is_sequence(calls):
+        for call in calls:
+            if not isinstance(call, Mapping):
+                continue
+            name = call.get("name") or call.get("functionName")
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
+    # A generic mock means "any business tool may be called"; an explicit
+    # mocks map also covers intermediate calls that are not in expected.
+    if has_default_mock:
+        extras = list(tools or [])
+    elif isinstance(mocks, Mapping):
+        extras = list(mocks.keys())
+    else:
+        extras = []
+    for name in extras:
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
     fixtures: list[dict[str, Any]] = []
-    if not _is_sequence(calls):
-        return fixtures
-    for call in calls:
-        if not isinstance(call, Mapping):
-            continue
-        name = call.get("name") or call.get("functionName")
-        if not isinstance(name, str) or not name:
-            continue
+    for name in names:
         response = default_response
         if isinstance(mocks, Mapping) and name in mocks:
             response = mocks[name]
@@ -578,7 +592,8 @@ def _normalise_fixtures_shorthand(value: Any) -> Any:
     return value
 
 
-def _normalise_compact_case(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+def _normalise_compact_case(raw: Mapping[str, Any],
+                            tools: Sequence[str] | None = None) -> Mapping[str, Any]:
     """Expand compact dataset shorthand into the canonical case shape.
 
     Compact example::
@@ -661,8 +676,8 @@ def _normalise_compact_case(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     # ---- fixtures -----------------------------------------------------
     if "fixtures" not in data:
         calls = exp.get("tool_calls")
-        if _is_sequence(calls) and calls:
-            data["fixtures"] = _auto_fixtures(calls, data)
+        if (isinstance(calls, list) and calls) or "mock" in data or "mocks" in data:
+            data["fixtures"] = _auto_fixtures(calls, data, tools)
     else:
         data["fixtures"] = _normalise_fixtures_shorthand(data["fixtures"])
     return data
@@ -675,7 +690,7 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
                    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Validate and normalise one raw case object."""
 
-    raw = _normalise_compact_case(raw)
+    raw = _normalise_compact_case(raw, tools)
     aliases = skill_aliases or {}
     errors: list[dict[str, Any]] = []
     line = raw.get("_line") if isinstance(raw.get("_line"), int) else line_fallback

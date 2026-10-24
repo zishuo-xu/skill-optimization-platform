@@ -5,6 +5,8 @@
 - `system_prompt.md`：需求文档 §31 的固定业务系统 Prompt 模板。
 - `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/预算/接受规则等）。
 - `dataset.jsonl`：45 条示例案例（33 优化集 / 8 验证集 / 4 最终测试集），含澄清、无操作、多路线与关键案例。
+  该文件使用平台**简化写法**（`query + skill + tool + mock`），导入时自动展开为完整的
+  `expected`/`fixtures`；`fin_003` 显式写 `"fixtures": []` 用于演示缺模拟返回。
 
 ## 演示数据中刻意保留的缺陷（用于展示单轮优化闭环）
 

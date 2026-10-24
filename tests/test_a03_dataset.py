@@ -495,10 +495,13 @@ def test_compact_shorthand_with_path_alias_function_name_and_auto_fixture():
         "name": "list_tasks",
         "arguments": {"project_id": "P1", "status": "in_progress"},
     }]
-    assert case["fixtures"] == [{
+    fixtures = {item["name"]: item for item in case["fixtures"]}
+    assert set(fixtures) == {"list_tasks", "search_tasks"}
+    assert fixtures["list_tasks"] == {
         "name": "list_tasks", "match": {}, "response": {"tasks": []},
         "consume": "always",
-    }]
+    }
+    assert fixtures["search_tasks"]["response"] == {"tasks": []}
 
 
 def test_compact_clarify_no_action_and_flat_route():
@@ -535,3 +538,30 @@ def test_explicit_empty_fixtures_disables_auto_mock():
     result = prepare([item])
     assert result["errors"] == []
     assert result["cases"][0]["fixtures"] == []
+
+
+def test_sample_dataset_is_valid_compact_input():
+    from pathlib import Path
+
+    samples = Path(__file__).resolve().parent.parent / "app" / "samples"
+    items, fmt = dataset.parse_payload(
+        (samples / "dataset.jsonl").read_bytes(), "dataset.jsonl")
+    manifest = json.loads((samples / "skill_package" / "manifest.json")
+                          .read_text(encoding="utf-8"))
+    tools = json.loads((samples / "tool_schema.json").read_text(encoding="utf-8"))
+    result = dataset.validate_and_prepare(
+        items, manifest=manifest, tool_schema=tools,
+        split_config={"optimize": 0.7, "validation": 0.2, "final_test": 0.1},
+        seed=42)
+    assert fmt == "jsonl"
+    assert result["errors"] == []
+    assert result["stats"]["valid"] == 45
+    assert result["stats"]["splits"] == {
+        "optimize": 33, "validation": 8, "final_test": 4}
+    clarify = next(case for case in result["cases"]
+                   if case["case_id"] == "opt_010")
+    assert clarify["expected"]["action"] == "clarify"
+    assert clarify["fixtures"], "clarify 基线调用仍应有模拟返回"
+    missing = next(case for case in result["cases"]
+                   if case["case_id"] == "fin_003")
+    assert missing["fixtures"] == []
