@@ -1,4 +1,4 @@
-/** 执行环境：业务 Prompt（默认展开）、业务/优化模型、工具与预算折叠、测试连接、发布后只读。 */
+/** 执行环境：业务 Prompt（默认折叠）、业务/优化模型、工具与预算折叠、测试连接、发布后只读。 */
 
 import { api } from '../api_v3.js';
 import { h, mount, icon } from '../dom.js';
@@ -193,7 +193,7 @@ export default async function environmentView(container, ctx) {
     testResult: null,
     testLoading: false,
     promptPreview: false,
-    promptExpanded: false,
+    promptOpen: false,
   };
 
   const versionHost = h('div');
@@ -721,46 +721,41 @@ export default async function environmentView(container, ctx) {
   function promptSection() {
     const editable = EDITABLE();
     const prompt = state.form.prompt || '';
-    const body = editable
-      ? h(
-          'div.stack',
-          null,
-          h('textarea.textarea.textarea--code', {
-            rows: 8,
-            value: prompt,
-            'aria-label': '业务系统 Prompt',
-            oninput: (event) => {
-              state.form.prompt = event.target.value;
-              markDirty();
-            },
-          }),
-          state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null
-        )
-      : h(
-          'pre.prompt-preview',
-          {
-            style: {
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '12.5px',
-              lineHeight: '1.7',
-              background: 'var(--bg)',
-              border: '1px solid var(--line-soft)',
-              borderRadius: '8px',
-              padding: '12px 14px',
-              maxHeight: state.promptExpanded ? 'none' : '260px',
-              overflow: 'auto',
-              color: 'var(--text-2)',
-              margin: 0,
-            },
-          },
-          prompt
-        );
-    return sectionCard({
+    const textarea = h('textarea.textarea.textarea--code', {
+      rows: 12,
+      value: prompt,
+      disabled: !editable,
+      'aria-label': '业务系统 Prompt',
+      oninput: (event) => {
+        state.form.prompt = event.target.value;
+        markDirty();
+      },
+    });
+    const preview = h(
+      'pre.prompt-preview',
+      {
+        style: {
+          whiteSpace: 'pre-wrap',
+          fontFamily: 'var(--font-mono)',
+          fontSize: '12.5px',
+          lineHeight: '1.7',
+          background: 'var(--bg)',
+          border: '1px solid var(--line-soft)',
+          borderRadius: '8px',
+          padding: '12px 14px',
+          maxHeight: 'none',
+          overflow: 'auto',
+          color: 'var(--text-2)',
+          margin: 0,
+        },
+      },
+      prompt
+    );
+    const card = sectionCard({
       title: '业务系统 Prompt',
       description: editable
-        ? '发布后只读；优化器没有修改权限。'
-        : `当前版本只读 · ${prompt.length.toLocaleString()} 字符`,
+        ? `默认折叠 · ${prompt.length.toLocaleString()} 字符 · 发布后只读，优化器没有修改权限`
+        : `默认折叠 · 只读 · ${prompt.length.toLocaleString()} 字符`,
       actions: editable
         ? [
             button({
@@ -776,26 +771,28 @@ export default async function environmentView(container, ctx) {
                 });
                 if (!ok) return;
                 state.form.prompt = DEFAULT_PROMPT;
+                state.promptOpen = true;
                 markDirty();
                 renderForm();
               },
             }),
           ]
-        : [
-            chip('只读', 'neutral'),
-            button({
-              label: state.promptExpanded ? '收起' : '展开全文',
-              variant: 'ghost',
-              size: 'sm',
-              iconName: 'chevronDown',
-              onClick: () => {
-                state.promptExpanded = !state.promptExpanded;
-                renderForm();
-              },
-            }),
-          ],
-      body,
+        : [chip('只读', 'neutral')],
+      collapsible: true,
+      open: state.promptOpen || Boolean(state.fieldErrors.prompt),
+      body: h(
+        'div.stack',
+        null,
+        editable
+          ? textarea
+          : preview,
+        state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null
+      ),
     });
+    card.addEventListener('toggle', () => {
+      state.promptOpen = card.open;
+    });
+    return card;
   }
 
   function businessModelSection() {
