@@ -7,6 +7,7 @@ rem                               start server and open the browser
 rem    start.bat --reset          wipe local demo data, re-seed, then start
 rem    start.bat --no-open        start without opening the browser
 rem    start.bat --seed-only      initialize/reset demo data only, do not start
+rem    start.bat --no-kill        do not stop an already running server
 rem    start.bat --port 8766      use another port
 rem    start.bat --help
 rem ============================================================================
@@ -20,6 +21,7 @@ set "ROOT=%CD%"
 set "OPEN_BROWSER=1"
 set "DO_RESET=0"
 set "SEED_ONLY=0"
+set "NO_KILL=0"
 if defined SKILLOPT_HOST (set "HOST=%SKILLOPT_HOST%") else (set "HOST=127.0.0.1")
 if defined SKILLOPT_PORT (set "PORT=%SKILLOPT_PORT%") else (set "PORT=8765")
 
@@ -37,6 +39,11 @@ if /i "%~1"=="--no-open" (
 )
 if /i "%~1"=="--seed-only" (
   set "SEED_ONLY=1"
+  shift
+  goto parse_args
+)
+if /i "%~1"=="--no-kill" (
+  set "NO_KILL=1"
   shift
   goto parse_args
 )
@@ -101,17 +108,9 @@ if errorlevel 1 (
   echo [start] Dependencies ready
 )
 
-call :is_up
-if not errorlevel 1 (
-  if "%DO_RESET%"=="1" (
-    echo [start] service is already running at %BASE_URL%
-    echo [start] stop it first before using --reset.
-    exit /b 1
-  )
-  echo [start] service already running: %BASE_URL%
-  if "%OPEN_BROWSER%"=="1" start "" "%BASE_URL%"
-  exit /b 0
-)
+call :prepare_runtime
+if errorlevel 2 exit /b 0
+if errorlevel 1 goto fail
 
 set "NEEDS_SEED=0"
 if "%DO_RESET%"=="1" set "NEEDS_SEED=1"
@@ -162,6 +161,40 @@ if not "%EXITCODE%"=="0" (
 exit /b 0
 
 rem ---------------------------------------------------------------------------
+:prepare_runtime
+if "%NO_KILL%"=="1" goto prepare_no_kill
+call :kill_existing
+call :is_up
+if not errorlevel 1 (
+  echo [start] port %PORT% is still in use after stopping the previous server.
+  echo [start] another process may own the port; retry with --port 8766 or stop it manually.
+  exit /b 1
+)
+exit /b 0
+
+:prepare_no_kill
+call :is_up
+if errorlevel 1 exit /b 0
+if "%DO_RESET%"=="1" (
+  echo [start] service is already running at %BASE_URL%.
+  echo [start] stop it first, or omit --no-kill to restart automatically.
+  exit /b 1
+)
+if "%SEED_ONLY%"=="1" (
+  echo [start] service is already running; --seed-only requires it to be stopped.
+  exit /b 1
+)
+echo [start] service already running: %BASE_URL%
+if "%OPEN_BROWSER%"=="1" start "" "%BASE_URL%"
+exit /b 2
+
+:kill_existing
+echo [start] stopping previous server ^(if any^) ...
+set "SKILLOPT_KILL_ROOT=%ROOT%"
+powershell -NoProfile -Command "$root=$env:SKILLOPT_KILL_ROOT; $targets = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*app.server*' -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase)) -or ($_.CommandLine.Contains($root))) }; if ($targets) { $targets | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Output ('[start] stopped PID ' + $_.ProcessId) } catch {} } } else { Write-Output '[start] no previous server process found' }; Start-Sleep -Milliseconds 600"
+exit /b 0
+
+rem ---------------------------------------------------------------------------
 :find_python
 set "PY_EXE="
 where py >nul 2>nul
@@ -207,6 +240,7 @@ echo   start.bat                  first run: setup + seed + start + open browser
 echo   start.bat --reset          wipe local demo data, re-seed, then start
 echo   start.bat --no-open        start without opening the browser
 echo   start.bat --seed-only      initialize/reset demo data only
+echo   start.bat --no-kill        do not stop an already running server
 echo   start.bat --port 8766      use another port ^(same as SKILLOPT_PORT^)
 echo   start.bat --host 0.0.0.0   listen on another address
 echo   start.bat --help           show this help

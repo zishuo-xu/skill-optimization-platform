@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Skill 优化平台 · 一键启动
 #
-#   ./start.sh                  # 首次自动创建环境/安装依赖/初始化示例，然后启动并打开浏览器
+#   ./start.sh                  # 环境准备 + 停止旧服务 + 首次初始化 + 启动并打开浏览器
 #   ./start.sh --reset          # 清空本地演示数据后重新初始化（再次执行基线 + 单轮优化）
 #   ./start.sh --no-open        # 启动服务但不自动打开浏览器
 #   ./start.sh --seed-only      # 只初始化/重置示例数据，不启动服务
+#   ./start.sh --no-kill        # 不停止已在运行的服务（已在运行时只打开浏览器）
 #   ./start.sh --port 8766      # 指定端口（同 SKILLOPT_PORT）
 #   ./start.sh --help
 #
@@ -19,11 +20,12 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 OPEN_BROWSER=1
 DO_RESET=0
 SEED_ONLY=0
+NO_KILL=0
 HOST="${SKILLOPT_HOST:-127.0.0.1}"
 PORT="${SKILLOPT_PORT:-8765}"
 
 usage() {
-  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 && /^set -euo pipefail/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"
 }
 
 while [ $# -gt 0 ]; do
@@ -31,6 +33,7 @@ while [ $# -gt 0 ]; do
     --reset) DO_RESET=1 ;;
     --no-open) OPEN_BROWSER=0 ;;
     --seed-only) SEED_ONLY=1 ;;
+    --no-kill) NO_KILL=1 ;;
     --port)
       shift
       [ $# -gt 0 ] || { echo "缺少 --port 参数" >&2; exit 2; }
@@ -110,6 +113,89 @@ PY
   fi
 }
 
+pgrep_lines() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    pgrep -fl "app.server" 2>/dev/null || true
+  else
+    pgrep -af "app.server" 2>/dev/null || true
+  fi
+}
+
+process_is_ours() {
+  local pid="$1" line cmd cwd
+  [ -n "$pid" ] || return 1
+  line="$(pgrep_lines | awk -v p="$pid" '$1 == p { print; exit }')"
+  [ -n "$line" ] || return 1
+  cmd="${line#* }"
+  case "$cmd" in
+    *"app.server"*) ;;
+    *) return 1 ;;
+  esac
+  case "$cmd" in
+    *"$ROOT"*) return 0 ;;
+  esac
+  cwd=""
+  if [ -e "/proc/$pid/cwd" ]; then
+    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  fi
+  if [ -z "$cwd" ] && command -v lsof >/dev/null 2>&1; then
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+  fi
+  [ -n "$cwd" ] && [ "$cwd" = "$ROOT" ]
+}
+
+kill_existing() {
+  [ "$NO_KILL" -eq 1 ] && return 0
+  local pids="" pid stale alive line
+  add_pid() {
+    case " $pids " in
+      *" $1 "*) ;;
+      *) pids="${pids:+$pids }$1" ;;
+    esac
+  }
+  if [ -f "$ROOT/.run/server.pid" ]; then
+    stale="$(cat "$ROOT/.run/server.pid" 2>/dev/null || true)"
+    rm -f "$ROOT/.run/server.pid"
+    if process_is_ours "$stale"; then add_pid "$stale"; fi
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      pid="${line%% *}"
+      [ -n "$pid" ] || continue
+      [ "$pid" = "$$" ] && continue
+      case "${line#* }" in
+        *"app.server"*) ;;
+        *) continue ;;
+      esac
+      if process_is_ours "$pid"; then add_pid "$pid"; fi
+    done < <(pgrep_lines)
+  fi
+  if [ -z "$pids" ]; then
+    if is_up; then
+      fail "端口 ${PORT} 已被非本平台进程占用：${BASE_URL}。为避免误杀未自动终止；请用 --port 换端口或手动处理。"
+    fi
+    return 0
+  fi
+  log "停止旧服务进程：$pids"
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  for _ in $(seq 1 20); do
+    alive=0
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then alive=1; fi
+    done
+    [ "$alive" -eq 0 ] && break
+    sleep 0.3
+  done
+  for pid in $pids; do
+    if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+  done
+  for _ in $(seq 1 10); do
+    is_up || break
+    sleep 0.3
+  done
+  log "旧服务已停止"
+}
+
 open_browser() {
   [ "$OPEN_BROWSER" -eq 1 ] || return 0
   if command -v open >/dev/null 2>&1 && [ "$(uname -s)" = "Darwin" ]; then
@@ -121,13 +207,20 @@ open_browser() {
   fi
 }
 
-if is_up; then
-  if [ "$DO_RESET" -eq 1 ]; then
-    fail "检测到服务已在运行：${BASE_URL}。--reset 需要先停止服务（Ctrl+C 或 pkill -f 'python -m app.server'）后重试。"
+if [ "$NO_KILL" -eq 1 ]; then
+  if is_up; then
+    if [ "$DO_RESET" -eq 1 ] || [ "$SEED_ONLY" -eq 1 ]; then
+      fail "服务已在运行：${BASE_URL}。--reset/--seed-only 需要先停止服务；去掉 --no-kill 会自动停止旧服务。"
+    fi
+    log "服务已在运行（--no-kill）：$BASE_URL"
+    open_browser
+    exit 0
   fi
-  log "服务已在运行：$BASE_URL"
-  open_browser
-  exit 0
+else
+  kill_existing
+  if is_up; then
+    fail "旧服务未能停止：${BASE_URL}。请手动检查端口占用后重试。"
+  fi
 fi
 
 # 5. 首次启动或显式 --reset 时初始化演示数据
@@ -176,6 +269,7 @@ cleanup() {
     kill -TERM "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
+  rm -f "$ROOT/.run/server.pid"
 }
 trap cleanup EXIT
 on_signal() {
@@ -187,6 +281,8 @@ trap on_signal INT TERM HUP
 log "启动服务：${BASE_URL}（按 Ctrl+C 停止）"
 "$VENV_PY" -m app.server &
 SERVER_PID=$!
+mkdir -p "$ROOT/.run"
+printf '%s\n' "$SERVER_PID" > "$ROOT/.run/server.pid"
 
 # 7. 等待健康检查通过，再打开浏览器并打印演示入口
 ready=0

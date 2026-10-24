@@ -21,9 +21,10 @@ cd skill-optimization-platform
 ./start.sh
 ```
 
-`start.sh` 会自动完成：创建 `.venv` → 安装依赖 → 首次初始化示例项目（导入 Skill 包、
-发布环境与数据集、跑基线 + 一次单轮优化）→ 启动服务并打开浏览器
+`start.sh` 会自动完成：**停止本平台旧服务** → 创建 `.venv` → 安装依赖 → 首次初始化示例项目
+（导入 Skill 包、发布环境与数据集、跑基线 + 一次单轮优化）→ 启动服务并打开浏览器
 （**http://127.0.0.1:8765**）。macOS 也可以直接双击 `start.command`。
+重复执行会重新启动并加载最新代码，不会残留旧进程。
 
 **Windows**（Windows 10/11 + Python 3.11+，安装时勾选 “Add python.exe to PATH”）：
 
@@ -32,7 +33,9 @@ start.bat
 ```
 
 也可以直接双击 `start.bat`。参数与 `start.sh` 相同：
-`--reset`、`--no-open`、`--seed-only`、`--port 8766`、`--host 0.0.0.0`、`--help`。
+`--reset`、`--no-open`、`--seed-only`、`--no-kill`、`--port 8766`、`--host 0.0.0.0`、`--help`。
+`start.bat` 默认也会先停止本仓库的旧服务（仅匹配本目录的 `python -m app.server`），
+避免端口占用或旧代码残留；端口被其他程序占用时不会误杀，会给出提示。
 `start.bat` 使用系统的 `py`/`python` 创建 `.venv`，首次需联网安装依赖；PowerShell 用于健康检查与自动打开浏览器。
 
 常用参数：
@@ -40,7 +43,8 @@ start.bat
 ```bash
 ./start.sh --reset       # 清空本地演示数据后重新初始化（会重新执行基线 + 单轮优化）
 ./start.sh --no-open     # 启动服务但不自动打开浏览器
-./start.sh --seed-only   # 只初始化/重置示例数据，不启动服务
+./start.sh --seed-only   # 只初始化/重置示例数据（会先停止旧服务）
+./start.sh --no-kill     # 不停止已运行的服务（已在运行时只打开浏览器）
 ./start.sh --port 8766   # 指定端口
 ./start.sh --help
 ```

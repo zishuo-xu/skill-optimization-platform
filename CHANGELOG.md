@@ -9,9 +9,10 @@
 
 ### Added
 
-- **一键启动**：`./start.sh`（macOS/Linux）与 `start.bat`（Windows 10/11）自动检查 Python、
-  创建 `.venv`、安装依赖、首次初始化示例（基线 + 单轮优化）、启动并打开浏览器；
-  支持 `--reset/--no-open/--seed-only/--port/--host/--help`；macOS 可双击 `start.command`。
+- **一键启动**：`./start.sh`（macOS/Linux）与 `start.bat`（Windows 10/11）自动**停止旧服务**、
+  检查 Python、创建 `.venv`、安装依赖、首次初始化示例（基线 + 单轮优化）、启动并打开浏览器；
+  支持 `--reset/--no-open/--seed-only/--no-kill/--port/--host/--help`；macOS 可双击
+  `start.command`。旧服务检测只匹配本仓库的 `app.server` 进程，端口被其他程序占用时不会误杀。
 - **项目与版本**：项目列表/概览、Skill 包导入（ZIP/文件夹 JSON，multipart 上传）、
   manifest 校验与安全检查、草稿/发布/不可变版本、导出 ZIP、版本比较、设为当前（回滚）。
 - **执行环境**：业务 Prompt、业务模型（demo/标准 API/企业网关 WebSocket/Python 流程）、

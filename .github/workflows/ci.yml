@@ -75,5 +75,17 @@ jobs:
             & taskkill /PID $proc.Id /T /F | Out-Null
             throw 'index.html was not served'
           }
-          & taskkill /PID $proc.Id /T /F | Out-Null
-          Write-Host 'Windows one-click startup OK'
+          $oldPid = (Get-NetTCPConnection -LocalPort 8765 -State Listen).OwningProcess
+          Write-Host "server PID before restart: $oldPid"
+          & cmd /c start.bat --seed-only | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            & taskkill /PID $proc.Id /T /F | Out-Null
+            throw 'start.bat --seed-only failed while restarting'
+          }
+          Start-Sleep -Seconds 1
+          $stillListening = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
+          if ($stillListening) {
+            & taskkill /PID $proc.Id /T /F | Out-Null
+            throw 'start.bat did not stop the existing server'
+          }
+          Write-Host 'Windows one-click startup + kill-existing OK'

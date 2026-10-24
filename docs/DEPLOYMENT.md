@@ -16,8 +16,10 @@ cd skill-optimization-platform
 ./start.sh
 ```
 
-`./start.sh` 一键完成：Python 3.11+ 检查 → 创建 `.venv` → 安装依赖 → 首次初始化示例
-（基线 + 单轮优化）→ 启动服务并打开浏览器。macOS 可双击 `start.command`。
+`./start.sh` 一键完成：**停止本平台旧服务** → Python 3.11+ 检查 → 创建 `.venv` →
+安装依赖 → 首次初始化示例（基线 + 单轮优化）→ 启动服务并打开浏览器。macOS 可双击
+`start.command`。重复执行即为“重启”，不会残留旧进程。停止旧服务只匹配本目录启动的
+`python -m app.server`；端口被其他程序占用时不会误杀，会提示换端口。
 
 **Windows 10/11**：安装 Python 3.11+（python.org，勾选 “Add python.exe to PATH”），
 双击仓库根目录的 `start.bat`，或在 cmd 中执行：
@@ -28,8 +30,9 @@ start.bat --reset
 start.bat --port 8766
 ```
 
-`start.bat` 会优先使用 `py -3`，其次 `python`；自动创建 `.venv\Scripts\python.exe`、
-安装依赖、初始化示例、启动服务，并用 PowerShell 等待健康检查后打开浏览器。
+`start.bat` 会优先使用 `py -3`，其次 `python`；自动**停止本仓库旧服务**、创建
+`.venv\Scripts\python.exe`、安装依赖、初始化示例、启动服务，并用 PowerShell 等待健康检查后
+打开浏览器。`--no-kill` 可保留已在运行的服务。
 若双击后闪退，请在 cmd 中运行以查看错误信息。
 
 | 命令 | 说明 |
@@ -37,7 +40,8 @@ start.bat --port 8766
 | `./start.sh` | 一键启动（幂等：已有数据会跳过初始化） |
 | `./start.sh --reset` | 清空 `data/` 后重新初始化并启动 |
 | `./start.sh --no-open` | 启动但不打开浏览器 |
-| `./start.sh --seed-only` | 只初始化/重置示例数据 |
+| `./start.sh --seed-only` | 只初始化/重置示例数据（会先停止旧服务） |
+| `./start.sh --no-kill` | 不停止已运行的服务；已在运行时只打开浏览器 |
 | `./start.sh --port 8766` | 指定端口 |
 | `./start.sh --help` | 查看参数 |
 | `start.bat` | Windows 等价的一键启动（同样支持 `--reset/--no-open/--seed-only/--port/--host/--help`） |
