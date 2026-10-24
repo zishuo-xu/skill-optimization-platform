@@ -178,7 +178,12 @@ export function formatRoutes(routes) {
 
 export function formatToolCall(call) {
   if (!call || !call.name) return '—';
-  const args = call.arguments ?? call.args ?? {};
+  let args = call.arguments ?? call.args ?? {};
+  // Workflow-style calls wrap the business args in arguments.args.
+  if (args && typeof args === 'object' && args.args && typeof args.args === 'object'
+      && (args.method !== undefined || args.request !== undefined || args.script !== undefined)) {
+    args = args.args;
+  }
   const entries = Object.entries(args);
   if (!entries.length) return `${call.name}()`;
   const inner = entries

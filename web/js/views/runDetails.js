@@ -1238,6 +1238,58 @@ export default async function runDetailsView(container, ctx) {
     }
   }
 
+  function _scopedCallArguments(call) {
+    const args = call && typeof call.arguments === 'object' && call.arguments
+      ? call.arguments
+      : {};
+    if (args && typeof args === 'object' && Object.prototype.hasOwnProperty.call(args, 'args')
+        && (Object.prototype.hasOwnProperty.call(args, 'method')
+          || Object.prototype.hasOwnProperty.call(args, 'script')
+          || Object.prototype.hasOwnProperty.call(args, 'request'))) {
+      return args.args || {};
+    }
+    return args;
+  }
+
+  function expectedCallBlock(call, index) {
+    const path = call.arguments_path;
+    const args = call.arguments || {};
+    return h(
+      'div.expected-call',
+      null,
+      h(
+        'div.row',
+        { style: { gap: '6px', alignItems: 'center' } },
+        h('span.mono.xsmall', { text: `#${index + 1} ${call.name || '—'}` }),
+        path ? chip(`仅比较 arguments.${path}`, 'neutral') : chip('完整 arguments', 'neutral')
+      ),
+      h('pre.code-block__pre.expected-call__args', {
+        text: safeJsonStringify(args, 2),
+        style: { maxHeight: '200px', whiteSpace: 'pre-wrap', margin: '6px 0 0' },
+      })
+    );
+  }
+
+  function actualCallBlock(call) {
+    if (!call) return h('p.muted.small', { text: '无业务工具调用' });
+    const args = call && typeof call.arguments === 'object' && call.arguments
+      ? call.arguments
+      : {};
+    const scoped = _scopedCallArguments(call);
+    const method = args && typeof args === 'object' ? args.method : null;
+    return h(
+      'div.actual-call',
+      null,
+      h('div.mono.xsmall', {
+        text: `${call.name || '—'}${method ? ` · ${method}` : ''}`,
+      }),
+      h('pre.code-block__pre.actual-call__args', {
+        text: safeJsonStringify(scoped, 2),
+        style: { maxHeight: '200px', whiteSpace: 'pre-wrap', margin: '6px 0 0' },
+      })
+    );
+  }
+
   function sideResultBlock(side, label) {
     if (!side) return h('div.compare-column', null, h('div.compare-column__head', null, h('span', { text: label })), h('div.compare-column__body', null, h('p.muted.small', { text: '无结果' })));
     return h(
@@ -1259,7 +1311,7 @@ export default async function runDetailsView(container, ctx) {
           null,
           h('span.xsmall.muted', { text: '工具调用' }),
           (side.tool_calls || []).length
-            ? h('div', null, ...side.tool_calls.map((call) => h('div.mono.xsmall', { text: formatToolCall(call) })))
+            ? h('div.stack', null, ...side.tool_calls.map(actualCallBlock))
             : h('div.small.muted', { text: '无业务工具调用' })
         ),
         side.error_code || side.reason
@@ -1301,13 +1353,13 @@ export default async function runDetailsView(container, ctx) {
           h(
             'div.param-diff__cell',
             null,
-            h('span.param-diff__label', { text: '预期' }),
+            h('span.param-diff__label', { text: '预期（数据集）' }),
             h('span.param-diff__value.is-expected', { text: diff.expected === undefined ? '（缺失）' : typeof diff.expected === 'string' ? diff.expected : safeJsonStringify(diff.expected, 0) })
           ),
           h(
             'div.param-diff__cell',
             null,
-            h('span.param-diff__label', { text: '实际' }),
+            h('span.param-diff__label', { text: '实际（运行结果）' }),
             h('span.param-diff__value.is-actual', { text: diff.actual === undefined ? '（缺失）' : typeof diff.actual === 'string' ? diff.actual : safeJsonStringify(diff.actual, 0) })
           )
         )
@@ -1347,13 +1399,20 @@ export default async function runDetailsView(container, ctx) {
   function buildCaseDetail(detail, events) {
     const expected = detail.expected || {};
     const routes = expected.routes || [];
+    const expectedCalls = expected.tool_calls || [];
+    const baselineOnly = state.run.mode === 'baseline';
     return h(
       'div.case-detail',
       null,
       h(
-        'div',
+        'div.case-section',
         null,
-        h('div.case-section__title', null, h('span', { text: 'Query 与预期' }), expected.action ? chip(actionLabel(expected.action), 'accent') : null),
+        h(
+          'div.case-section__title',
+          null,
+          h('span', { text: '数据集预期（评分依据）' }),
+          expected.action ? chip(actionLabel(expected.action), 'accent') : null
+        ),
         h('div.case-detail__query', { text: detail.query || '—' }),
         h(
           'div.row',
@@ -1362,18 +1421,32 @@ export default async function runDetailsView(container, ctx) {
           detail.critical ? chip('关键案例', 'warning', { iconName: 'alert' }) : null,
           routes.length ? h('span.route-pill', { text: formatRoutes(routes) }) : null,
           detail.changeType ? statusBadge(detail.changeType, 'change') : null
-        )
+        ),
+        expected.missing_fields?.length
+          ? h('p.small', null, h('span.muted', { text: '缺少字段：' }), expected.missing_fields.join('、'))
+          : null,
+        expectedCalls.length
+          ? h('div.stack', { style: { marginTop: '10px' } },
+              ...expectedCalls.map((call, index) => expectedCallBlock(call, index)))
+          : h('p.muted.small', { style: { marginTop: '8px' }, text: '该案例不期望业务工具调用。' })
       ),
       h(
-        'div',
+        'div.case-section',
         null,
-        h('div.case-section__title', null, h('span', { text: '基线与候选' })),
-        h('div.compare-columns', null, sideResultBlock(detail.baseline, '基线'), sideResultBlock(detail.candidate, '候选'))
+        h(
+          'div.case-section__title',
+          null,
+          h('span', { text: baselineOnly ? '实际结果（本次基线运行）' : '实际结果（基线与候选）' }),
+          baselineOnly ? chip('无候选结果', 'neutral') : null
+        ),
+        h('div.compare-columns', null,
+          sideResultBlock(detail.baseline, '基线实际'),
+          sideResultBlock(detail.candidate, baselineOnly ? '候选（本次未运行）' : '候选实际'))
       ),
       h(
-        'div',
+        'div.case-section',
         null,
-        h('div.case-section__title', null, h('span', { text: '参数差异' })),
+        h('div.case-section__title', null, h('span', { text: '参数差异（预期 vs 实际）' })),
         paramDiffBlock(detail)
       ),
       h(

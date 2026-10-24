@@ -4763,3 +4763,39 @@ pre,
   margin-left: auto;
 }
 
+
+/* Case drawer: make expected vs actual visually distinct. */
+.expected-call,
+.actual-call {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-soft);
+}
+.actual-call {
+  border-left: 3px solid var(--accent);
+}
+.expected-call {
+  border-left: 3px solid var(--warning, #c9a227);
+}
+.expected-call + .expected-call,
+.actual-call + .actual-call {
+  margin-top: 8px;
+}
+.param-diff__label {
+  display: inline-block;
+  min-width: 76px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.param-diff__value.is-expected {
+  color: var(--warning, #c9a227);
+}
+.param-diff__value.is-actual {
+  color: var(--accent);
+}
+.expected-call__args,
+.actual-call__args {
+  font-size: 12px;
+  line-height: 1.6;
+}

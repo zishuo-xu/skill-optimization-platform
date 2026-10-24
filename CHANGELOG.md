@@ -41,6 +41,10 @@
 
 ### Changed
 
+- **案例详情区分预期与实际**：新增「数据集预期（评分依据）」区块，直接展示预期
+  `tool_calls` / `args`；「实际结果」区块明确展示实际路线、工具、`args` 内联 JSON，
+  参数差异标注「预期（数据集）/实际（运行结果）」；工具调用摘要自动展开
+  `arguments.args`，不再显示整段 method/script/request 包装。
 - **支持只比较工具参数的子树**：数据集 `tool.args` / canonical `arguments_path`（如
   `args`）让 A 只比较 `arguments.args`，忽略固定的 method/script/request 包装；
   修图示例项目已改为该模式，A 直接关注子技能参数。
