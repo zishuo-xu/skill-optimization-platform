@@ -16,24 +16,31 @@
 
 ### 2.1 Skill 包
 
-包根目录必须包含 `SKILL.md` 与 `manifest.json`：
+ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导入后规范化为 `SKILL.md`），
+允许 ZIP 外层多套一个目录。子技能位于 `reference/` 或 `references/` 下，支持嵌套目录；
+`manifest.json` 可选，缺省时自动生成映射：
 
 ```json
 {
   "version": 1,
   "main": "SKILL.md",
   "subskills": [
-    {"skill_id": "task_query", "name": "任务查询", "path": "references/task_query.md",
-     "description": "查询项目或成员的任务列表、任务详情与状态"}
+    {"skill_id": "task_query", "name": "任务查询", "path": "reference/task_query.md",
+     "description": "查询项目或成员的任务列表、任务详情与状态"},
+    {"skill_id": "task_assign", "name": "任务指派", "path": "reference/task_assign/SKILL.md"}
   ]
 }
 ```
+
+无 manifest 时：`skill_id` 取文件名（嵌套的 `<id>/SKILL.md` 取目录名），规范化为
+`[a-z][a-z0-9_]*`；展示名取第一个 Markdown 标题；描述取第一段正文。无法生成合法 ID 时
+回退为 `skill_N`。显式 manifest 仍优先，用于稳定 ID 与顺序。
 
 `app/skill_package.py`（Lead 负责）提供：
 - `import_zip(data: bytes) -> PackageImport`：安全检查、解析 manifest、返回
   `{"files": {rel: bytes}, "manifest": {...}, "file_hashes": [...], "content_hash": str,
     "errors": [{"code","path","message"}], "warnings": [...]}`。错误码：
-  `missing_main` `missing_manifest` `bad_manifest` `duplicate_skill_id`
+  `missing_main` `bad_manifest` `duplicate_skill_id`
   `duplicate_path` `missing_reference` `dangling_reference` `path_traversal`
   `absolute_path` `symlink` `encoding_error` `unsafe_zip` `too_large`。
 - `validate_manifest(manifest, files) -> list[error]`。

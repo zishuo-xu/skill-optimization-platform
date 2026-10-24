@@ -53,12 +53,56 @@ bash scripts/setup.sh
 ./run.sh
 ```
 
+### Skill 包格式
+
+支持 ZIP 导入（「Skill 包」页 →「导入 ZIP」）。ZIP 根目录必须包含主 Skill 文件，
+推荐结构：
+
+```text
+your-skill.zip
+├── SKILL.md                  # 必需；大小写均可，导入后规范化为 SKILL.md
+├── manifest.json             # 可选；缺省时自动生成
+└── reference/                # 也可以是 references/
+    ├── task_query.md         # 平铺子技能
+    └── task_assign/
+        └── SKILL.md          # 或按子技能目录嵌套
+```
+
+- **主文件**：根目录 `SKILL.md`（也兼容 `skill.md`）；ZIP 外面多套一层目录（如
+  `my-skill/SKILL.md`）也可，导入时会自动去掉外层目录。
+- **子技能**：`reference/` 或 `references/` 下的 `.md` 文件，支持再嵌套子目录；
+  每个文件是一个子技能。
+- **manifest.json 可选**。不提供时按 `reference(s)/` 自动生成映射：
+  `skill_id` 取文件名（嵌套的 `xxx/SKILL.md` 取目录名），规范化为小写字母/数字/下划线；
+  展示名取文件第一个 Markdown 标题，描述取第一段正文。中文或特殊文件名无法稳定生成
+  `skill_id` 时会回退为 `skill_1`、`skill_2`。导入结果会返回 `manifest_generated` 警告，
+  请在页面上核对子技能清单。
+- **建议显式提供 manifest**（尤其是中文文件名、需要稳定 ID 或顺序时）：
+
+```json
+{
+  "version": 1,
+  "main": "SKILL.md",
+  "subskills": [
+    {"skill_id": "task_query", "name": "任务查询", "path": "reference/task_query.md",
+     "description": "查询项目任务"},
+    {"skill_id": "task_assign", "name": "任务指派", "path": "reference/task_assign/SKILL.md"}
+  ]
+}
+```
+
+- 文件 UTF-8 编码；拒绝路径穿越、绝对路径与符号链接；首期只允许改写已有 Markdown 文件，
+  脚本和资源原样保存但不自动执行。
+- 打包方式：把 `SKILL.md`、`reference/`（及可选 `manifest.json`）放在 ZIP 根目录即可；
+  macOS/Linux 可在 Skill 目录内执行 `zip -r ../skill.zip .`，Windows 可在文件夹内全选后
+  “发送到 → 压缩(zipped)文件夹”。浏览器直接选择文件夹上传的 UI 暂未提供，请使用 ZIP。
+
 打开页面左侧的示例项目「示例项目：任务管理」，进入「运行详情」查看基线与优化运行。
 
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 219 passed
+.venv/bin/python -m pytest -q        # 223 passed
 ```
 
 ### 文档导航

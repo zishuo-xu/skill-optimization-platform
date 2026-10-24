@@ -30,10 +30,13 @@
 - **安全**：执行器不接收 expected/答案、优化器不读验证/最终测试集、补丁白名单与静态检查、
   凭据脱敏、fixture 未命中不访问真实服务。
 - **文档**：README、架构、API、部署、演示、契约、验收记录、需求追溯、样例说明。
-- **测试**：219 条 pytest 用例（A01–A20），GitHub Actions CI。
+- **测试**：223 条 pytest 用例（A01–A20），GitHub Actions CI。
 
 ### Changed
 
+- **Skill 包导入兼容常见结构**：根目录 `SKILL.md` / `skill.md` 均可（自动规范化），
+  `reference/` 与 `references/` 均可，支持嵌套 `<子技能>/SKILL.md`；无 `manifest.json`
+  时自动生成 `skill_id`、展示名与描述，显式 manifest 仍优先；导入响应返回生成/规范化警告。
 - **执行环境页重构**：顶部增加环境快照摘要；配置按「业务接入 / 执行与工具 / 优化与验收」
   三组组织；折叠卡片标题直接显示关键摘要；只读版本改为摘要展示而非成片禁用输入框；
   按 provider 精简字段（演示模型/标准 API/企业网关/Python 流程分别展示）；

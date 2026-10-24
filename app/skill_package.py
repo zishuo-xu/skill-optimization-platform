@@ -57,6 +57,85 @@ def _decode_text(data: bytes) -> str | None:
     return None
 
 
+REFERENCE_ROOTS = {"reference", "references"}
+
+
+def _root_main_name(files: Mapping[str, bytes]) -> str | None:
+    """Return the root-level main markdown file, case-insensitive on the name."""
+    for name in sorted(files):
+        if "/" not in name and name.lower() == "skill.md":
+            return name
+    return None
+
+
+def _is_reference_md(name: str) -> bool:
+    if not name.endswith(".md"):
+        return False
+    parts = name.split("/")
+    return len(parts) >= 2 and parts[0].lower() in REFERENCE_ROOTS
+
+
+def _normalise_root_main(files: dict[str, bytes]) -> tuple[dict[str, bytes], bool]:
+    """Rename a lowercase ``skill.md`` at the root to ``SKILL.md``."""
+    if _root_main_name(files) == "SKILL.md" or _root_main_name(files) is None:
+        return files, False
+    renamed = dict(files)
+    actual = _root_main_name(files)
+    if actual is None:
+        return files, False
+    renamed["SKILL.md"] = renamed.pop(actual)
+    return renamed, True
+
+
+def _align_manifest_main(manifest: dict[str, Any],
+                         files: Mapping[str, bytes]) -> dict[str, Any]:
+    main = manifest.get("main") or "SKILL.md"
+    if main in files:
+        return manifest
+    if "/" not in main:
+        for name in files:
+            if "/" not in name and name.lower() == str(main).lower():
+                manifest = dict(manifest)
+                manifest["main"] = name
+                return manifest
+    return manifest
+
+
+def _sanitize_skill_id(raw: Any, index: int) -> str:
+    value = re.sub(r"[^a-z0-9_]+", "_", str(raw or "").strip().lower()).strip("_")
+    if not value or not value[0].isalpha():
+        value = f"skill_{index}"
+    value = value[:60]
+    if len(value) < 2:
+        value = f"skill_{index}"
+    return value
+
+
+def _markdown_heading(text: str) -> str:
+    for line in text.splitlines():
+        match = re.match(r"^#\s+(.+?)\s*$", line.strip())
+        if match:
+            return match.group(1)[:120]
+    return ""
+
+
+def _markdown_description(text: str) -> str:
+    in_code = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code or not stripped:
+            continue
+        if stripped.startswith(("#", ">", "-", "*", "|", "!")):
+            continue
+        if stripped.startswith("<!--"):
+            continue
+        return stripped[:200]
+    return ""
+
+
 def _read_zip(data: bytes) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     files: dict[str, bytes] = {}
@@ -72,6 +151,11 @@ def _read_zip(data: bytes) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
         rel = _safe_rel(info.filename)
         if rel is None:
             errors.append(_err("path_traversal", f"非法路径: {info.filename}", info.filename))
+            continue
+        # Ignore OS metadata produced by Finder/Explorer, not part of the package.
+        base_name = Path(rel).name
+        if (rel.startswith("__MACOSX/") or base_name in (".DS_Store", "Thumbs.db")
+                or base_name.startswith("._")):
             continue
         if info.is_dir():
             continue
@@ -92,29 +176,46 @@ def _read_zip(data: bytes) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
 
 
 def _strip_single_root(files: dict[str, bytes]) -> tuple[dict[str, bytes], bool]:
-    if "SKILL.md" in files:
+    if _root_main_name(files):
         return files, False
     roots = {name.split("/")[0] for name in files if "/" in name}
     if len(roots) == 1:
         root = next(iter(roots))
-        if f"{root}/SKILL.md" in files:
-            prefix = root + "/"
-            return {name[len(prefix):]: data for name, data in files.items()
-                    if name.startswith(prefix)}, True
+        prefix = root + "/"
+        stripped = {name[len(prefix):]: data for name, data in files.items()
+                    if name.startswith(prefix)}
+        if _root_main_name(stripped):
+            return stripped, True
     return files, False
 
 
 def generate_manifest(files: Mapping[str, bytes], main: str = "SKILL.md") -> dict[str, Any]:
+    """Build a stable mapping for packages without manifest.json.
+
+    Accepts both ``reference/`` and ``references/`` roots, markdown files at any
+    depth below them, and derives readable names from the first markdown heading.
+    """
     subskills: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
     for name in sorted(files):
-        if not name.startswith("references/") or not name.endswith(".md"):
+        if not _is_reference_md(name):
             continue
-        skill_id = Path(name).stem
+        stem = Path(name).stem
+        parent = Path(name).parent.name
+        raw_id = parent if stem.lower() in ("skill", "index", "readme") else stem
+        skill_id = _sanitize_skill_id(raw_id, len(subskills) + 1)
+        base_id = skill_id
+        suffix = 2
+        while skill_id in used_ids:
+            skill_id = f"{base_id}_{suffix}"
+            suffix += 1
+        used_ids.add(skill_id)
+        text = _decode_text(files[name]) or ""
         subskills.append({
             "skill_id": skill_id,
-            "name": skill_id,
+            "name": _markdown_heading(text) or stem or skill_id,
             "path": name,
-            "description": "",
+            "description": _markdown_description(text),
         })
     return {"version": 1, "main": main, "subskills": subskills}
 
@@ -126,10 +227,12 @@ def parse_manifest(files: Mapping[str, bytes]) -> tuple[dict[str, Any] | None,
     warnings: list[dict[str, Any]] = []
     raw = files.get("manifest.json")
     if raw is None:
-        manifest = generate_manifest(files)
+        main = _root_main_name(files) or "SKILL.md"
+        manifest = generate_manifest(files, main)
         if manifest["subskills"]:
-            warnings.append(_warn("manifest_generated",
-                                  "未提供 manifest.json，已按 references/*.md 自动生成映射"))
+            warnings.append(_warn(
+                "manifest_generated",
+                "未提供 manifest.json，已按 reference(s)/ 下的 Markdown 文件自动生成 skill_id 映射"))
         return manifest, errors, warnings
     text = _decode_text(raw)
     if text is None:
@@ -191,8 +294,8 @@ def validate_manifest(manifest: Mapping[str, Any],
         elif _decode_text(files[path]) is None:
             errors.append(_err("encoding_error", f"文件不是 UTF-8 编码: {path}", path))
     for name in files:
-        if name.startswith("references/") and name.endswith(".md") and name not in referenced:
-            warnings.append(_warn("dangling_reference", f"references 文件未在 manifest 中登记: {name}", name))
+        if _is_reference_md(name) and name not in referenced:
+            warnings.append(_warn("dangling_reference", f"reference(s) 文件未在 manifest 中登记: {name}", name))
     if not subskills:
         warnings.append(_warn("no_subskills", "包内没有子技能映射"))
     if len(seen_ids) != len(subskills):
@@ -207,13 +310,17 @@ def import_package(data: bytes) -> dict[str, Any]:
         return {"files": {}, "manifest": None, "errors": errors, "warnings": [],
                 "content_hash": "", "file_hashes": []}
     files, stripped = _strip_single_root(files)
+    files, renamed_main = _normalise_root_main(files)
     warnings: list[dict[str, Any]] = []
     if stripped:
         warnings.append(_warn("root_folder_stripped", "已移除 ZIP 外层目录，按包根目录处理"))
+    if renamed_main:
+        warnings.append(_warn("main_file_normalized", "已把根目录 skill.md 规范化为 SKILL.md"))
     manifest, manifest_errors, manifest_warnings = parse_manifest(files)
     errors.extend(manifest_errors)
     warnings.extend(manifest_warnings)
     if manifest is not None:
+        manifest = _align_manifest_main(dict(manifest), files)
         more_errors, more_warnings = validate_manifest(manifest, files)
         errors.extend(more_errors)
         warnings.extend(more_warnings)
@@ -264,10 +371,18 @@ def import_json_files(files_payload: list[Mapping[str, Any]]) -> dict[str, Any]:
     if errors:
         return {"files": {}, "manifest": None, "errors": errors, "warnings": [],
                 "content_hash": "", "file_hashes": []}
+    files, stripped = _strip_single_root(files)
+    files, renamed_main = _normalise_root_main(files)
+    warnings: list[dict[str, Any]] = []
+    if stripped:
+        warnings.append(_warn("root_folder_stripped", "已移除上传目录的外层目录，按包根目录处理"))
+    if renamed_main:
+        warnings.append(_warn("main_file_normalized", "已把根目录 skill.md 规范化为 SKILL.md"))
     manifest, manifest_errors, manifest_warnings = parse_manifest(files)
     errors.extend(manifest_errors)
-    warnings = list(manifest_warnings)
+    warnings.extend(manifest_warnings)
     if manifest is not None:
+        manifest = _align_manifest_main(dict(manifest), files)
         more_errors, more_warnings = validate_manifest(manifest, files)
         errors.extend(more_errors)
         warnings.extend(more_warnings)

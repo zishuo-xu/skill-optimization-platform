@@ -223,7 +223,9 @@ async def create_skill_version(request: Request) -> Response:
             project_id, zip_bytes=zip_bytes, files_payload=None,
             status=body["status"], message=body["message"],
             parent_id=body["parent_id"], set_current=body["set_current"])
-        return ok(services.skill_version_detail(version["id"]), status_code=201)
+        detail = services.skill_version_detail(version["id"])
+        detail["warnings"] = version.get("warnings") or []
+        return ok(detail, status_code=201)
     body_bytes = await request.body()
     if "application/json" in content_type:
         body = await json_body(request)
@@ -244,7 +246,9 @@ async def create_skill_version(request: Request) -> Response:
         message=body.get("message") or "",
         parent_id=body.get("parent_id"),
         set_current=body.get("set_current"))
-    return ok(services.skill_version_detail(version["id"]), status_code=201)
+    detail = services.skill_version_detail(version["id"])
+    detail["warnings"] = version.get("warnings") or []
+    return ok(detail, status_code=201)
 
 
 async def list_skill_versions(request: Request) -> Response:

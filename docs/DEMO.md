@@ -83,6 +83,8 @@ start.bat --reset
   展开后才是详细字段。数值参数统一为单行输入，高级参数（采样、超时、金额等）再折叠一层。
   发布后整页只读，内容以摘要形式展示；点击任一接入方式会提示创建草稿，
   确认后在草稿中切换（需保存/发布后生效）。
+- **Skill 包导入**：ZIP 根目录放 `SKILL.md` 与 `reference/`（或 `references/`）即可；
+  `manifest.json` 可选，缺省时自动生成映射，详见 [README「Skill 包格式」](../README.md#skill-包格式)。
 - **数据集**：45 案例表格、搜索/筛选/标签；案例侧栏展示 query、上下文、预期路线、
   预期工具与 fixture；导入弹窗先上传→展示统计/错误行/划分预览/覆盖→发布。
 - **版本记录**：Skill/环境/数据集版本、父子关系、来源运行、比较、下载、设为当前（回滚）；
@@ -108,7 +110,7 @@ curl -s -OJ http://127.0.0.1:8765/api/v3/runs/$RID/report.json
 ## 5. 自动化验收
 
 ```bash
-.venv/bin/python -m pytest -q     # 219 passed
+.venv/bin/python -m pytest -q     # 223 passed
 ```
 
 A01–A20 的用例映射见 [VERIFICATION.md](VERIFICATION.md) 与
