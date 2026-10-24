@@ -567,6 +567,7 @@ export default async function environmentView(container, ctx) {
       actions: [
         provider === 'enterprise_ws' ? chip('企业网关', 'info') : null,
         provider === 'flow' ? chip('流程级适配', 'purple') : null,
+        provider === 'demo_scripted' ? chip('示例确定性模型', 'info') : null,
         button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', onClick: testConnection, disabled: !EDITABLE() || state.testLoading }),
       ].filter(Boolean),
       body: h(
@@ -588,8 +589,15 @@ export default async function environmentView(container, ctx) {
                 `button.segmented__btn${provider === option.value ? ' is-active' : ''}`,
                 {
                   type: 'button',
-                  disabled: !EDITABLE(),
-                  onclick: () => {
+                  title: EDITABLE()
+                    ? `切换为${option.label}`
+                    : '当前版本已发布，只读；点击可创建草稿后切换',
+                  onclick: async () => {
+                    if (provider === option.value) return;
+                    if (!EDITABLE()) {
+                      await createDraftWithProvider(option, provider);
+                      return;
+                    }
                     state.form.model_config.provider = option.value;
                     markDirty();
                     renderForm();
@@ -600,6 +608,14 @@ export default async function environmentView(container, ctx) {
             )
           )
         ),
+        !EDITABLE()
+          ? h('p.form-field__hint', {
+              text:
+                provider === 'demo_scripted'
+                  ? '当前版本使用示例确定性模型 demo_scripted（离线演示）。点击上方任一接入方式会提示创建草稿，在草稿中切换到真实 API / 企业网关 / Python 流程后再发布。'
+                  : '当前版本已发布，内容只读。点击上方接入方式会提示创建草稿，修改只在草稿中进行，发布后才生效。',
+            })
+          : null,
         modelFields(provider),
         provider === 'enterprise_ws'
           ? h('p.form-field__hint', { text: '默认每请求独立连接；复用需要网关提供请求 ID 与多路复用协议。中途断开记 stream_interrupted，不跨连接拼接。' })
@@ -904,6 +920,39 @@ export default async function environmentView(container, ctx) {
       await ctx.refreshShell();
     } catch (error) {
       toast(`操作失败：${error.message}`, { type: 'error' });
+    } finally {
+      state.busy = false;
+      renderVersionBar();
+      renderForm();
+    }
+  }
+
+  async function createDraftWithProvider(option, currentProvider) {
+    if (!state.env) return;
+    const ok = await confirmDialog({
+      title: `创建草稿并切换接入方式`,
+      message:
+        `当前执行环境版本已发布，内容只读，接入方式不能原地修改。` +
+        `将基于当前版本创建草稿，并把接入方式切换为「${option.label}」` +
+        `（当前为 ${currentProvider || '未设置'}）；草稿保存并发布后才生效。`,
+      confirmText: '创建草稿并切换',
+    });
+    if (!ok) return;
+    state.busy = true;
+    try {
+      const { payload } = serialize({ includeStatus: 'draft' });
+      payload.parent_id = state.env.id;
+      payload.model_config = {
+        ...(payload.model_config || {}),
+        provider: option.value,
+      };
+      const draft = await api.createEnvironment(project.id, payload);
+      await load(draft.id);
+      toast(`已创建草稿并切换为「${option.label}」，保存草稿后生效`, {
+        type: 'success',
+      });
+    } catch (error) {
+      toast(`创建草稿失败：${error.message}`, { type: 'error' });
     } finally {
       state.busy = false;
       renderVersionBar();
