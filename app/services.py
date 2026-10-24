@@ -204,19 +204,24 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
                                   field_path="optimizer_config.provider")
     tool_schema = normalize_tool_schema(payload.get("tool_schema"))
     loader_config = payload.get("loader_config") or {}
-    run_config = payload.get("run_config") or {}
-    budget_config = payload.get("budget_config") or {}
+    run_config = dict(payload.get("run_config") or {})
+    budget_config = dict(payload.get("budget_config") or {})
+    scorer_config = dict(payload.get("scorer_config") or {})
+    # Accept legacy field names from older UI/API clients and normalise them.
+    run_config.setdefault("base_repeats", run_config.get("repeats_baseline", 1))
+    run_config.setdefault("validation_repeats", run_config.get("repeats_validation", 3))
+    budget_config.setdefault("max_seconds", budget_config.get("max_duration_s"))
+    scorer_config.setdefault("version", scorer_config.get("scorer_version", config.SCORER_VERSION))
     if not (budget_config.get("max_tokens") or budget_config.get("max_cost")):
         raise ValidationError(
             "必须设置总 Token 或金额上限（金额未知时以 Token 硬限制为准）",
             field_path="budget_config.max_tokens")
     if not budget_config.get("max_seconds"):
         raise ValidationError("必须设置最长运行时间", field_path="budget_config.max_seconds")
-    scorer_config = payload.get("scorer_config") or {"version": config.SCORER_VERSION}
-    acceptance_config = payload.get("acceptance_config") or {
-        "rules_version": config.ACCEPTANCE_RULES_VERSION,
-        "validation_repeats": int(run_config.get("validation_repeats") or 3),
-    }
+    acceptance_config = dict(payload.get("acceptance_config") or {})
+    acceptance_config.setdefault("rules_version", config.ACCEPTANCE_RULES_VERSION)
+    acceptance_config.setdefault(
+        "validation_repeats", int(run_config.get("validation_repeats") or 3))
     normalization = {
         "prompt": prompt,
         "model_config": model_config,

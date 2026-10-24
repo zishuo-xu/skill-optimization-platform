@@ -72,14 +72,14 @@ function defaults() {
     prompt: DEFAULT_PROMPT,
     model_config: {
       provider: 'openai_http',
-      base_url: 'https://gateway.internal.example/v1',
-      model: 'Qwen/Qwen3.5-397B-A17B',
-      api_key_ref: 'secret://gateway/default',
+      base_url: '',
+      model: '',
+      api_key_ref: '',
       temperature: 0,
       max_tokens: 1024,
       timeout_s: 120,
       stream: true,
-      ws_url: 'wss://gateway.internal.example/ws',
+      ws_url: '',
       request_template: {},
       stream_parser: 'sse',
       connect_timeout_s: 10,
@@ -87,15 +87,15 @@ function defaults() {
       idle_timeout_s: 60,
       total_timeout_s: 180,
       heartbeat_s: 20,
-      python_entry: 'my_flow.run_case',
+      python_entry: '',
       python_version: '3.12',
     },
     optimizer_config: {
-      provider: 'openai_http',
-      base_url: 'https://gateway.internal.example/v1',
-      model: 'deepseek-optimizer-v1',
-      api_key_ref: 'secret://gateway/optimizer',
-      temperature: 0.2,
+      provider: 'heuristic',
+      base_url: '',
+      model: 'frozen-heuristic-v1',
+      api_key_ref: '',
+      temperature: 0,
       max_tokens: 4096,
     },
     tool_schema: [],
@@ -107,36 +107,77 @@ function defaults() {
       max_context_chars: 60000,
       context_overflow: 'error',
     },
-    run_config: { concurrency: 3, case_timeout_s: 120, repeats_baseline: 1, repeats_validation: 3 },
-    budget_config: { max_tokens: 200000, max_cost: null, max_duration_s: 3600 },
-    scorer_config: { scorer_version: 'score-v1' },
-    acceptance_config: { require_critical_cases: true, validation_repeats: 3 },
+    run_config: {
+      concurrency: 3,
+      case_timeout_s: 120,
+      base_repeats: 1,
+      validation_repeats: 3,
+    },
+    budget_config: { max_tokens: 200000, max_cost: null, max_seconds: 1800 },
+    scorer_config: { version: 'score-v1' },
+    acceptance_config: { validation_repeats: 3, require_critical_no_regression: true },
+    reproducibility_note: '',
   };
 }
 
+
 function toForm(env) {
+  const base = defaults();
   if (!env) {
     return {
-      ...defaults(),
+      ...base,
       request_template_text: '{}',
-      tool_schema_text: '[\\n  {\\n    "name": "list_tasks",\\n    "description": "查询任务列表",\\n    "parameters": {"type": "object", "properties": {}}\\n  }\\n]',
+      tool_schema_text: '[\n  {\n    "name": "list_tasks",\n    "description": "查询任务列表",\n    "parameters": {"type": "object", "properties": {}}\n  }\n]',
     };
   }
-  const base = { ...defaults(), ...env };
+  const modelConfig = { ...base.model_config, ...(env.model_config || {}) };
+  const optimizerConfig = { ...base.optimizer_config, ...(env.optimizer_config || {}) };
+  const runConfig = env.run_config || {};
+  const budgetConfig = env.budget_config || {};
+  const acceptanceConfig = env.acceptance_config || {};
+  const scorerConfig = env.scorer_config || {};
   return {
     ...base,
-    model_config: { ...defaults().model_config, ...(env.model_config || {}) },
-    optimizer_config: { ...defaults().optimizer_config, ...(env.optimizer_config || {}) },
+    ...env,
+    prompt: env.prompt ?? base.prompt,
+    model_config: modelConfig,
+    optimizer_config: optimizerConfig,
     tool_schema: env.tool_schema || [],
-    loader_config: { ...defaults().loader_config, ...(env.loader_config || {}) },
-    run_config: { ...defaults().run_config, ...(env.run_config || {}) },
-    budget_config: { ...defaults().budget_config, ...(env.budget_config || {}) },
-    scorer_config: { ...defaults().scorer_config, ...(env.scorer_config || {}) },
-    acceptance_config: { ...defaults().acceptance_config, ...(env.acceptance_config || {}) },
-    request_template_text: JSON.stringify(env.model_config?.request_template || {}, null, 2),
+    loader_config: { ...base.loader_config, ...(env.loader_config || {}) },
+    run_config: {
+      ...base.run_config,
+      ...runConfig,
+      concurrency: runConfig.concurrency ?? base.run_config.concurrency,
+      case_timeout_s: runConfig.case_timeout_s ?? base.run_config.case_timeout_s,
+      base_repeats: runConfig.base_repeats ?? runConfig.repeats_baseline ?? 1,
+      validation_repeats: runConfig.validation_repeats ?? runConfig.repeats_validation ?? 3,
+    },
+    budget_config: {
+      ...base.budget_config,
+      ...budgetConfig,
+      max_tokens: budgetConfig.max_tokens ?? null,
+      max_cost: budgetConfig.max_cost ?? null,
+      max_seconds: budgetConfig.max_seconds ?? budgetConfig.max_duration_s ?? 1800,
+    },
+    scorer_config: {
+      ...base.scorer_config,
+      ...scorerConfig,
+      version: scorerConfig.version ?? scorerConfig.scorer_version ?? 'score-v1',
+    },
+    acceptance_config: {
+      ...base.acceptance_config,
+      ...acceptanceConfig,
+      validation_repeats: acceptanceConfig.validation_repeats ?? 3,
+      require_critical_no_regression:
+        acceptanceConfig.require_critical_no_regression ?? true,
+    },
+    request_template_text: JSON.stringify(
+      (env.model_config && env.model_config.request_template) || {}, null, 2),
     tool_schema_text: JSON.stringify(env.tool_schema || [], null, 2),
+    reproducibility_note: env.reproducibility_note || '',
   };
 }
+
 
 export default async function environmentView(container, ctx) {
   const { project } = ctx;
@@ -152,6 +193,7 @@ export default async function environmentView(container, ctx) {
     testResult: null,
     testLoading: false,
     promptPreview: false,
+    promptExpanded: false,
   };
 
   const versionHost = h('div');
@@ -167,9 +209,12 @@ export default async function environmentView(container, ctx) {
 
   function updateFooter() {
     const status = document.getElementById('env-save-status');
-    if (!status) return;
-    status.textContent = state.dirty ? '● 有未保存修改' : state.env ? '已保存' : '未发布';
-    status.className = `xsmall ${state.dirty ? 'text-warning' : 'muted'}`;
+    if (status) {
+      status.textContent = state.dirty ? '● 有未保存修改' : state.env ? '已保存' : '未发布';
+      status.className = `xsmall ${state.dirty ? 'text-warning' : 'muted'}`;
+    }
+    const saveButton = document.querySelector('.env-save-draft');
+    if (saveButton) saveButton.disabled = state.busy || !state.dirty;
   }
 
   function normalizeErrors(error) {
@@ -184,16 +229,19 @@ export default async function environmentView(container, ctx) {
 
   function serialize({ includeStatus } = {}) {
     const form = state.form;
-    const modelConfig = clone(form.model_config);
-    const optimizerConfig = clone(form.optimizer_config);
+    const errors = {};
+    const num = (value, fallback = null) => {
+      if (value === null || value === undefined || value === '') return fallback;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
     let requestTemplate = {};
     let toolSchema = [];
-    const errors = {};
     try {
       requestTemplate = form.request_template_text?.trim() ? JSON.parse(form.request_template_text) : {};
       if (typeof requestTemplate !== 'object' || Array.isArray(requestTemplate)) throw new Error('必须是 JSON 对象');
     } catch (error) {
-      errors.request_template = `请求模板不是合法 JSON：${error.message}`;
+      errors.request_template_text = `请求模板不是合法 JSON：${error.message}`;
       requestTemplate = {};
     }
     try {
@@ -203,70 +251,112 @@ export default async function environmentView(container, ctx) {
       errors.tool_schema = `工具协议不是合法 JSON 数组：${error.message}`;
       toolSchema = [];
     }
-    if (!form.prompt || !String(form.prompt).trim()) errors.prompt = '业务系统 Prompt 不能为空';
-    if (!modelConfig.model) errors['model_config.model'] = '业务模型标识不能为空';
-    if (modelConfig.provider === 'enterprise_ws' && !modelConfig.ws_url) errors['model_config.ws_url'] = 'WebSocket 地址不能为空';
-    if (modelConfig.provider === 'flow' && !modelConfig.python_entry) errors['model_config.python_entry'] = 'Python 入口不能为空';
-    if (!optimizerConfig.model) errors['optimizer_config.model'] = '优化模型标识不能为空';
-    modelConfig.request_template = requestTemplate;
-    const numberFields = [
-      ['model_config.temperature', 'temperature'],
-      ['model_config.max_tokens', 'max_tokens'],
-      ['model_config.timeout_s', 'timeout_s'],
-      ['optimizer_config.temperature', 'optimizer_temperature'],
-      ['optimizer_config.max_tokens', 'optimizer_max_tokens'],
-    ];
-    void numberFields;
-    const num = (value, fallback = null) => {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : fallback;
+
+    const provider = form.model_config.provider;
+    const modelConfig = {
+      provider,
+      temperature: num(form.model_config.temperature, 0),
+      max_tokens: num(form.model_config.max_tokens, null),
+      timeout_s: num(form.model_config.timeout_s, 120),
+      stream: Boolean(form.model_config.stream),
     };
+    if (provider === 'demo_scripted') {
+      modelConfig.model = form.model_config.model || 'demo-scripted-v1';
+    } else if (provider === 'enterprise_ws') {
+      modelConfig.ws_url = String(form.model_config.ws_url || '').trim();
+      modelConfig.model = String(form.model_config.model || '').trim();
+      modelConfig.api_key_ref = String(form.model_config.api_key_ref || '').trim();
+      modelConfig.request_template = requestTemplate;
+      modelConfig.stream_parser = form.model_config.stream_parser || 'sse';
+      for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
+        'idle_timeout_s', 'total_timeout_s', 'heartbeat_s']) {
+        const value = num(form.model_config[key], null);
+        if (value !== null) modelConfig[key] = value;
+      }
+      if (!modelConfig.ws_url) errors['model_config.ws_url'] = 'WebSocket 地址不能为空';
+      if (!modelConfig.model) errors['model_config.model'] = '模型标识不能为空';
+    } else if (provider === 'flow') {
+      modelConfig.python_entry = String(form.model_config.python_entry || '').trim();
+      modelConfig.python_version = String(form.model_config.python_version || '').trim();
+      modelConfig.model = String(form.model_config.model || '').trim();
+      modelConfig.api_key_ref = String(form.model_config.api_key_ref || '').trim();
+      if (!modelConfig.python_entry) errors['model_config.python_entry'] = 'Python 入口不能为空';
+    } else {
+      modelConfig.base_url = String(form.model_config.base_url || '').trim();
+      modelConfig.model = String(form.model_config.model || '').trim();
+      modelConfig.api_key_ref = String(form.model_config.api_key_ref || '').trim();
+      if (!modelConfig.base_url) errors['model_config.base_url'] = 'API 地址不能为空';
+      if (!modelConfig.model) errors['model_config.model'] = '模型标识不能为空';
+    }
+
+    const optProvider = form.optimizer_config.provider || 'heuristic';
+    const optimizerConfig = {
+      provider: optProvider,
+      temperature: num(form.optimizer_config.temperature, 0),
+      max_tokens: num(form.optimizer_config.max_tokens, 4096),
+    };
+    if (optProvider !== 'heuristic') {
+      optimizerConfig.model = String(form.optimizer_config.model || '').trim();
+      optimizerConfig.base_url = String(form.optimizer_config.base_url || '').trim();
+      optimizerConfig.api_key_ref = String(form.optimizer_config.api_key_ref || '').trim();
+      if (!optimizerConfig.model) errors['optimizer_config.model'] = '优化模型标识不能为空';
+      if (!optimizerConfig.base_url) errors['optimizer_config.base_url'] = '优化模型 API 地址不能为空';
+    } else if (form.optimizer_config.model) {
+      optimizerConfig.model = String(form.optimizer_config.model).trim();
+    }
+
+    if (!form.prompt || !String(form.prompt).trim()) errors.prompt = '业务系统 Prompt 不能为空';
+    if (!toolSchema.length) errors.tool_schema = '工具协议至少需要 1 个工具';
+
+    const loaderConfig = {
+      ...form.loader_config,
+      max_steps: num(form.loader_config.max_steps, 8),
+      max_model_calls: num(form.loader_config.max_model_calls, 12),
+      max_context_chars: num(form.loader_config.max_context_chars, 60000),
+    };
+    const runConfig = {
+      ...form.run_config,
+      concurrency: num(form.run_config.concurrency, 3),
+      case_timeout_s: num(form.run_config.case_timeout_s, 120),
+      base_repeats: num(form.run_config.base_repeats, 1),
+      validation_repeats: num(form.run_config.validation_repeats, 3),
+    };
+    const budgetConfig = {
+      ...form.budget_config,
+      max_tokens: num(form.budget_config.max_tokens, null),
+      max_cost: num(form.budget_config.max_cost, null),
+      max_seconds: num(form.budget_config.max_seconds, null),
+    };
+    if (!budgetConfig.max_tokens && !budgetConfig.max_cost) {
+      errors['budget_config.max_tokens'] = '必须设置 Token 或金额上限';
+    }
+    if (!budgetConfig.max_seconds || budgetConfig.max_seconds <= 0) {
+      errors['budget_config.max_seconds'] = '必须设置最长运行时间';
+    }
+    const acceptanceConfig = {
+      ...form.acceptance_config,
+      rules_version: 'accept-v1',
+      validation_repeats: num(form.acceptance_config.validation_repeats, 3),
+      require_critical_no_regression: true,
+    };
+
     const payload = {
       prompt: form.prompt,
-      model_config: {
-        ...modelConfig,
-        temperature: num(modelConfig.temperature, 0),
-        max_tokens: num(modelConfig.max_tokens, null),
-        timeout_s: num(modelConfig.timeout_s, 120),
-        stream: Boolean(modelConfig.stream),
-      },
-      optimizer_config: {
-        ...optimizerConfig,
-        temperature: num(optimizerConfig.temperature, 0),
-        max_tokens: num(optimizerConfig.max_tokens, null),
-      },
+      model_config: modelConfig,
+      optimizer_config: optimizerConfig,
       tool_schema: toolSchema,
-      loader_config: {
-        ...form.loader_config,
-        max_steps: num(form.loader_config.max_steps, 8),
-        max_model_calls: num(form.loader_config.max_model_calls, 12),
-        max_context_chars: num(form.loader_config.max_context_chars, 60000),
-      },
-      run_config: {
-        ...form.run_config,
-        concurrency: num(form.run_config.concurrency, 3),
-        case_timeout_s: num(form.run_config.case_timeout_s, 120),
-        repeats_baseline: num(form.run_config.repeats_baseline, 1),
-        repeats_validation: num(form.run_config.repeats_validation, 3),
-      },
-      budget_config: {
-        ...form.budget_config,
-        max_tokens: form.budget_config.max_tokens === '' || form.budget_config.max_tokens === null ? null : num(form.budget_config.max_tokens, null),
-        max_cost: form.budget_config.max_cost === '' || form.budget_config.max_cost === null ? null : num(form.budget_config.max_cost, null),
-        max_duration_s: num(form.budget_config.max_duration_s, 3600),
-      },
-      scorer_config: { ...form.scorer_config },
-      acceptance_config: {
-        ...form.acceptance_config,
-        require_critical_cases: Boolean(form.acceptance_config.require_critical_cases),
-        validation_repeats: num(form.acceptance_config.validation_repeats, 3),
-      },
+      loader_config: loaderConfig,
+      run_config: runConfig,
+      budget_config: budgetConfig,
+      scorer_config: { version: 'score-v1' },
+      acceptance_config: acceptanceConfig,
+      reproducibility_note: form.reproducibility_note || '',
     };
     if (includeStatus) payload.status = includeStatus;
     return { payload, errors };
   }
 
-  function inputFor(path, { label, hint = '', type = 'text', placeholder = '', mono = false, rows = 4, options = null, disabled = false } = {}) {
+  function inputFor(path, { label, hint = '', type = 'text', placeholder = '', mono = false, rows = 0, options = null, disabled = false } = {}) {
     const value = getPath(state.form, path);
     const editable = EDITABLE() && !disabled;
     const error = state.fieldErrors[path] || state.fieldErrors[path.replace('model_config.', '')] || '';
@@ -279,7 +369,7 @@ export default async function environmentView(container, ctx) {
           onchange: (event) => {
             setPath(state.form, path, event.target.value);
             markDirty();
-            if (path === 'model_config.provider') {
+            if (path === 'model_config.provider' || path === 'optimizer_config.provider') {
               renderForm();
             }
           },
@@ -364,14 +454,11 @@ export default async function environmentView(container, ctx) {
         env ? h('span.mono.xsmall.muted', { text: env.hash || '' }) : null,
         env ? h('span.xsmall.muted', { text: `创建于 ${formatDateTime(env.created_at)}` }) : null,
         h('span.version-bar__spacer'),
-        env && env.status === 'published'
+        env && env.status === 'published' && env.id !== project.current_environment_id
           ? button({ label: '设为当前', variant: 'ghost', size: 'sm', iconName: 'check', onClick: () => publishExisting(env), disabled: state.busy })
           : null,
-        env && env.status === 'published'
-          ? button({ label: '创建草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createDraft, disabled: state.busy })
-          : null,
         env && env.status === 'draft'
-          ? button({ label: '保存草稿', variant: 'secondary', size: 'sm', iconName: 'save', onClick: () => saveDraft(), disabled: state.busy || !state.dirty })
+          ? button({ label: '保存草稿', variant: 'secondary', size: 'sm', iconName: 'save', className: 'env-save-draft', onClick: () => saveDraft(), disabled: state.busy || !state.dirty })
           : null,
         env && env.status === 'draft'
           ? button({ label: '发布版本', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => publishDraft(), disabled: state.busy })
@@ -383,142 +470,185 @@ export default async function environmentView(container, ctx) {
     );
   }
 
-  function promptSection() {
-    const editable = EDITABLE();
-    const preview = h(
-      'pre.prompt-preview',
-      {
-        style: {
-          whiteSpace: 'pre-wrap',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '12.5px',
-          lineHeight: '1.7',
-          background: 'var(--bg)',
-          border: '1px solid var(--line-soft)',
-          borderRadius: '8px',
-          padding: '14px 16px',
-          maxHeight: '420px',
-          overflow: 'auto',
-          color: 'var(--text-2)',
-        },
-      },
-      state.form.prompt || ''
-    );
-    const textarea = h('textarea.textarea.textarea--code', {
-      rows: 14,
-      value: state.form.prompt || '',
-      disabled: !editable,
-      'aria-label': '业务系统 Prompt',
-      oninput: (event) => {
-        state.form.prompt = event.target.value;
-        if (state.promptPreview) preview.textContent = event.target.value;
-        markDirty();
-      },
-    });
-    return sectionCard({
-      title: '业务系统 Prompt',
-      description: '首次运行前可编辑；发布为版本后只读，优化器没有修改权限。',
-      titleHint: chip('默认展开', 'neutral'),
-      actions: [
-        state.fieldErrors.prompt ? chip('字段错误', 'danger') : null,
-        button({
-          label: state.promptPreview ? '返回编辑' : '预览',
-          variant: 'ghost',
-          size: 'sm',
-          iconName: 'eye',
-          onClick: () => {
-            state.promptPreview = !state.promptPreview;
-            renderForm();
+  /* ---------------- 配置展示 ---------------- */
+  const BUSINESS_PROVIDERS = [
+    { value: 'openai_http', label: '标准 API' },
+    { value: 'enterprise_ws', label: '企业网关 WebSocket' },
+    { value: 'flow', label: 'Python 流程' },
+    { value: 'demo_scripted', label: '演示模型（离线）' },
+  ];
+  const OPTIMIZER_PROVIDERS = [
+    { value: 'heuristic', label: '冻结启发式（不调用模型）' },
+    { value: 'openai_http', label: '标准 API' },
+    { value: 'enterprise_ws', label: '企业网关 WebSocket' },
+    { value: 'flow', label: 'Python 流程' },
+  ];
+
+  function providerLabel(provider) {
+    return (BUSINESS_PROVIDERS.find((item) => item.value === provider) || {}).label || provider || '未设置';
+  }
+
+  function optimizerLabel(provider) {
+    return (OPTIMIZER_PROVIDERS.find((item) => item.value === provider) || {}).label || provider || '未设置';
+  }
+
+  function secondsText(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) return '未设置';
+    if (seconds < 60) return `${seconds} 秒`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.round((seconds % 3600) / 60);
+    return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
+  }
+
+  function factsList(items) {
+    return kvList(items.filter(Boolean), { compact: true });
+  }
+
+  function advancedSettings(summary, body) {
+    return collapsible({ summary: h('span', { text: summary }), body, className: 'advanced-settings' });
+  }
+
+  function providerSegments(provider) {
+    return h(
+      'div.segmented',
+      { role: 'group', 'aria-label': '业务模型接入方式' },
+      ...BUSINESS_PROVIDERS.map((option) =>
+        h(
+          `button.segmented__btn${provider === option.value ? ' is-active' : ''}`,
+          {
+            type: 'button',
+            title: EDITABLE() ? `切换为${option.label}` : '当前版本只读；点击会提示创建草稿后切换',
+            onclick: async () => {
+              if (provider === option.value) return;
+              if (!EDITABLE()) {
+                await createDraftWithProvider(option, provider);
+                return;
+              }
+              state.form.model_config.provider = option.value;
+              markDirty();
+              renderForm();
+            },
           },
-        }),
-        editable
-          ? button({
-              label: '恢复内置模板',
-              variant: 'ghost',
-              size: 'sm',
-              iconName: 'refresh',
-              onClick: async () => {
-                const ok = await confirmDialog({
-                  title: '恢复内置模板',
-                  message: '将用内置业务 Prompt 模板替换当前内容，已发布版本不会受影响。',
-                  confirmText: '恢复模板',
-                });
-                if (!ok) return;
-                state.form.prompt = DEFAULT_PROMPT;
-                markDirty();
-                renderForm();
-              },
-            })
-          : null,
-      ].filter(Boolean),
-      body: h(
-        'div.stack',
-        null,
-        state.promptPreview ? preview : textarea,
-        state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null
-      ),
-    });
+          option.label
+        )
+      )
+    );
+  }
+
+  function streamToggle() {
+    return h(
+      'label.checkbox-line',
+      null,
+      h('input', {
+        type: 'checkbox',
+        checked: Boolean(state.form.model_config.stream),
+        disabled: !EDITABLE(),
+        onchange: (event) => {
+          state.form.model_config.stream = event.target.checked;
+          markDirty();
+        },
+      }),
+      h('span', { text: '启用 SSE 式增量返回（usage 在尾部聚合）' })
+    );
   }
 
   function modelFields(provider) {
+    if (provider === 'demo_scripted') {
+      return h(
+        'div.stack',
+        null,
+        inputFor('model_config.model', {
+          label: '模型标识',
+          hint: '演示适配器的标识，无需网络与凭据。',
+        }),
+        callout({
+          tone: 'info',
+          title: '离线确定性模型',
+          body: 'demo_scripted 是规则模拟器，仅用于示例与自动化测试。真实业务请切换为标准 API、企业网关或 Python 流程；切换只影响草稿，保存并发布后生效。',
+        })
+      );
+    }
     if (provider === 'enterprise_ws') {
       return h(
-        'div.form-grid',
+        'div.stack',
         null,
-        inputFor('model_config.ws_url', { label: 'WebSocket 地址', hint: 'ws:// 或 wss://，按网关约定握手与鉴权。' }),
-        inputFor('model_config.model', { label: '模型标识', hint: '保留供应商返回的实际模型标识以便复现。' }),
-        inputFor('model_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用，不进入 Prompt 或导出文件。' }),
-        inputFor('model_config.stream_parser', { label: '流解析器', options: [{ value: 'sse', label: 'SSE 式流（默认）' }, { value: 'json_lines', label: 'JSON Lines' }] }),
-        inputFor('request_template_text', {
-          label: '请求模板（JSON）',
-          rows: 6,
-          mono: true,
-          hint: '保留 api_key、user 等网关字段，不自动改写为 Authorization。',
-        }),
-        inputFor('model_config.connect_timeout_s', { label: '连接超时（秒）', type: 'number' }),
-        inputFor('model_config.first_packet_timeout_s', { label: '首包超时（秒）', type: 'number' }),
-        inputFor('model_config.idle_timeout_s', { label: '空闲超时（秒）', type: 'number' }),
-        inputFor('model_config.total_timeout_s', { label: '总超时（秒）', type: 'number' }),
-        inputFor('model_config.heartbeat_s', { label: '心跳间隔（秒）', type: 'number' })
+        h(
+          'div.form-grid',
+          null,
+          inputFor('model_config.ws_url', { label: 'WebSocket 地址', hint: 'ws:// 或 wss://，按网关约定握手与鉴权。' }),
+          inputFor('model_config.model', { label: '模型标识', hint: '保留供应商返回的实际模型标识以便复现。' }),
+          inputFor('model_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用，不进入 Prompt / 日志 / 导出。' })
+        ),
+        advancedSettings(
+          '高级：流解析与超时',
+          h(
+            'div.form-grid',
+            null,
+            inputFor('model_config.stream_parser', {
+              label: '流解析器',
+              options: [
+                { value: 'sse', label: 'SSE 式流（默认）' },
+                { value: 'json_lines', label: 'JSON Lines' },
+              ],
+            }),
+            inputFor('model_config.connect_timeout_s', { label: '连接超时（秒）', type: 'number' }),
+            inputFor('model_config.first_packet_timeout_s', { label: '首包超时（秒）', type: 'number' }),
+            inputFor('model_config.idle_timeout_s', { label: '空闲超时（秒）', type: 'number' }),
+            inputFor('model_config.total_timeout_s', { label: '总超时（秒）', type: 'number' }),
+            inputFor('model_config.heartbeat_s', { label: '心跳间隔（秒）', type: 'number' }),
+            inputFor('request_template_text', {
+              label: '请求模板（JSON）',
+              rows: 6,
+              mono: true,
+              hint: '保留 api_key、user 等网关字段，不自动改写为 Authorization。',
+            })
+          )
+        )
       );
     }
     if (provider === 'flow') {
       return h(
-        'div.form-grid',
+        'div.stack',
         null,
-        inputFor('model_config.python_entry', { label: 'Python 入口', hint: '形如 module.function，平台按受信版本调用 run_case。' }),
-        inputFor('model_config.python_version', { label: 'Python 版本' }),
-        inputFor('model_config.timeout_s', { label: '案例超时（秒）', type: 'number' }),
-        inputFor('model_config.model', { label: '模型标识（可选）' }),
-        inputFor('model_config.api_key_ref', { label: '鉴权引用（可选）' })
+        h(
+          'div.form-grid',
+          null,
+          inputFor('model_config.python_entry', { label: 'Python 入口', hint: '形如 module.function，平台按受信版本调用 run_case。' }),
+          inputFor('model_config.python_version', { label: 'Python 版本' }),
+          inputFor('model_config.timeout_s', { label: '案例超时（秒）', type: 'number' })
+        ),
+        advancedSettings(
+          '高级：可选标识与凭据',
+          h(
+            'div.form-grid',
+            null,
+            inputFor('model_config.model', { label: '模型标识（可选）' }),
+            inputFor('model_config.api_key_ref', { label: '鉴权引用（可选）' })
+          )
+        )
       );
     }
     return h(
-      'div.form-grid',
+      'div.stack',
       null,
-      inputFor('model_config.base_url', { label: 'API 地址', hint: 'OpenAI 兼容的 Chat Completions 入口。' }),
-      inputFor('model_config.model', { label: '模型标识' }),
-      inputFor('model_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用，不写入日志或导出文件。' }),
-      inputFor('model_config.temperature', { label: '温度', type: 'number', hint: '评测建议固定为 0。' }),
-      inputFor('model_config.max_tokens', { label: '最大输出 Token', type: 'number' }),
-      inputFor('model_config.timeout_s', { label: '超时（秒）', type: 'number' }),
       h(
-        'div.form-field',
+        'div.form-grid',
         null,
-        h('span.form-field__label', { text: '流式返回' }),
+        inputFor('model_config.base_url', { label: 'API 地址', hint: 'OpenAI 兼容的 Chat Completions 入口。' }),
+        inputFor('model_config.model', { label: '模型标识' }),
+        inputFor('model_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用，不写入日志或导出文件。' })
+      ),
+      advancedSettings(
+        '高级：采样与超时',
         h(
-          'label.checkbox-line',
+          'div.form-grid',
           null,
-          h('input', {
-            type: 'checkbox',
-            checked: Boolean(state.form.model_config.stream),
-            disabled: !EDITABLE(),
-            onchange: (event) => {
-              state.form.model_config.stream = event.target.checked;
-              markDirty();
-            },
-          }),
-          h('span', { text: '启用 SSE 式增量返回（usage 在尾部聚合）' })
+          inputFor('model_config.temperature', { label: '温度', type: 'number', hint: '评测建议固定为 0。' }),
+          inputFor('model_config.max_tokens', { label: '最大输出 Token', type: 'number' }),
+          inputFor('model_config.timeout_s', { label: '超时（秒）', type: 'number' }),
+          h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle())
         )
       )
     );
@@ -559,209 +689,480 @@ export default async function environmentView(container, ctx) {
     );
   }
 
-  function businessModelSection() {
-    const provider = state.form.model_config.provider || 'openai_http';
+  function modelFacts() {
+    const config = state.form.model_config || {};
+    const provider = config.provider;
+    const items = [{ label: '接入方式', value: providerLabel(provider) }];
+    if (provider === 'demo_scripted') {
+      items.push({ label: '模型标识', value: config.model || 'demo-scripted-v1', mono: true });
+    } else if (provider === 'enterprise_ws') {
+      items.push(
+        { label: 'WebSocket 地址', value: config.ws_url || '—', mono: true },
+        { label: '模型标识', value: config.model || '—', mono: true },
+        { label: '流解析器', value: config.stream_parser || 'sse' },
+        { label: '总超时', value: secondsText(config.total_timeout_s || 180) }
+      );
+    } else if (provider === 'flow') {
+      items.push(
+        { label: 'Python 入口', value: config.python_entry || '—', mono: true },
+        { label: 'Python 版本', value: config.python_version || '—' },
+        { label: '案例超时', value: secondsText(config.timeout_s || 120) }
+      );
+    } else {
+      items.push(
+        { label: 'API 地址', value: config.base_url || '—', mono: true },
+        { label: '模型标识', value: config.model || '—', mono: true },
+        { label: '鉴权引用', value: config.api_key_ref || '—', mono: true }
+      );
+    }
+    return factsList(items);
+  }
+
+  function promptSection() {
+    const editable = EDITABLE();
+    const prompt = state.form.prompt || '';
+    const body = editable
+      ? h(
+          'div.stack',
+          null,
+          h('textarea.textarea.textarea--code', {
+            rows: 8,
+            value: prompt,
+            'aria-label': '业务系统 Prompt',
+            oninput: (event) => {
+              state.form.prompt = event.target.value;
+              markDirty();
+            },
+          }),
+          state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null
+        )
+      : h(
+          'pre.prompt-preview',
+          {
+            style: {
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'var(--font-mono)',
+              fontSize: '12.5px',
+              lineHeight: '1.7',
+              background: 'var(--bg)',
+              border: '1px solid var(--line-soft)',
+              borderRadius: '8px',
+              padding: '12px 14px',
+              maxHeight: state.promptExpanded ? 'none' : '260px',
+              overflow: 'auto',
+              color: 'var(--text-2)',
+              margin: 0,
+            },
+          },
+          prompt
+        );
     return sectionCard({
-      title: '业务模型',
-      description: '选择 API / 企业网关 WebSocket / Python 流程级适配；保存模型标识、请求配置与代码版本。',
-      actions: [
-        provider === 'enterprise_ws' ? chip('企业网关', 'info') : null,
-        provider === 'flow' ? chip('流程级适配', 'purple') : null,
-        provider === 'demo_scripted' ? chip('示例确定性模型', 'info') : null,
-        button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', onClick: testConnection, disabled: !EDITABLE() || state.testLoading }),
-      ].filter(Boolean),
-      body: h(
-        'div.stack',
-        null,
-        h(
-          'div.row',
-          { style: { gap: '10px' } },
-          h('span.form-field__label', { text: '接入方式' }),
-          h(
-            'div.segmented',
-            { role: 'group', 'aria-label': '业务模型接入方式' },
-            ...[
-              { value: 'openai_http', label: '标准 API' },
-              { value: 'enterprise_ws', label: '企业网关 WebSocket' },
-              { value: 'flow', label: 'Python 流程' },
-            ].map((option) =>
-              h(
-                `button.segmented__btn${provider === option.value ? ' is-active' : ''}`,
-                {
-                  type: 'button',
-                  title: EDITABLE()
-                    ? `切换为${option.label}`
-                    : '当前版本已发布，只读；点击可创建草稿后切换',
-                  onclick: async () => {
-                    if (provider === option.value) return;
-                    if (!EDITABLE()) {
-                      await createDraftWithProvider(option, provider);
-                      return;
-                    }
-                    state.form.model_config.provider = option.value;
-                    markDirty();
-                    renderForm();
-                  },
-                },
-                option.label
-              )
-            )
-          )
-        ),
-        !EDITABLE()
-          ? h('p.form-field__hint', {
-              text:
-                provider === 'demo_scripted'
-                  ? '当前版本使用示例确定性模型 demo_scripted（离线演示）。点击上方任一接入方式会提示创建草稿，在草稿中切换到真实 API / 企业网关 / Python 流程后再发布。'
-                  : '当前版本已发布，内容只读。点击上方接入方式会提示创建草稿，修改只在草稿中进行，发布后才生效。',
-            })
-          : null,
-        modelFields(provider),
-        provider === 'enterprise_ws'
-          ? h('p.form-field__hint', { text: '默认每请求独立连接；复用需要网关提供请求 ID 与多路复用协议。中途断开记 stream_interrupted，不跨连接拼接。' })
-          : null,
-        testResultView()
-      ),
+      title: '业务系统 Prompt',
+      description: editable
+        ? '发布后只读；优化器没有修改权限。'
+        : `当前版本只读 · ${prompt.length.toLocaleString()} 字符`,
+      actions: editable
+        ? [
+            button({
+              label: '恢复内置模板',
+              variant: 'ghost',
+              size: 'sm',
+              iconName: 'refresh',
+              onClick: async () => {
+                const ok = await confirmDialog({
+                  title: '恢复内置模板',
+                  message: '将用内置业务 Prompt 模板替换当前内容，已发布版本不会受影响。',
+                  confirmText: '恢复模板',
+                });
+                if (!ok) return;
+                state.form.prompt = DEFAULT_PROMPT;
+                markDirty();
+                renderForm();
+              },
+            }),
+          ]
+        : [
+            chip('只读', 'neutral'),
+            button({
+              label: state.promptExpanded ? '收起' : '展开全文',
+              variant: 'ghost',
+              size: 'sm',
+              iconName: 'chevronDown',
+              onClick: () => {
+                state.promptExpanded = !state.promptExpanded;
+                renderForm();
+              },
+            }),
+          ],
+      body,
     });
   }
 
+  function businessModelSection() {
+    const editable = EDITABLE();
+    const config = state.form.model_config || {};
+    const provider = config.provider;
+    const body = h(
+      'div.stack',
+      null,
+      h('div.form-field', null, h('span.form-field__label', { text: '接入方式' }), providerSegments(provider)),
+      !editable
+        ? h('p.form-field__hint', { text: '当前版本已发布，配置只读；点击任一接入方式会提示创建草稿后切换。' })
+        : null,
+      editable ? modelFields(provider) : modelFacts(),
+      testResultView()
+    );
+    return sectionCard({
+      title: '业务模型',
+      description: `${providerLabel(provider)} · ${config.model || '未设置模型'}`,
+      actions: [
+        editable
+          ? button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', onClick: testConnection, disabled: state.testLoading })
+          : null,
+        provider === 'demo_scripted' ? chip('离线演示', 'info') : null,
+      ].filter(Boolean),
+      body,
+    });
+  }
+
+  function optimizerFacts() {
+    const config = state.form.optimizer_config || {};
+    const provider = config.provider || 'heuristic';
+    const items = [{ label: '接入方式', value: optimizerLabel(provider) }];
+    if (provider !== 'heuristic') {
+      items.push(
+        { label: '模型标识', value: config.model || '—', mono: true },
+        { label: 'API 地址', value: config.base_url || '—', mono: true }
+      );
+    }
+    return factsList(items);
+  }
+
   function optimizerSection() {
+    const editable = EDITABLE();
+    const config = state.form.optimizer_config || {};
+    const provider = config.provider || 'heuristic';
+    const body = editable
+      ? h(
+          'div.stack',
+          null,
+          inputFor('optimizer_config.provider', {
+            label: '接入方式',
+            options: OPTIMIZER_PROVIDERS,
+            hint: '与业务模型独立配置；优化器 Prompt 同样版本化并在本轮固定。',
+          }),
+          provider === 'heuristic'
+            ? callout({
+                tone: 'info',
+                title: '不调用优化模型',
+                body: '运行时记录 optimizer_not_configured，并在冻结协议内使用启发式回退生成补丁。',
+              })
+            : h(
+                'div.form-grid',
+                null,
+                inputFor('optimizer_config.base_url', { label: 'API 地址' }),
+                inputFor('optimizer_config.model', { label: '优化模型标识' }),
+                inputFor('optimizer_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用。' })
+              ),
+          advancedSettings(
+            '高级：采样参数',
+            h(
+              'div.form-grid',
+              null,
+              inputFor('optimizer_config.temperature', { label: '温度', type: 'number' }),
+              inputFor('optimizer_config.max_tokens', { label: '最大输出 Token', type: 'number' })
+            )
+          )
+        )
+      : optimizerFacts();
     return sectionCard({
       title: '优化模型',
-      description: '独立于业务模型配置；优化器 Prompt 同样版本化并在本轮固定。',
+      description: `${optimizerLabel(provider)}${provider === 'heuristic' ? '' : ` · ${config.model || '未设置模型'}`}`,
       collapsible: true,
-      open: false,
-      body: h(
-        'div.form-grid',
-        null,
-        inputFor('optimizer_config.provider', {
-          label: '接入方式',
-          options: [
-            { value: 'openai_http', label: '标准 API' },
-            { value: 'enterprise_ws', label: '企业网关 WebSocket' },
-            { value: 'flow', label: 'Python 流程' },
-          ],
-        }),
-        inputFor('optimizer_config.model', { label: '优化模型标识' }),
-        inputFor('optimizer_config.base_url', { label: 'API 地址' }),
-        inputFor('optimizer_config.api_key_ref', { label: '鉴权引用' }),
-        inputFor('optimizer_config.temperature', { label: '温度', type: 'number' }),
-        inputFor('optimizer_config.max_tokens', { label: '最大输出 Token', type: 'number' })
-      ),
+      open: provider !== 'heuristic' || Boolean(state.fieldErrors['optimizer_config.model']),
+      body,
     });
   }
 
   function toolsSection() {
+    const editable = EDITABLE();
+    const tools = Array.isArray(state.form.tool_schema) ? state.form.tool_schema : [];
+    const names = tools.map((tool) => tool.name).filter(Boolean);
+    const body = editable
+      ? h(
+          'div.stack',
+          null,
+          inputFor('tool_schema_text', {
+            label: '工具 Schema（JSON 数组）',
+            rows: 8,
+            mono: true,
+            hint: '保存时会校验 JSON 结构与必填字段；业务工具通过 fixtures 模拟，不执行真实写操作。',
+          }),
+          state.fieldErrors.tool_schema ? inlineError(state.fieldErrors.tool_schema) : null
+        )
+      : names.length
+      ? h(
+          'div.stack',
+          null,
+          h('div.tool-chip-list', null, ...names.map((name) => chip(name, 'neutral'))),
+          h('p.form-field__hint', { text: '工具名、描述、JSON Schema 与模拟返回均由平台管理，候选不能修改。' })
+        )
+      : h('p.muted.small', { text: '尚未配置工具协议。' });
     return sectionCard({
       title: '工具协议',
-      description: '工具名、描述、JSON Schema 与模拟返回配置由平台管理，不是候选可修改文件。',
+      description: `${tools.length} 个业务工具 · 平台管理`,
       collapsible: true,
-      open: false,
-      body: h(
-        'div.stack',
-        null,
-        inputFor('tool_schema_text', {
-          label: '工具 Schema（JSON 数组）',
-          rows: 10,
-          mono: true,
-          hint: '保存时会校验 JSON 结构与必填字段；工具调用通过 fixtures 模拟。',
-        }),
-        state.fieldErrors.tool_schema ? inlineError(state.fieldErrors.tool_schema) : null
-      ),
+      open: Boolean(state.fieldErrors.tool_schema),
+      body,
     });
+  }
+
+  function loaderFacts() {
+    const loader = state.form.loader_config || {};
+    return factsList([
+      { label: '主 Skill 注入', value: loader.main_skill_mode === 'file_tool' ? '通过文件工具读取' : '注入系统消息' },
+      { label: '子技能读取工具', value: loader.subskill_tool || 'read_skill', mono: true },
+      { label: '最大步数', value: String(loader.max_steps ?? 8) },
+      { label: '每案例模型调用', value: String(loader.max_model_calls ?? 12) },
+      { label: '最大上下文字符', value: Number(loader.max_context_chars || 60000).toLocaleString() },
+      { label: '上下文超限', value: loader.context_overflow === 'frozen_strategy' ? '执行冻结加载策略' : '显式报错' },
+    ]);
   }
 
   function loaderSection() {
+    const editable = EDITABLE();
+    const loader = state.form.loader_config || {};
+    const body = editable
+      ? h(
+          'div.stack',
+          null,
+          h(
+            'div.form-grid',
+            null,
+            inputFor('loader_config.max_steps', { label: '最大步数', type: 'number' }),
+            inputFor('loader_config.max_model_calls', { label: '每案例最大模型调用', type: 'number' }),
+            inputFor('loader_config.max_context_chars', { label: '最大上下文字符数', type: 'number' })
+          ),
+          advancedSettings(
+            '高级：注入与超限策略',
+            h(
+              'div.form-grid',
+              null,
+              inputFor('loader_config.main_skill_mode', {
+                label: '主 Skill 注入方式',
+                options: [
+                  { value: 'inject', label: '注入系统消息' },
+                  { value: 'file_tool', label: '通过文件工具读取' },
+                ],
+              }),
+              inputFor('loader_config.subskill_tool', { label: '子技能读取工具' }),
+              inputFor('loader_config.context_overflow', {
+                label: '上下文超限处理',
+                options: [
+                  { value: 'error', label: '显式报错' },
+                  { value: 'frozen_strategy', label: '执行冻结加载策略' },
+                ],
+              })
+            )
+          )
+        )
+      : loaderFacts();
     return sectionCard({
       title: '上下文加载',
-      description: '固定主 Skill 注入方式、子技能读取工具、最大步数与上下文超限处理。',
+      description: `最大 ${loader.max_steps ?? 8} 步 · ${Number(loader.max_context_chars || 60000).toLocaleString()} 字符`,
       collapsible: true,
       open: false,
-      body: h(
-        'div.form-grid',
-        null,
-        inputFor('loader_config.main_skill_mode', {
-          label: '主 Skill 注入方式',
-          options: [
-            { value: 'inject', label: '注入系统消息' },
-            { value: 'file_tool', label: '通过文件工具读取' },
-          ],
-        }),
-        inputFor('loader_config.subskill_tool', { label: '子技能读取工具' }),
-        inputFor('loader_config.max_steps', { label: '最大步数', type: 'number' }),
-        inputFor('loader_config.max_model_calls', { label: '每案例最大模型调用', type: 'number' }),
-        inputFor('loader_config.max_context_chars', { label: '最大上下文字符数', type: 'number' }),
-        inputFor('loader_config.context_overflow', {
-          label: '上下文超限处理',
-          options: [
-            { value: 'error', label: '显式报错' },
-            { value: 'frozen_strategy', label: '执行冻结加载策略' },
-          ],
-        })
-      ),
+      body,
     });
+  }
+
+  function runFacts() {
+    const run = state.form.run_config || {};
+    return factsList([
+      { label: '并发案例数', value: String(run.concurrency ?? 3) },
+      { label: '单案例超时', value: secondsText(run.case_timeout_s ?? 120) },
+      { label: '基线重复次数', value: String(run.base_repeats ?? 1) },
+      { label: '验证配对重复', value: `${run.validation_repeats ?? 3} 次` },
+    ]);
   }
 
   function runParamsSection() {
+    const editable = EDITABLE();
+    const run = state.form.run_config || {};
+    const body = editable
+      ? h(
+          'div.form-grid',
+          null,
+          inputFor('run_config.concurrency', { label: '并发案例数', type: 'number' }),
+          inputFor('run_config.case_timeout_s', { label: '单案例超时（秒）', type: 'number' }),
+          inputFor('run_config.base_repeats', { label: '基线重复次数', type: 'number' }),
+          inputFor('run_config.validation_repeats', { label: '验证配对重复次数', type: 'number' })
+        )
+      : runFacts();
     return sectionCard({
       title: '运行参数',
-      description: '启动时冻结，运行中不可修改。',
+      description: `并发 ${run.concurrency ?? 3} · 单案例 ${secondsText(run.case_timeout_s ?? 120)} · 验证 ${run.validation_repeats ?? 3} 次`,
       collapsible: true,
       open: false,
-      body: h(
-        'div.form-grid.form-grid--3',
-        null,
-        inputFor('run_config.concurrency', { label: '并发案例数', type: 'number' }),
-        inputFor('run_config.case_timeout_s', { label: '单案例超时（秒）', type: 'number' }),
-        inputFor('run_config.repeats_baseline', { label: '基线重复次数', type: 'number' }),
-        inputFor('run_config.repeats_validation', { label: '验证配对重复次数', type: 'number' })
-      ),
+      body,
     });
+  }
+
+  function budgetFacts() {
+    const budget = state.form.budget_config || {};
+    return factsList([
+      { label: 'Token 上限', value: budget.max_tokens ? formatTokens(budget.max_tokens) : '未设置' },
+      { label: '金额上限', value: budget.max_cost ? `¥ ${budget.max_cost}` : '未设置（以 Token 为准）' },
+      { label: '最长运行时间', value: secondsText(budget.max_seconds) },
+    ]);
   }
 
   function budgetSection() {
+    const editable = EDITABLE();
+    const budget = state.form.budget_config || {};
+    const body = editable
+      ? h(
+          'div.stack',
+          null,
+          h(
+            'div.form-grid',
+            null,
+            inputFor('budget_config.max_tokens', {
+              label: 'Token 上限',
+              type: 'number',
+              hint: 'Token 与金额至少设置一项；金额未知时以 Token 硬限制为准。',
+            }),
+            inputFor('budget_config.max_seconds', {
+              label: '最长运行时间（秒）',
+              type: 'number',
+              hint: '启动后冻结；耗尽会停止派发并把结论标记为证据不足。',
+            })
+          ),
+          advancedSettings(
+            '高级：金额上限',
+            inputFor('budget_config.max_cost', {
+              label: '金额上限（CNY）',
+              type: 'number',
+              hint: '配置了 Token 单价后才生效；留空表示仅使用 Token/时长限制。',
+            })
+          )
+        )
+      : budgetFacts();
     return sectionCard({
       title: '预算',
-      description: '启动前必须设置 Token 或金额上限；金额未知时以 Token 硬限制为准。',
+      description: `Token ${budget.max_tokens ? formatTokens(budget.max_tokens) : '未设置'} · ${secondsText(budget.max_seconds)}`,
       collapsible: true,
-      open: false,
-      body: h(
-        'div.form-grid',
-        null,
-        inputFor('budget_config.max_tokens', { label: 'Token 上限', type: 'number', hint: '留空表示不按 Token 限制（不推荐）。' }),
-        inputFor('budget_config.max_cost', { label: '金额上限（CNY）', type: 'number', hint: '未配置价格时无法设置金额限制。' }),
-        inputFor('budget_config.max_duration_s', { label: '最长运行时间（秒）', type: 'number' })
-      ),
+      open: Boolean(state.fieldErrors['budget_config.max_tokens'] || state.fieldErrors['budget_config.max_seconds']),
+      body,
     });
   }
 
+  function acceptanceFacts() {
+    const acceptance = state.form.acceptance_config || {};
+    return h(
+      'div.stack',
+      null,
+      factsList([
+        { label: '判定规则', value: 'accept-v1（启动时冻结）' },
+        { label: '核心指标', value: 'R、A 不下降；R 或 A 至少一项严格提高；J 不下降' },
+        { label: '关键案例', value: 'critical 案例不得从通过变失败（强制）' },
+        { label: '阻断条件', value: '基础设施错误或包完整性错误 → 不自动晋级' },
+        { label: '验证重复', value: `${acceptance.validation_repeats ?? 3} 次配对` },
+        { label: '评分器', value: 'score-v1（冻结）' },
+      ]),
+      h('p.form-field__hint', { text: '阈值在运行启动时冻结，不能为当前候选临时调低；全部指标持平则拒绝。' })
+    );
+  }
+
   function acceptanceSection() {
+    const editable = EDITABLE();
+    const acceptance = state.form.acceptance_config || {};
+    const body = editable
+      ? h(
+          'div.stack',
+          null,
+          inputFor('acceptance_config.validation_repeats', {
+            label: '验证配对重复次数',
+            type: 'number',
+            hint: '默认 3 次；少于 3 次时验证被视为不完整，只能给出证据不足结论。',
+          }),
+          h('p.form-field__hint', {
+            text: 'R/A 不降、至少一项严格提高、J 不降；critical 案例不得回归；无基础设施或包完整性错误。规则版本 accept-v1，启动时冻结。',
+          })
+        )
+      : acceptanceFacts();
     return sectionCard({
       title: '接受条件',
-      description: '阈值在运行前冻结，不能为当前候选临时调低。',
+      description: `accept-v1 · ${acceptance.validation_repeats ?? 3} 次配对验证 · 启动冻结`,
       collapsible: true,
       open: false,
-      body: h(
-        'div.form-grid',
-        null,
-        inputFor('acceptance_config.validation_repeats', { label: '验证重复次数', type: 'number' }),
-        h(
-          'label.checkbox-line',
-          null,
-          h('input', {
-            type: 'checkbox',
-            checked: Boolean(state.form.acceptance_config.require_critical_cases),
-            disabled: !EDITABLE(),
-            onchange: (event) => {
-              state.form.acceptance_config.require_critical_cases = event.target.checked;
-              markDirty();
-            },
-          }),
-          h('span', { text: '关键案例不得从通过变失败（critical）' })
-        ),
-        h('p.form-field__hint', { text: 'R/A 不降、至少一项严格提高、J 不降、无基础设施错误、包完整性通过；全部持平则拒绝。' })
-      ),
+      body,
     });
+  }
+
+  function envSnapshot() {
+    const form = state.form;
+    const config = form.model_config || {};
+    const optimizer = form.optimizer_config || {};
+    const run = form.run_config || {};
+    const budget = form.budget_config || {};
+    const acceptance = form.acceptance_config || {};
+    const items = [
+      {
+        label: '业务模型',
+        value: providerLabel(config.provider),
+        hint: config.model || '未设置模型',
+      },
+      {
+        label: '优化器',
+        value: optimizerLabel(optimizer.provider || 'heuristic'),
+        hint: (optimizer.provider || 'heuristic') === 'heuristic'
+          ? '冻结启发式回退'
+          : (optimizer.model || '未设置模型'),
+      },
+      {
+        label: '执行策略',
+        value: `并发 ${run.concurrency ?? 3}`,
+        hint: `单案例 ${secondsText(run.case_timeout_s ?? 120)} · 验证 ${run.validation_repeats ?? 3} 次`,
+      },
+      {
+        label: '预算',
+        value: budget.max_tokens ? `${formatTokens(budget.max_tokens)} Token` : '未设置',
+        hint: `最长 ${secondsText(budget.max_seconds)}`,
+      },
+      {
+        label: '判定',
+        value: 'accept-v1',
+        hint: `阈值启动冻结 · ${acceptance.validation_repeats ?? 3} 次配对验证`,
+      },
+    ];
+    return h(
+      'div.env-snapshot',
+      null,
+      ...items.map((item) =>
+        h(
+          'div.env-snapshot__item',
+          null,
+          h('div.env-snapshot__label', { text: item.label }),
+          h('div.env-snapshot__value', { text: item.value }),
+          item.hint ? h('div.env-snapshot__hint', { text: item.hint }) : null
+        )
+      )
+    );
+  }
+
+  function configGroup(title, description, sections) {
+    return h(
+      'section.config-group',
+      null,
+      h(
+        'div.config-group__head',
+        null,
+        h('h2', { text: title }),
+        h('p', { text: description })
+      ),
+      h('div.config-group__body', null, ...sections)
+    );
   }
 
   function renderForm() {
@@ -773,13 +1174,12 @@ export default async function environmentView(container, ctx) {
       mount(formHost, errorState(state.error, { title: '无法加载执行环境', retry: () => load() }));
       return;
     }
-    const editable = EDITABLE();
     const banner = state.env?.status === 'published'
       ? h(
           'div.readonly-banner',
           null,
           icon('lock', { size: 15 }),
-          h('span', { text: '当前版本已发布，内容只读；修改需要先生成草稿。' }),
+          h('span', { text: '当前版本已发布，配置只读；修改会先生成草稿，发布后生效。' }),
           h('span.readonly-banner__spacer'),
           button({ label: '创建草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createDraft, disabled: state.busy })
         )
@@ -788,7 +1188,7 @@ export default async function environmentView(container, ctx) {
           'div.readonly-banner',
           null,
           icon('edit', { size: 15 }),
-          h('span', { text: '正在编辑草稿版本。保存会生成新的草稿版本（环境版本不可变），发布后设为当前。' }),
+          h('span', { text: '正在编辑草稿。环境版本不可变：保存生成新草稿，发布后设为当前。' }),
           h('span.readonly-banner__spacer'),
           h('span#env-save-status.xsmall.muted', { text: state.dirty ? '● 有未保存修改' : '已保存' })
         )
@@ -796,54 +1196,37 @@ export default async function environmentView(container, ctx) {
           'div.readonly-banner',
           null,
           icon('info', { size: 15 }),
-          h('span', { text: '尚未发布执行环境。填写后可直接发布 v1，或先保存草稿。' }),
+          h('span', { text: '尚未发布执行环境。填写基础配置后发布 v1，或先保存草稿。' }),
           h('span.readonly-banner__spacer'),
           h('span#env-save-status.xsmall.muted', { text: '未发布' })
         );
 
-    if (!state.env && state.versions.length === 0) {
-      mount(
-        formHost,
-        banner,
+    const groups = [
+      ['业务接入', 'Agent 如何获得业务上下文并调用模型。', [promptSection(), businessModelSection()]],
+      ['执行与工具', '执行循环、工具协议与运行参数；启动运行后冻结。', [toolsSection(), loaderSection(), runParamsSection()]],
+      ['优化与验收', '候选生成配置与晋级判定；阈值在启动时冻结。', [optimizerSection(), budgetSection(), acceptanceSection()]],
+    ];
+    const children = [
+      banner,
+      envSnapshot(),
+      ...groups.map(([title, description, sections]) => configGroup(title, description, sections)),
+    ];
+    if (!state.env) {
+      children.push(
         h(
-          'div.stack',
+          'div.form-actions',
           null,
-          promptSection(),
-          businessModelSection(),
-          optimizerSection(),
-          toolsSection(),
-          loaderSection(),
-          runParamsSection(),
-          budgetSection(),
-          acceptanceSection(),
-          h(
-            'div.form-actions',
-            null,
-            button({ label: '保存草稿', variant: 'secondary', iconName: 'save', onClick: () => saveDraft('draft'), disabled: state.busy }),
-            button({ label: '发布版本', variant: 'primary', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
-          )
+          button({ label: '保存草稿', variant: 'secondary', iconName: 'save', onClick: () => saveDraft('draft'), disabled: state.busy }),
+          button({ label: '发布版本', variant: 'primary', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
         )
       );
-      return;
     }
-    mount(
-      formHost,
-      banner,
-      editable ? null : h('p.small.muted', { style: { marginTop: '-6px', marginBottom: '12px' } }, '只读状态：如需修改，请先创建草稿。'),
-      promptSection(),
-      businessModelSection(),
-      optimizerSection(),
-      toolsSection(),
-      loaderSection(),
-      runParamsSection(),
-      budgetSection(),
-      acceptanceSection()
-    );
-    void editable;
+    mount(formHost, ...children);
   }
 
   async function saveDraft(status = 'draft') {
     const { payload, errors } = serialize({ includeStatus: status });
+    if (state.env && !payload.parent_id) payload.parent_id = state.env.id;
     state.fieldErrors = { ...errors };
     if (Object.keys(errors).length) {
       renderForm();
