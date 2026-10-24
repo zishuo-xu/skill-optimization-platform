@@ -9,6 +9,10 @@
 
 ### Added
 
+- **第二个示例项目「示例项目：修图」**：渐进式图片编辑 Skill 包（主 `SKILL.md` +
+  4 个 reference 子技能）、`imageEditWorkflow` 工具协议、15 条简化格式数据集；
+  新增确定性图片编辑模拟器 `app/adapters/demo_image.py`（通过 `model=demo-image-v1`
+  选择）。基线 R 50% / A 12.5% / J 11.1%，单轮优化后 R/A/J 均 100%，`decision=accept`。
 - **一键启动**：`./start.sh`（macOS/Linux）与 `start.bat`（Windows 10/11）自动**停止旧服务**、
   检查 Python、创建 `.venv`、安装依赖、首次初始化示例（基线 + 单轮优化）、启动并打开浏览器；
   支持 `--reset/--no-open/--seed-only/--no-kill/--port/--host/--help`；macOS 可双击
@@ -31,7 +35,7 @@
 - **安全**：执行器不接收 expected/答案、优化器不读验证/最终测试集、补丁白名单与静态检查、
   凭据脱敏、fixture 未命中不访问真实服务。
 - **文档**：README、架构、API、部署、演示、契约、验收记录、需求追溯、样例说明。
-- **测试**：228 条 pytest 用例（A01–A20），GitHub Actions CI。
+- **测试**：230 条 pytest 用例（A01–A20 + 双示例项目回归），GitHub Actions CI。
 
 ### Changed
 

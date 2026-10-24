@@ -4,7 +4,7 @@
 
 ```bash
 bash scripts/setup.sh
-.venv/bin/python -m pytest -q          # 228 passed
+.venv/bin/python -m pytest -q          # 230 passed
 ```
 
 用例按需求编号组织在 `tests/`：
@@ -51,7 +51,7 @@ bash scripts/setup.sh
   `POST /runs/{id}/apply` 的 409 冲突、取消排队运行、版本回滚由自动化用例覆盖。
 
 > 说明：浏览器界面联调为人工/脚本化抽查，仓库没有引入 Playwright 作为测试依赖；
-> 后端行为由 228 条 pytest 用例保证，前端静态资源由后端直接托管、无构建步骤。
+> 后端行为由 230 条 pytest 用例保证，前端静态资源由后端直接托管、无构建步骤。
 
 ## 3. 已知边界
 

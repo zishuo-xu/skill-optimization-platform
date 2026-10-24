@@ -1,0 +1,20 @@
+[
+  {
+    "name": "imageEditWorkflow",
+    "description": "执行图片编辑工作流（修图、换色、去背景、画质增强）",
+    "parameters": {
+      "type": "object",
+      "required": ["method", "script", "request", "args"],
+      "properties": {
+        "method": {"type": "string", "description": "图片编辑方法名"},
+        "script": {"type": "string", "description": "工作流脚本路径"},
+        "request": {
+          "type": "object",
+          "properties": {"query": {"type": "string"}},
+          "required": ["query"]
+        },
+        "args": {"type": "object", "description": "子技能参数"}
+      }
+    }
+  }
+]

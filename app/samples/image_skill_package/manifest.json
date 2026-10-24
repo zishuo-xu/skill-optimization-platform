@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "main": "SKILL.md",
+  "subskills": [
+    {"skill_id": "image_one_word_fix", "name": "一句话修图",
+     "path": "references/image-one-word-fix.md",
+     "description": "按一句话描述修图，例如眼睛、肤色、光线"},
+    {"skill_id": "image_color_transfer", "name": "图片换色",
+     "path": "references/image-color-transfer.md",
+     "description": "把图片整体或某一区域换成目标颜色"},
+    {"skill_id": "image_background_remove", "name": "去除背景",
+     "path": "references/image-background-remove.md",
+     "description": "去除照片背景并保留主体"},
+    {"skill_id": "image_enhance", "name": "画质增强",
+     "path": "references/image-enhance.md",
+     "description": "提亮暗图、增强清晰度与画质"}
+  ]
+}

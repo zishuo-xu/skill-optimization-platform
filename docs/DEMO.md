@@ -16,8 +16,13 @@ Windows 10/11 在安装 Python 3.11+ 后，双击 `start.bat`，或在 cmd 执�
 start.bat --reset
 ```
 
-`seed --with-optimize` 会真实执行：导入 21 子技能 Skill 包 → 发布环境 → 发布 45 条数据集 →
-跑基线 → 跑一次单轮优化（候选补丁、静态检查、3 次配对验证、接受规则判定）。
+`seed --with-optimize` 会为**两个示例项目**真实执行完整闭环：
+
+- 「示例项目：任务管理」：21 子技能 Skill 包 + 45 条数据集
+- 「示例项目：修图」：4 子技能渐进式修图 Skill 包 + 15 条数据集
+
+两者都会导入 Skill 包 → 发布环境与数据集 → 跑基线 → 跑一次单轮优化（候选补丁、
+静态检查、3 次配对验证、接受规则判定）。
 
 ## 2. 预期结果
 
@@ -28,6 +33,24 @@ start.bat --reset
 | 联合通过率 J | 60.61%（20/33） | **100%（33/33）** | 37.5%（9/24） | **100%（24/24）** |
 
 候选改动 5 个文件、9 处局部修改，静态检查通过，`decision=accept`（“评测达标，待应用”）。
+
+### 2.1 修图示例项目（渐进式 Skill）
+
+| 指标 | 基线（优化集） | 候选（优化集） |
+| --- | --- | --- |
+| 分发准确率 R | 50.00%（4/8） | **100%（8/8）** |
+| 工具入参准确率 A | 12.50%（1/8） | **100%（8/8）** |
+| 联合通过率 J | 11.11%（1/9） | **100%（9/9）** |
+
+演示点：
+
+- 主 `SKILL.md` 用分发表选择 4 个修图子技能，再通过 `read_skill` 渐进式读取对应 reference；
+  读取更多 reference 不计入 R，只有一次显式子技能选择。
+- 业务工具固定为 `imageEditWorkflow`，参数包含 `method`、`script`、`request.query` 和子技能
+  自己的 `args`（如 `useOneWordFixPicture`、`targetColor`、`keepSubject`、`enhanceType`）。
+- 基线刻意保留 4 类缺陷：分发关键词缺失、颜色映射错误、两个必填参数缺失、缺少澄清条件；
+  冻结启发式生成 8 处局部修改，候选复测全部通过。
+- 数据集使用简化写法：`query + skill + tool + mock`，`fin`/验证案例与任务项目同一套格式。
 示例环境未接真实优化模型：运行日志会明确记录 `optimizer_not_configured`、
 `fallback_started`，再使用冻结启发式回退——不会伪造模型输出。
 
@@ -37,7 +60,7 @@ start.bat --reset
 
 ![概览](images/overview.png)
 
-1. 打开项目列表 → 示例项目。
+1. 打开项目列表 → 「示例项目：任务管理」或「示例项目：修图」。
 2. 核对「配置完整性」四项（Skill 包/执行环境/数据集/兼容基线）与「最近指标」
    R 83.3%、A 63.3%、J 60.6%。
 3. 主按钮为「单轮优化」；点击后侧栏展示版本快照、复用基线、候选 1、验证 3 次、
@@ -110,7 +133,7 @@ curl -s -OJ http://127.0.0.1:8765/api/v3/runs/$RID/report.json
 ## 5. 自动化验收
 
 ```bash
-.venv/bin/python -m pytest -q     # 228 passed
+.venv/bin/python -m pytest -q     # 230 passed
 ```
 
 A01–A20 的用例映射见 [VERIFICATION.md](VERIFICATION.md) 与

@@ -74,6 +74,21 @@ def build_adapter(model_config: Mapping[str, Any] | None) -> ModelAdapter:
 
 
 def _build_demo_adapter(model_config: Mapping[str, Any]) -> ModelAdapter:
+    model = str(model_config.get("model") or "").lower()
+    domain = str(model_config.get("domain") or "").lower()
+    if domain == "image" or model.startswith("demo-image"):
+        try:
+            module = __import__("app.adapters.demo_image", fromlist=["DemoImageScriptedAdapter"])
+            adapter_class = getattr(module, "DemoImageScriptedAdapter")
+            return adapter_class(model_config)
+        except (ImportError, AttributeError) as exc:
+            logger.warning("demo image adapter unavailable: %s", exc)
+            raise AppError(
+                "图片编辑演示适配器不可用",
+                code="provider_unavailable",
+                status_code=422,
+                field_path="model_config.provider",
+            ) from exc
     try:
         module = __import__("app.adapters.demo_scripted", fromlist=["DemoScriptedAdapter"])
         adapter_class = getattr(module, "DemoScriptedAdapter")

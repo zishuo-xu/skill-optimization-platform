@@ -297,13 +297,13 @@ if [ "$ready" -ne 1 ]; then
   warn "健康检查超时，请手动打开 $BASE_URL 查看；服务仍在运行。"
 fi
 
-project_link="$("$VENV_PY" - "$BASE_URL" 2>/dev/null <<'PY' || true
+project_links="$("$VENV_PY" - "$BASE_URL" 2>/dev/null <<'PY' || true
 import json, sys, urllib.request
 try:
     with urllib.request.urlopen(sys.argv[1] + "/api/v3/projects", timeout=2) as resp:
         items = json.load(resp).get("items") or []
-    if items:
-        print(sys.argv[1] + "/#/projects/" + items[0]["id"] + "/overview")
+    for item in items:
+        print(item.get("name", "示例项目") + "|" + sys.argv[1] + "/#/projects/" + item["id"] + "/overview")
 except Exception:
     pass
 PY
@@ -311,7 +311,11 @@ PY
 
 printf '\n'
 log "服务已就绪：$BASE_URL"
-[ -n "$project_link" ] && log "示例项目：$project_link"
+if [ -n "$project_links" ]; then
+  while IFS='|' read -r name link; do
+    [ -n "$name" ] && log "示例项目（${name}）：${link}"
+  done <<< "$project_links"
+fi
 log "按 Ctrl+C 停止服务（关闭此终端会同时停止服务）"
 printf '\n'
 
