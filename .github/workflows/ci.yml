@@ -28,9 +28,10 @@ jobs:
           SKILLOPT_DISABLE_WORKER: "1"
         run: python -m pytest -q
 
-      - name: Frontend syntax check
+      - name: Frontend & shell syntax check
         run: |
           for f in web/js/*.js web/js/views/*.js; do node --check "$f"; done
+          bash -n start.sh scripts/setup.sh run.sh
 
       - name: Seed demo project (smoke test)
         run: python -m app.seed

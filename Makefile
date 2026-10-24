@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup seed demo run test clean
+.PHONY: setup seed demo start run test clean
 
 setup:            ## 创建 venv 并安装依赖
 	bash scripts/setup.sh
@@ -11,7 +11,10 @@ seed:             ## 初始化示例项目并运行基线
 demo:             ## 初始化示例项目并运行一次单轮优化
 	$(PY) -m app.seed --with-optimize
 
-run:              ## 启动 Web 服务
+start:            ## 一键启动（自动安装依赖、初始化示例、打开浏览器）
+	./start.sh
+
+run:              ## 启动 Web 服务（不初始化、不打开浏览器）
 	$(PY) -m app.server
 
 test:             ## 运行全部自动化验收用例

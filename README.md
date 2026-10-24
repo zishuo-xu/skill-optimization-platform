@@ -18,15 +18,28 @@
 ```bash
 git clone https://github.com/zishuo-xu/skill-optimization-platform
 cd skill-optimization-platform
-bash scripts/setup.sh          # 创建 .venv 并安装纯 Python 依赖
-.venv/bin/python -m app.seed   # 初始化示例项目并运行基线（约 2 秒）
-./run.sh                       # http://127.0.0.1:8765
+./start.sh
 ```
 
-想要一条命令看到完整“基线 → 单轮优化 → 候选达标”的闭环：
+`start.sh` 会自动完成：创建 `.venv` → 安装依赖 → 首次初始化示例项目（导入 Skill 包、
+发布环境与数据集、跑基线 + 一次单轮优化）→ 启动服务并打开浏览器
+（**http://127.0.0.1:8765**）。macOS 也可以直接双击 `start.command`。
+
+常用参数：
 
 ```bash
-.venv/bin/python -m app.seed --reset --with-optimize
+./start.sh --reset       # 清空本地演示数据后重新初始化（会重新执行基线 + 单轮优化）
+./start.sh --no-open     # 启动服务但不自动打开浏览器
+./start.sh --seed-only   # 只初始化/重置示例数据，不启动服务
+./start.sh --port 8766   # 指定端口
+./start.sh --help
+```
+
+也可以手动分步执行（用于 CI/生产）：
+
+```bash
+bash scripts/setup.sh
+.venv/bin/python -m app.seed --with-optimize
 ./run.sh
 ```
 
@@ -278,6 +291,8 @@ app/
   obs_tools.py       select_skill / read_skill / finish 协议
   samples/           示例 Skill 包、工具协议、Prompt、数据集、环境
   seed.py            演示项目初始化
+start.sh             一键启动（自动装依赖/初始化示例/启动/打开浏览器）
+start.command        macOS 双击启动入口
 web/                 原生 ES Modules 深色中文 SPA（无构建）
 tests/               A01–A20 自动化验收
 docs/CONTRACTS.md    模块/API/事件契约

@@ -3,6 +3,8 @@
 ## 1. 准备
 
 ```bash
+./start.sh --reset           # 一键安装 + 重置示例 + 启动并打开浏览器
+# 或分步：
 bash scripts/setup.sh
 .venv/bin/python -m app.seed --reset --with-optimize
 ./run.sh                     # http://127.0.0.1:8765

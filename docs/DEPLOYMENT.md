@@ -13,19 +13,30 @@
 ```bash
 git clone https://github.com/zishuo-xu/skill-optimization-platform
 cd skill-optimization-platform
-bash scripts/setup.sh          # 创建 .venv 并安装 requirements.txt
-.venv/bin/python -m app.seed   # 示例项目 + 基线（约 2 秒）
-./run.sh                       # 默认 http://127.0.0.1:8765
+./start.sh
 ```
 
-一条命令体验完整闭环（会清空本地 `data/`）：
+`./start.sh` 一键完成：Python 3.11+ 检查 → 创建 `.venv` → 安装依赖 → 首次初始化示例
+（基线 + 单轮优化）→ 启动服务并打开浏览器。macOS 可双击 `start.command`。
+
+| 命令 | 说明 |
+| --- | --- |
+| `./start.sh` | 一键启动（幂等：已有数据会跳过初始化） |
+| `./start.sh --reset` | 清空 `data/` 后重新初始化并启动 |
+| `./start.sh --no-open` | 启动但不打开浏览器 |
+| `./start.sh --seed-only` | 只初始化/重置示例数据 |
+| `./start.sh --port 8766` | 指定端口 |
+| `./start.sh --help` | 查看参数 |
+
+也可手动分步（适合 CI/生产）：
 
 ```bash
-.venv/bin/python -m app.seed --reset --with-optimize
-./run.sh
+bash scripts/setup.sh
+.venv/bin/python -m app.seed --with-optimize
+./run.sh                       # 等价于 .venv/bin/python -m app.server
 ```
 
-`run.sh` 等价于 `.venv/bin/python -m app.server`；也可用 `make setup/seed/demo/run/test`。
+`make setup/seed/demo/start/run/test` 提供同样的快捷入口。
 
 ## 3. 配置
 
