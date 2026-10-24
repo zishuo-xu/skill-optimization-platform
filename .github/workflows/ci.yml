@@ -33,7 +33,4 @@ jobs:
           for f in web/js/*.js web/js/views/*.js; do node --check "$f"; done
 
       - name: Seed demo project (smoke test)
-        env:
-          SKILLOPT_DATA_DIR: ${{ runner.temp }}/skillopt-data
-          SKILLOPT_DB_PATH: ${{ runner.temp }}/skillopt-data/app.db
-        run: python -m app.seed --reset
+        run: python -m app.seed
