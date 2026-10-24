@@ -572,3 +572,19 @@ def test_wildcard_fixture_matches_any_business_tool():
     assert first["matched"] and second["matched"]
     assert first["response"] == {"ok": True}
     assert second["tool"] == "query_stats"
+
+
+def test_compact_tool_args_shorthand_sets_arguments_path():
+    item = {
+        "query": "把这张图调成蓝色",
+        "skill": "task_query",
+        "tool": {"name": "list_tasks", "args": {"project_id": "P9"}},
+    }
+    result = prepare([item])
+    assert result["errors"] == []
+    call = result["cases"][0]["expected"]["tool_calls"][0]
+    assert call == {
+        "name": "list_tasks",
+        "arguments": {"project_id": "P9"},
+        "arguments_path": "args",
+    }

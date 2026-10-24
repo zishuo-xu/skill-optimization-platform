@@ -478,6 +478,9 @@ export default async function datasetView(container, ctx) {
                         'div.tool-call-block__head',
                         null,
                         h('span', { text: `#${index + 1} ${call.name}` }),
+                        call.arguments_path
+                          ? chip(`仅比较 arguments.${call.arguments_path}`, 'neutral')
+                          : null,
                         h('span.spacer'),
                         h('span.xsmall.muted', { text: `${Object.keys(args).length} 个参数` })
                       ),

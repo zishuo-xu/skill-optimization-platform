@@ -35,10 +35,13 @@
 - **安全**：执行器不接收 expected/答案、优化器不读验证/最终测试集、补丁白名单与静态检查、
   凭据脱敏、fixture 未命中不访问真实服务。
 - **文档**：README、架构、API、部署、演示、契约、验收记录、需求追溯、样例说明。
-- **测试**：230 条 pytest 用例（A01–A20 + 双示例项目回归），GitHub Actions CI。
+- **测试**：233 条 pytest 用例（A01–A20 + 双示例项目回归），GitHub Actions CI。
 
 ### Changed
 
+- **支持只比较工具参数的子树**：数据集 `tool.args` / canonical `arguments_path`（如
+  `args`）让 A 只比较 `arguments.args`，忽略固定的 method/script/request 包装；
+  修图示例项目已改为该模式，A 直接关注子技能参数。
 - **数据集支持简化写法**：可直接写 `query + skill + tool/arguments (+ mock)`，导入时自动展开为
   canonical `expected`/`fixtures`；`skill` 支持 reference 路径自动映射、`tool` 支持
   `functionName`；缺省 `fixtures` 自动生成通配模拟返回，显式 `fixtures: []` 可关闭。

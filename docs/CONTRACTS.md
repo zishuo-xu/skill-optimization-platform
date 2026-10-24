@@ -88,6 +88,9 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `tool_calls`: 完整业务调用序列（辅助查询工具也算业务工具；内部工具
   `select_skill` / `read_skill` / `finish` 不计分）。
 - `call_match` ∈ `ordered_exact`（默认）/ `unordered`。
+- `tool_calls[].arguments_path` 可选，点分字段路径（如 `args`）：A 只比较实际
+  `arguments` 在该子树下的值；简化写法 `tool.args` 自动展开为该路径。外层包装参数
+  不参与比较，缺该子树时记 `missing_arg`。
 - `variants`: `[{"routes": ..., "tool_calls": ..., "call_match": ..., "route_ordered": ...}]`
   可选，用于多种有效调用序列，逐个完整匹配。
 - `fixtures[].consume` ∈ `always`（默认）/ `once`（按调用次序消费）。

@@ -30,6 +30,8 @@ No database, network, global state or debug output.
 
 from __future__ import annotations
 
+import re
+
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
@@ -325,9 +327,18 @@ def _normalise_calls(calls: Any) -> list[dict[str, Any]]:
             continue
         name = call.get("name")
         arguments = call.get("arguments")
+        path = call.get("arguments_path")
+        if not isinstance(path, str) or not path.strip():
+            path = None
+        else:
+            path = path.strip()
+            while path.startswith("$"):
+                path = path[1:]
+            path = path.lstrip(".")
         result.append({
             "name": name if isinstance(name, str) else None,
             "arguments": dict(arguments) if isinstance(arguments, Mapping) else {},
+            "arguments_path": path,
             "raw": call,
         })
     return result
@@ -469,6 +480,41 @@ def _has_expected_calls(expected: Mapping[str, Any]) -> bool:
 # --------------------------------------------------------------------------- #
 # argument comparison
 # --------------------------------------------------------------------------- #
+def _project_arguments(arguments: Mapping[str, Any],
+                      path: str | None) -> tuple[bool, Any]:
+    """Return the subtree addressed by a dotted ``arguments_path``."""
+    if not path:
+        return True, arguments
+    current: Any = arguments
+    for segment in path.split("."):
+        if not segment:
+            continue
+        if not isinstance(current, Mapping) or segment not in current:
+            return False, None
+        current = current[segment]
+    return True, current
+
+
+def _compare_call_arguments(expect_call: Mapping[str, Any],
+                           actual_arguments: Mapping[str, Any],
+                           ctx: dict[str, Any], prefix: str = "$") -> bool:
+    """Compare one expected business call, optionally scoped to ``arguments_path``."""
+    path = expect_call.get("arguments_path")
+    if path:
+        found, projected = _project_arguments(actual_arguments, path)
+        if not found:
+            ctx["diags"].append(_diag(
+                "missing_arg", case_id=ctx.get("case_id"),
+                tool=expect_call.get("name"),
+                field_path=f"{prefix}.{path}" if prefix else path,
+                expected_value=expect_call.get("arguments")))
+            return False
+        return _compare_arguments(expect_call.get("arguments"), projected,
+                                  f"{prefix}.{path}", ctx)
+    return _compare_arguments(expect_call.get("arguments"), actual_arguments,
+                              prefix, ctx)
+
+
 def _compare_arguments(expected: Any, actual: Any, path: str,
                        ctx: dict[str, Any]) -> bool:
     diags: list[dict[str, Any]] = ctx["diags"]
@@ -717,8 +763,8 @@ def _compare_calls_ordered_strict(expected: list[dict[str, Any]],
                                actual_value=actual_call["name"]))
             continue
         call_ctx = dict(ctx, tool=expect_call["name"])
-        if not _compare_arguments(expect_call["arguments"],
-                                  actual_call["arguments"], "$", call_ctx):
+        if not _compare_call_arguments(expect_call, actual_call["arguments"],
+                                       call_ctx):
             ok = False
     return ok
 
@@ -769,8 +815,8 @@ def _compare_calls_unordered(expected: list[dict[str, Any]],
         for index in candidates:
             probe: list[dict[str, Any]] = []
             call_ctx = dict(ctx, tool=expect_call["name"], diags=probe)
-            if _compare_arguments(expect_call["arguments"],
-                                  actual[index]["arguments"], "$", call_ctx):
+            if _compare_call_arguments(expect_call, actual[index]["arguments"],
+                                       call_ctx):
                 matched = index
                 break
             if best is None or len(probe) < best[0]:
@@ -1129,6 +1175,19 @@ def _expected_structure_errors(expected: Mapping[str, Any]) -> list[dict[str, An
                         "field_path": f"expected.tool_calls[{index}].arguments",
                         "message": "arguments 必须是 JSON 对象",
                     })
+                path = call.get("arguments_path")
+                if path is not None:
+                    if not isinstance(path, str) or not path.strip():
+                        errors.append({
+                            "field_path": f"expected.tool_calls[{index}].arguments_path",
+                            "message": "arguments_path 必须是非空字符串",
+                        })
+                    elif not re.match(r"^\$?\.?[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                                      path.strip()):
+                        errors.append({
+                            "field_path": f"expected.tool_calls[{index}].arguments_path",
+                            "message": "arguments_path 必须是点分字段路径，如 args 或 args.params",
+                        })
     variants = expected.get("variants")
     if variants is not None:
         if not _is_sequence(variants):

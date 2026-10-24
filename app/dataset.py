@@ -24,6 +24,7 @@ system or global state.
 from __future__ import annotations
 
 import json
+import re
 import random
 from collections import Counter
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -440,7 +441,26 @@ def _validate_calls_value(calls: Any, field_path: str, tools: Sequence[str],
             add(f"{call_path}.arguments", "invalid_tool_arguments",
                 "arguments 必须是 JSON 对象")
             continue
-        result.append({"name": name, "arguments": dict(arguments)})
+        arguments_path = call.get("arguments_path")
+        normalised_path = None
+        if arguments_path is not None:
+            if not isinstance(arguments_path, str) or not arguments_path.strip():
+                add(f"{call_path}.arguments_path", "invalid_arguments_path",
+                    "arguments_path 必须是非空字符串")
+                continue
+            normalised_path = arguments_path.strip()
+            while normalised_path.startswith("$"):
+                normalised_path = normalised_path[1:]
+            normalised_path = normalised_path.lstrip(".")
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                            normalised_path):
+                add(f"{call_path}.arguments_path", "invalid_arguments_path",
+                    "arguments_path 必须是点分字段路径，如 args")
+                continue
+        entry = {"name": name, "arguments": dict(arguments)}
+        if normalised_path:
+            entry["arguments_path"] = normalised_path
+        result.append(entry)
     return result
 
 
@@ -527,12 +547,21 @@ def _normalise_tool_entry(entry: Any, fallback_arguments: Any = None) -> Any:
         return entry
     name = entry.get("name") or entry.get("functionName") or entry.get("tool")
     arguments = entry.get("arguments")
+    scoped_args = entry.get("args")
+    arguments_path = entry.get("arguments_path")
+    if arguments is None and isinstance(scoped_args, Mapping) \
+            and not isinstance(arguments_path, str):
+        arguments = scoped_args
+        arguments_path = "args"
     if arguments is None and fallback_arguments is not None:
         arguments = fallback_arguments
     if arguments is None:
         arguments = {}
     if isinstance(name, str) and name:
-        return {"name": name, "arguments": arguments}
+        call = {"name": name, "arguments": arguments}
+        if isinstance(arguments_path, str) and arguments_path.strip():
+            call["arguments_path"] = arguments_path.strip()
+        return call
     return entry
 
 

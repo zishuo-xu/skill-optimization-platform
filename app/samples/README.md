@@ -8,7 +8,8 @@
 - `image_tool_schema.json`：图片编辑工具协议（`imageEditWorkflow`）。
 - `image_system_prompt.md` / `image_environment.json`：图片编辑示例环境
   （provider=`demo_scripted`，model=`demo-image-v1`，domain=image）。
-- `image_dataset.jsonl`：15 条修图示例（9 优化 / 4 验证 / 2 最终测试），使用同样的简化写法。
+- `image_dataset.jsonl`：15 条修图示例（9 优化 / 4 验证 / 2 最终测试），使用简化写法并只比较
+  `imageEditWorkflow` 的 `arguments.args`；外层 `method`/`script`/`request` 固定，不参与 A 评分。
 - `dataset.jsonl`：45 条示例案例（33 优化集 / 8 验证集 / 4 最终测试集），含澄清、无操作、多路线与关键案例。
   该文件使用平台**简化写法**（`query + skill + tool + mock`），导入时自动展开为完整的
   `expected`/`fixtures`；`mock` 会生成一条 `name: "*"` 的通配模拟返回，因此案例 JSON

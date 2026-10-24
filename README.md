@@ -116,7 +116,7 @@ your-skill.zip
 | --- | --- |
 | `skill` | 单个选中子技能；可写 manifest `skill_id`，也可直接写 `references/xxx.md` 路径（自动映射）；多步路线写成 `["a","b"]`，顺序敏感时同时设置 `route_ordered: true` |
 | `route` / `routes` | `routes` 可写平铺数组（一条路线）或二维数组（多条可选路线）；未写 `route_ordered` 时按集合比较 |
-| `tool` / `tools` | 业务工具调用；可直接用 `functionName` 代替 `name`；`arguments` 原样比较 |
+| `tool` / `tools` | 业务工具调用；可直接用 `functionName` 代替 `name`；`arguments` 原样比较；也可写 `args`，表示只比较实际参数的 `arguments.args`（适合固定 method/script/request 包装、只关心子技能参数的场景） |
 | `mock` / `mocks` | 自动生成该案例所有业务工具的模拟返回；`mock` 是统一响应，`mocks` 是 `{工具名: 响应}` |
 | `action` | 省略时默认 `tool_call`；有 `missing` 时推断为 `clarify`；`no_action` 需显式写 |
 | `missing` | 等价于 `missing_fields`（clarify 必填） |
@@ -140,6 +140,11 @@ your-skill.zip
 - 不写 `fixtures` 时：默认按 `expected.tool_calls` 自动生成模拟返回；提供了 `mock`
   则生成**一条** `name: "*"` 的通配模拟返回，覆盖所有业务工具（错误分发也能继续产出路由诊断）；
   `mocks` 按工具配置的返回优先于通配返回。想故意测试缺模拟返回，请显式写 `"fixtures": []`。
+- 只关心工作流内部参数时（例如修图 Skill 的 `args`）：
+  ```json
+  {"query":"把这张图调成蓝色","skill":"image_color_transfer","tool":{"name":"imageEditWorkflow","args":{"targetColor":"蓝色"}},"mock":{"ok":true}}
+  ```
+  平台会只比较实际调用的 `arguments.args`，外层 `method`/`script`/`request` 不参与 A 评分。
 - 也可以写 `fixtures` 映射：`{"tool_name": {"whatever":"response"}}`，或传统数组。
 - 完整写法（`expected` + `fixtures` 数组）继续完全兼容，适合多路线、多工具、variants、严格比较规则等高级场景。
 
@@ -167,7 +172,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 230 passed
+.venv/bin/python -m pytest -q        # 233 passed
 ```
 
 ### 文档导航

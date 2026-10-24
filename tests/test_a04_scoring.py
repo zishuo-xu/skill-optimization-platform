@@ -620,3 +620,83 @@ def test_compare_rules_as_fourth_argument_need_explicit_version():
         {"version": "compare-v99", "numeric_tolerance": 0.1},
     )
     assert unsupported["status"] == "invalid"
+
+
+IMAGE_TOOL_SCHEMA = [
+    {
+        "name": "imageEditWorkflow",
+        "parameters": {
+            "type": "object",
+            "required": ["method", "script", "request", "args"],
+            "properties": {
+                "method": {"type": "string"},
+                "script": {"type": "string"},
+                "request": {"type": "object"},
+                "args": {"type": "object"},
+            },
+        },
+    },
+]
+
+
+def test_arguments_path_compares_only_the_args_subtree():
+    expectation = {
+        "action": "tool_call",
+        "routes": [["gallery_image_editor"]],
+        "tool_calls": [{
+            "name": "imageEditWorkflow",
+            "arguments": {"targetColor": "蓝色"},
+            "arguments_path": "args",
+        }],
+    }
+    result = {
+        "case_id": "case_img_001",
+        "selected_skills": ["gallery_image_editor"],
+        "action": "tool_call",
+        "tool_calls": [{
+            "name": "imageEditWorkflow",
+            "arguments": {
+                "method": "imageColorTransfer",
+                "script": "scripts/ImageEditorAdaptor.ets",
+                "request": {"query": "调成蓝色"},
+                "args": {"targetColor": "蓝色"},
+            },
+        }],
+        "capabilities": {"routing": True, "tool_arguments": True},
+    }
+    scored = score_case(expectation, result, IMAGE_TOOL_SCHEMA, None)
+    assert scored["tool_args"]["passed"] is True
+    assert scored["joint"] is True
+
+
+def test_arguments_path_failure_reports_nested_field_path():
+    expectation = {
+        "action": "tool_call",
+        "routes": [["gallery_image_editor"]],
+        "tool_calls": [{
+            "name": "imageEditWorkflow",
+            "arguments": {"targetColor": "蓝色"},
+            "arguments_path": "args",
+        }],
+    }
+    result = {
+        "case_id": "case_img_002",
+        "selected_skills": ["gallery_image_editor"],
+        "action": "tool_call",
+        "tool_calls": [{
+            "name": "imageEditWorkflow",
+            "arguments": {
+                "method": "imageColorTransfer",
+                "script": "scripts/ImageEditorAdaptor.ets",
+                "request": {"query": "调成红色"},
+                "args": {"targetColor": "红色"},
+            },
+        }],
+        "capabilities": {"routing": True, "tool_arguments": True},
+    }
+    scored = score_case(expectation, result, IMAGE_TOOL_SCHEMA, None)
+    assert scored["tool_args"]["passed"] is False
+    diagnostic = find_diagnostic(scored, "value_error")
+    assert diagnostic["field_path"] == "$.args.targetColor"
+    assert diagnostic["expected_value"] == "蓝色"
+    assert diagnostic["actual_value"] == "红色"

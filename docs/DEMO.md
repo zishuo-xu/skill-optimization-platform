@@ -46,11 +46,13 @@ start.bat --reset
 
 - 主 `SKILL.md` 用分发表选择 4 个修图子技能，再通过 `read_skill` 渐进式读取对应 reference；
   读取更多 reference 不计入 R，只有一次显式子技能选择。
-- 业务工具固定为 `imageEditWorkflow`，参数包含 `method`、`script`、`request.query` 和子技能
-  自己的 `args`（如 `useOneWordFixPicture`、`targetColor`、`keepSubject`、`enhanceType`）。
+- 业务工具固定为 `imageEditWorkflow`，外层 `method`、`script`、`request.query` 是固定包装；
+  数据集只比较 `arguments.args`（如 `useOneWordFixPicture`、`targetColor`、`keepSubject`、
+  `enhanceType`），即你真正关心的子技能参数。
 - 基线刻意保留 4 类缺陷：分发关键词缺失、颜色映射错误、两个必填参数缺失、缺少澄清条件；
   冻结启发式生成 8 处局部修改，候选复测全部通过。
-- 数据集使用简化写法：`query + skill + tool + mock`，`fin`/验证案例与任务项目同一套格式。
+- 数据集使用简化写法：`query + skill + tool.args + mock`；`tool` 里只写 args 时，
+  平台自动设置 `arguments_path: "args"`，A 只比较该子树。
 示例环境未接真实优化模型：运行日志会明确记录 `optimizer_not_configured`、
 `fallback_started`，再使用冻结启发式回退——不会伪造模型输出。
 
@@ -133,7 +135,7 @@ curl -s -OJ http://127.0.0.1:8765/api/v3/runs/$RID/report.json
 ## 5. 自动化验收
 
 ```bash
-.venv/bin/python -m pytest -q     # 230 passed
+.venv/bin/python -m pytest -q     # 233 passed
 ```
 
 A01–A20 的用例映射见 [VERIFICATION.md](VERIFICATION.md) 与
