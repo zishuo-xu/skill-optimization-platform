@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
@@ -31,6 +33,18 @@ async def index(request) -> Response:
 
 async def favicon(request) -> Response:
     return Response(status_code=204)
+
+
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Always revalidate frontend assets so a refresh loads the latest UI."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith(("/js/", "/css/", "/assets/")):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
 
 def _error_response(exc: AppError) -> JSONResponse:
@@ -96,6 +110,7 @@ def create_app(*, start_worker: bool | None = None) -> Starlette:
         routes.append(Mount("/assets", StaticFiles(directory=str(config.WEB_DIR / "assets")),
                             name="assets"))
     app = Starlette(routes=routes, lifespan=lifespan,
+                    middleware=[Middleware(NoCacheStaticMiddleware)],
                     exception_handlers={AppError: app_error_handler,
                                         Exception: generic_error_handler})
     app.state.worker_disabled = (start_worker is False

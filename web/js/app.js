@@ -212,7 +212,7 @@ function buildSidebarFooter() {
       h('span.footer-label', { text: state.health === 'online' ? '后端已连接' : state.health === 'offline' ? '后端未连接' : '正在检查后端…' })
     )
   );
-  fragment.appendChild(h('div.footer-label', { text: isMockMode() ? '演示数据（?mock=1）' : 'Web v1 · 单轮优化' }));
+  fragment.appendChild(h('div.footer-label', { text: isMockMode() ? '演示数据（?mock=1）' : 'Web v1.1 · 单轮优化' }));
   return fragment;
 }
 
