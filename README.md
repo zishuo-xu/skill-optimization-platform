@@ -103,33 +103,50 @@ your-skill.zip
 
 ### 数据集格式
 
-支持 `.jsonl`（推荐，每行一个案例）与 `.json`（数组，或 `{"cases":[...]}`），UTF-8 编码。
-每行示例：
+支持 `.jsonl`（推荐，每行一个案例）与 `.json`（数组，或 `{"cases":[...]}`），UTF-8。
+**推荐用下面的简化写法**，只写你关心的“选中哪个子技能 + 调什么工具/参数”：
 
 ```json
-{"id":"case_001","query":"查询项目 P123 中进行中的任务","group_id":"g_status_query","split":"optimize","tags":["状态映射"],"context":{"timezone":"Asia/Shanghai"},"expected":{"action":"tool_call","routes":[["task_query"]],"route_ordered":false,"call_match":"ordered_exact","tool_calls":[{"name":"list_tasks","arguments":{"project_id":"P123","status":"in_progress"}}],"missing_fields":[]},"fixtures":[{"name":"list_tasks","match":{},"response":{"tasks":[]},"consume":"always"}]}
+{"query":"帮我修一修眼睛，让它更有神采","skill":"references/image-color-transfer-gallery.md","tool":{"functionName":"imageEditWorkflow","arguments":{"args":{"useOneWordFixPicture":"帮我修一修眼睛，让它更有神采"},"method":"imageOneWordFixPicture","request":{"query":"帮我修一修眼睛，让它更有神采"},"script":"scripts/ImageEditorAdaptor.ets"}},"mock":{"ok":true}}
 ```
 
-- `query`、`expected` 必填；`id` 缺省时按 query/group 生成稳定 ID
-- `expected.action`：`tool_call`（默认）/ `clarify` / `no_action`
-  - `clarify` 必须有 `missing_fields`，不能有业务 `tool_calls`
-  - `no_action` 不能有 routes / tool_calls / missing_fields
-- `routes` 是允许的完整子技能路线列表（`[["task_query"]]`），skill_id 必须来自当前 Skill 包 manifest；
-  clarify 可携带 routes 以便优化器归因
-- `tool_calls` 为完整业务工具序列（工具名必须在当前执行环境的工具协议中）；
-  内部工具 `select_skill/read_skill/finish` 不计分
-- `fixtures` 按工具名 + `match` 参数条件返回模拟结果；未命中记 `fixture_miss`，不会访问真实服务
-- `split` 可显式指定 `optimize` / `validation` / `final_test`；不写时按 `group_id` 以固定种子
-  划分（默认 70/20/10，<10 条时退化且提示无最终测试集）
-- 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应先修复或在导入时明确剔除
-- 导入前请先发布 Skill 包与执行环境，校验会使用当前 manifest 与工具协议
+简化字段：
+
+| 写法 | 等价含义 |
+| --- | --- |
+| `skill` | 单个选中子技能；可写 manifest `skill_id`，也可直接写 `references/xxx.md` 路径（自动映射）；`skill_ordered` 多步路线写成 `["a","b"]` |
+| `route` / `routes` | `routes` 可写平铺数组（一条路线）或二维数组（多条可选路线）；未写 `route_ordered` 时按集合比较 |
+| `tool` / `tools` | 业务工具调用；可直接用 `functionName` 代替 `name`；`arguments` 原样比较 |
+| `mock` / `mocks` | 自动生成该案例所有业务工具的模拟返回；`mock` 是统一响应，`mocks` 是 `{工具名: 响应}` |
+| `action` | 省略时默认 `tool_call`；有 `missing` 时推断为 `clarify`；`no_action` 需显式写 |
+| `missing` | 等价于 `missing_fields`（clarify 必填） |
+| `id` / `group_id` / `split` / `tags` / `context` | 可选；`id` 缺省自动生成，`split` 缺省按 group 固定种子划分 |
+
+- 不写 `fixtures` 时，会按 `expected.tool_calls` 自动生成通配模拟返回（未写 `mock` 时返回 `{"ok":true}`）。
+  想故意测试缺模拟返回，请显式写 `"fixtures": []`。
+- 也可以写 `fixtures` 映射：`{"tool_name": {"whatever":"response"}}`，或传统数组。
+- 完整写法（`expected` + `fixtures` 数组）继续完全兼容，适合多路线、多工具、variants、严格比较规则等高级场景。
+
+完整示例（高级/显式写法）：
+
+```json
+{"id":"case_001","query":"查询项目 P123 中进行中的任务","group_id":"g_status_query","split":"optimize","tags":["状态映射"],"expected":{"action":"tool_call","routes":[["task_query"]],"route_ordered":false,"call_match":"ordered_exact","tool_calls":[{"name":"list_tasks","arguments":{"project_id":"P123","status":"in_progress"}}],"missing_fields":[]},"fixtures":[{"name":"list_tasks","match":{},"response":{"tasks":[]},"consume":"always"}]}
+```
+
+- `clarify`：必须有 `missing_fields`，不能有业务 `tool_calls`；可带 routes 便于优化器归因
+- `no_action`：不能有 routes / tool_calls / missing_fields
+- `tool_calls` 是完整业务工具序列；内部工具 `select_skill/read_skill/finish` 不计分
+- `routes` 必须对应当前 Skill 包 manifest；导入前先发布 Skill 与执行环境
+- `fixtures` 未命中记 `fixture_miss`，不会访问真实服务
+- `split` 缺省按 `group_id` 固定种子划分（默认 70/20/10；<10 条时退化）
+- 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应修复或在导入时明确剔除
 
 打开页面左侧的示例项目「示例项目：任务管理」，进入「运行详情」查看基线与优化运行。
 
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 223 passed
+.venv/bin/python -m pytest -q        # 226 passed
 ```
 
 ### 文档导航

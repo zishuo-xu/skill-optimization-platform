@@ -475,3 +475,63 @@ def test_fixture_matching_returns_copies_and_stateless_helper():
     assert match_fixture([fixture], "list_tasks", {})["response"] == {
         "tasks": [{"id": 1}]}
     assert match_fixture([fixture], "ghost", {}) is None
+
+
+def test_compact_shorthand_with_path_alias_function_name_and_auto_fixture():
+    item = {
+        "query": "帮我修一修眼睛，让它更有神采",
+        "skill": "references/task_query.md",
+        "tool": {
+            "functionName": "list_tasks",
+            "arguments": {"project_id": "P1", "status": "in_progress"},
+        },
+        "mock": {"tasks": []},
+    }
+    result = prepare([item])
+    assert result["errors"] == []
+    case = result["cases"][0]
+    assert case["expected"]["routes"] == [["task_query"]]
+    assert case["expected"]["tool_calls"] == [{
+        "name": "list_tasks",
+        "arguments": {"project_id": "P1", "status": "in_progress"},
+    }]
+    assert case["fixtures"] == [{
+        "name": "list_tasks", "match": {}, "response": {"tasks": []},
+        "consume": "always",
+    }]
+
+
+def test_compact_clarify_no_action_and_flat_route():
+    items = [
+        {"query": "帮我建任务", "action": "clarify", "missing": ["title"],
+         "skill": "task_query"},
+        {"query": "你好", "action": "no_action"},
+        {"query": "查询 P1 的任务", "skill": ["task_query"],
+         "tool": "list_tasks", "arguments": {"project_id": "P1"}},
+    ]
+    result = prepare(items)
+    assert result["errors"] == []
+    cases = {case["query"]: case for case in result["cases"]}
+    clarify = cases["帮我建任务"]["expected"]
+    assert clarify["action"] == "clarify"
+    assert clarify["missing_fields"] == ["title"]
+    assert clarify["routes"] == [["task_query"]]
+    no_action = cases["你好"]["expected"]
+    assert no_action["action"] == "no_action"
+    assert no_action["tool_calls"] == []
+    tool_case = cases["查询 P1 的任务"]
+    assert tool_case["expected"]["routes"] == [["task_query"]]
+    assert tool_case["fixtures"][0]["name"] == "list_tasks"
+
+
+def test_explicit_empty_fixtures_disables_auto_mock():
+    item = {
+        "query": "查询 P1 的任务",
+        "skill": "task_query",
+        "tool": "list_tasks",
+        "arguments": {"project_id": "P1"},
+        "fixtures": [],
+    }
+    result = prepare([item])
+    assert result["errors"] == []
+    assert result["cases"][0]["fixtures"] == []

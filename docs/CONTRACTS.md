@@ -76,6 +76,10 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 }
 ```
 
+- **简化写法**：案例可直接写 `skill`（子技能 ID 或 reference 路径）、`tool`/`tools`
+  （支持 `functionName`）、`arguments`、`mock`/`mocks`、`action`、`missing`，
+  导入时统一展开为下述 canonical `expected`/`fixtures`；不写 `fixtures` 会自动生成
+  通配模拟返回，显式 `fixtures: []` 表示不生成。
 - `action` ∈ `tool_call` / `clarify` / `no_action`（缺失视为 `tool_call`）。
 - clarify 案例可以携带 `routes`（记录本应发起澄清的子技能，仅供优化器上下文，
   不参与 R 指标），但不得携带业务 `tool_calls`；no_action 三者均不得携带。

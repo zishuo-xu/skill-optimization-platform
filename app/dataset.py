@@ -201,6 +201,35 @@ def _manifest_skill_ids(manifest: Any) -> list[str]:
     return result
 
 
+def _skill_aliases(manifest: Any) -> dict[str, str]:
+    """Map reference paths / basenames to stable skill_id (unique entries only)."""
+    if not isinstance(manifest, Mapping):
+        return {}
+    raw = manifest.get("subskills")
+    if not _is_sequence(raw):
+        return {}
+    candidates: dict[str, set[str]] = {}
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            continue
+        skill_id = entry.get("skill_id") or entry.get("id")
+        path = entry.get("path")
+        if not isinstance(skill_id, str) or not skill_id:
+            continue
+        names = {skill_id}
+        if isinstance(path, str) and path:
+            norm = path[2:] if path.startswith("./") else path
+            names.add(norm)
+            if norm.endswith((".md", ".markdown")):
+                names.add(norm.rsplit(".", 1)[0])
+            names.add(norm.split("/")[-1])
+            names.add(norm.split("/")[-1].rsplit(".", 1)[0])
+        for name in names:
+            candidates.setdefault(name, set()).add(skill_id)
+    return {name: next(iter(ids)) for name, ids in candidates.items()
+            if len(ids) == 1}
+
+
 def _tool_name_list(tools: Any) -> list[str]:
     if tools is None:
         return []
@@ -342,7 +371,8 @@ def _normalise_case_id(raw_id: Any, query: str, group_id: str) -> str:
 
 def _validate_routes_value(routes: Any, field_path: str,
                            skill_ids: Sequence[str], add: _Add,
-                           line: int | None, case_id: str | None) -> list[list[str]]:
+                           line: int | None, case_id: str | None,
+                           skill_aliases: Mapping[str, str] | None = None) -> list[list[str]]:
     result: list[list[str]] = []
     if routes is None:
         return result
@@ -363,11 +393,19 @@ def _validate_routes_value(routes: Any, field_path: str,
             if not isinstance(skill_id, str) or not skill_id:
                 add(skill_path, "invalid_routes", "skill_id 必须是非空字符串")
                 continue
-            if skill_ids and skill_id not in skill_ids:
-                add(skill_path, "unknown_skill_id",
-                    f"未知的 skill_id: {skill_id}")
-                continue
-            normalised.append(skill_id)
+            resolved = skill_id
+            if skill_ids and resolved not in skill_ids:
+                alias = (skill_aliases or {}).get(skill_id)
+                if alias is None:
+                    norm = skill_id[2:] if skill_id.startswith("./") else skill_id
+                    alias = (skill_aliases or {}).get(norm)
+                if alias is not None and alias in skill_ids:
+                    resolved = alias
+                else:
+                    add(skill_path, "unknown_skill_id",
+                        f"未知的 skill_id: {skill_id}（可写 manifest skill_id 或 reference 路径）")
+                    continue
+            normalised.append(resolved)
         if len(normalised) == len(route):
             result.append(normalised)
     return result
@@ -387,9 +425,10 @@ def _validate_calls_value(calls: Any, field_path: str, tools: Sequence[str],
         if not isinstance(call, Mapping):
             add(call_path, "invalid_tool_call", "工具调用必须是 JSON 对象")
             continue
-        name = call.get("name")
+        name = call.get("name") or call.get("functionName")
         if not isinstance(name, str) or not name:
-            add(f"{call_path}.name", "invalid_tool_call", "工具调用缺少 name")
+            add(f"{call_path}.name", "invalid_tool_call",
+                "工具调用缺少 name/functionName")
             continue
         if tools and name not in tools:
             add(f"{call_path}.name", "unknown_tool", f"未知的工具: {name}")
@@ -443,12 +482,201 @@ def _validate_fixtures(fixtures: Any, tools: Sequence[str], line: int | None,
     return result
 
 
+def _route_entry_value(entry: Any) -> str | None:
+    if isinstance(entry, str) and entry.strip():
+        return entry.strip()
+    if isinstance(entry, Mapping):
+        for key in ("path", "skill_id", "skillId", "skill"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _as_routes(value: Any) -> Any:
+    """Normalise ``route``/``skill``/flat ``routes`` shorthand to nested routes."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [[value]] if value else []
+    if isinstance(value, Mapping):
+        single = _route_entry_value(value)
+        return [[single]] if single else []
+    if not _is_sequence(value):
+        return value
+    items = list(value)
+    if not items:
+        return []
+    if all(isinstance(item, str) for item in items):
+        return [[item for item in items if item]]
+    if all(_is_sequence(item) for item in items):
+        routes: list[list[str]] = []
+        for route in items:
+            values = [_route_entry_value(entry) if isinstance(entry, Mapping) else entry
+                      for entry in route]
+            routes.append([entry for entry in values
+                           if isinstance(entry, str) and entry])
+        return routes
+    return value
+
+
+def _normalise_tool_entry(entry: Any, fallback_arguments: Any = None) -> Any:
+    if isinstance(entry, str):
+        return {"name": entry, "arguments": dict(fallback_arguments or {})}
+    if not isinstance(entry, Mapping):
+        return entry
+    name = entry.get("name") or entry.get("functionName") or entry.get("tool")
+    arguments = entry.get("arguments")
+    if arguments is None and fallback_arguments is not None:
+        arguments = fallback_arguments
+    if arguments is None:
+        arguments = {}
+    if isinstance(name, str) and name:
+        return {"name": name, "arguments": arguments}
+    return entry
+
+
+def _normalise_tool_list(value: Any, fallback_arguments: Any = None) -> Any:
+    if not _is_sequence(value):
+        return value
+    return [_normalise_tool_entry(entry, fallback_arguments) for entry in value]
+
+
+def _auto_fixtures(calls: Any, raw: Mapping[str, Any]) -> list[dict[str, Any]]:
+    mocks = raw.get("mocks")
+    default_response = raw["mock"] if "mock" in raw else {"ok": True}
+    fixtures: list[dict[str, Any]] = []
+    if not _is_sequence(calls):
+        return fixtures
+    for call in calls:
+        if not isinstance(call, Mapping):
+            continue
+        name = call.get("name") or call.get("functionName")
+        if not isinstance(name, str) or not name:
+            continue
+        response = default_response
+        if isinstance(mocks, Mapping) and name in mocks:
+            response = mocks[name]
+        fixtures.append({"name": name, "match": {},
+                         "response": response, "consume": "always"})
+    return fixtures
+
+
+def _normalise_fixtures_shorthand(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        fixture_keys = {"name", "match", "response", "consume"}
+        if fixture_keys & set(value.keys()):
+            # Looks like a single malformed fixture object rather than a
+            # tool-name -> response map; keep it for the validator to reject.
+            if isinstance(value.get("name"), str) and (
+                    "response" in value or "match" in value or "consume" in value):
+                return [dict(value)]
+            return value
+        return [{"name": name, "match": {}, "response": response,
+                 "consume": "always"}
+                for name, response in value.items()]
+    return value
+
+
+def _normalise_compact_case(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Expand compact dataset shorthand into the canonical case shape.
+
+    Compact example::
+
+        {"query": "...", "skill": "references/task_query.md",
+         "tool": {"functionName": "list_tasks", "arguments": {"project_id": "P1"}},
+         "mock": {"tasks": []}}
+
+    The canonical ``expected`` / ``fixtures`` fields remain fully supported and
+    take precedence whenever both forms are present.
+    """
+    if not isinstance(raw, Mapping):
+        return raw
+    data = dict(raw)
+    expected_raw = data.get("expected")
+    if expected_raw is not None and not isinstance(expected_raw, Mapping):
+        return data
+    compact_keys = {"route", "skill", "tool", "tools", "arguments",
+                    "missing", "mock", "mocks", "action", "call_match",
+                    "route_ordered", "variants", "compare"}
+    has_compact = any(key in data for key in compact_keys)
+    if expected_raw is None and not has_compact:
+        return data
+    exp = dict(expected_raw or {})
+
+    # ---- routes -------------------------------------------------------
+    route_source = None
+    if "routes" not in exp and "route" not in exp and "skill" not in exp:
+        for key in ("route", "skill", "routes"):
+            if key in data:
+                route_source = data[key]
+                break
+    if "routes" not in exp and route_source is not None:
+        exp["routes"] = _as_routes(route_source)
+    elif "routes" not in exp:
+        for key in ("route", "skill"):
+            if key in exp:
+                exp["routes"] = _as_routes(exp[key])
+                break
+    elif _is_sequence(exp.get("routes")):
+        exp["routes"] = _as_routes(exp["routes"])
+
+    # ---- business tool calls -----------------------------------------
+    if "tool_calls" not in exp:
+        tool_source = data.get("tools", data.get("tool"))
+        if tool_source is None:
+            for key in ("tools", "tool"):
+                if key in exp:
+                    tool_source = exp[key]
+                    break
+        if tool_source is not None:
+            if _is_sequence(tool_source):
+                exp["tool_calls"] = _normalise_tool_list(
+                    tool_source, data.get("arguments"))
+            else:
+                exp["tool_calls"] = [
+                    _normalise_tool_entry(tool_source, data.get("arguments"))]
+    else:
+        exp["tool_calls"] = _normalise_tool_list(exp["tool_calls"])
+
+    # ---- action / clarify fields -------------------------------------
+    if "action" not in exp and "action" in data:
+        exp["action"] = data["action"]
+    if "missing_fields" not in exp:
+        for key in ("missing_fields", "missing"):
+            if key in data:
+                exp["missing_fields"] = data[key]
+                break
+            if key in exp:
+                exp["missing_fields"] = exp[key]
+                break
+    if "action" not in exp and exp.get("missing_fields"):
+        exp["action"] = "clarify"
+    for key in ("call_match", "route_ordered", "variants", "compare"):
+        if key not in exp and key in data:
+            exp[key] = data[key]
+
+    data["expected"] = exp
+
+    # ---- fixtures -----------------------------------------------------
+    if "fixtures" not in data:
+        calls = exp.get("tool_calls")
+        if _is_sequence(calls) and calls:
+            data["fixtures"] = _auto_fixtures(calls, data)
+    else:
+        data["fixtures"] = _normalise_fixtures_shorthand(data["fixtures"])
+    return data
+
+
 def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
                    tools: Sequence[str],
-                   line_fallback: int | None = None) -> tuple[dict[str, Any] | None,
-                                                             list[dict[str, Any]]]:
+                   line_fallback: int | None = None,
+                   skill_aliases: Mapping[str, str] | None = None
+                   ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Validate and normalise one raw case object."""
 
+    raw = _normalise_compact_case(raw)
+    aliases = skill_aliases or {}
     errors: list[dict[str, Any]] = []
     line = raw.get("_line") if isinstance(raw.get("_line"), int) else line_fallback
 
@@ -534,7 +762,7 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
 
     routes_out = _validate_routes_value(expected.get("routes"),
                                         "expected.routes", skill_ids,
-                                        add, line, case_id)
+                                        add, line, case_id, aliases)
     calls_out = _validate_calls_value(expected.get("tool_calls"),
                                       "expected.tool_calls", tools,
                                       add, line, case_id)
@@ -565,7 +793,7 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
                 if "routes" in variant:
                     variant_out["routes"] = _validate_routes_value(
                         variant.get("routes"), f"{variant_path}.routes",
-                        skill_ids, add, line, case_id)
+                        skill_ids, add, line, case_id, aliases)
                 if "tool_calls" in variant:
                     variant_out["tool_calls"] = _validate_calls_value(
                         variant.get("tool_calls"), f"{variant_path}.tool_calls",
@@ -843,6 +1071,7 @@ def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
     """
 
     skill_ids = _manifest_skill_ids(manifest)
+    skill_aliases = _skill_aliases(manifest)
     tools = _tool_name_list(tool_schema)
 
     errors: list[dict[str, Any]] = []
@@ -867,7 +1096,8 @@ def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
                                  str(message), None))
             continue
 
-        case, case_errors = _validate_case(raw, skill_ids, tools, index + 1)
+        case, case_errors = _validate_case(raw, skill_ids, tools, index + 1,
+                                            skill_aliases)
         if case_errors:
             errors.extend(case_errors)
             continue

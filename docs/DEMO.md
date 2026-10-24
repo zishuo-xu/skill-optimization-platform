@@ -110,7 +110,7 @@ curl -s -OJ http://127.0.0.1:8765/api/v3/runs/$RID/report.json
 ## 5. 自动化验收
 
 ```bash
-.venv/bin/python -m pytest -q     # 223 passed
+.venv/bin/python -m pytest -q     # 226 passed
 ```
 
 A01–A20 的用例映射见 [VERIFICATION.md](VERIFICATION.md) 与
