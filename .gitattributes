@@ -1,0 +1,9 @@
+* text=auto
+
+# Windows one-click start must be checked out with CRLF for cmd.exe
+*.bat -text
+*.cmd -text
+
+# Unix / macOS launchers keep LF
+*.sh text eol=lf
+*.command text eol=lf

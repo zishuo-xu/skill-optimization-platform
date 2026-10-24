@@ -19,6 +19,19 @@ cd skill-optimization-platform
 `./start.sh` 一键完成：Python 3.11+ 检查 → 创建 `.venv` → 安装依赖 → 首次初始化示例
 （基线 + 单轮优化）→ 启动服务并打开浏览器。macOS 可双击 `start.command`。
 
+**Windows 10/11**：安装 Python 3.11+（python.org，勾选 “Add python.exe to PATH”），
+双击仓库根目录的 `start.bat`，或在 cmd 中执行：
+
+```bat
+start.bat
+start.bat --reset
+start.bat --port 8766
+```
+
+`start.bat` 会优先使用 `py -3`，其次 `python`；自动创建 `.venv\Scripts\python.exe`、
+安装依赖、初始化示例、启动服务，并用 PowerShell 等待健康检查后打开浏览器。
+若双击后闪退，请在 cmd 中运行以查看错误信息。
+
 | 命令 | 说明 |
 | --- | --- |
 | `./start.sh` | 一键启动（幂等：已有数据会跳过初始化） |
@@ -27,6 +40,7 @@ cd skill-optimization-platform
 | `./start.sh --seed-only` | 只初始化/重置示例数据 |
 | `./start.sh --port 8766` | 指定端口 |
 | `./start.sh --help` | 查看参数 |
+| `start.bat` | Windows 等价的一键启动（同样支持 `--reset/--no-open/--seed-only/--port/--host/--help`） |
 
 也可手动分步（适合 CI/生产）：
 

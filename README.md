@@ -25,6 +25,16 @@ cd skill-optimization-platform
 发布环境与数据集、跑基线 + 一次单轮优化）→ 启动服务并打开浏览器
 （**http://127.0.0.1:8765**）。macOS 也可以直接双击 `start.command`。
 
+**Windows**（Windows 10/11 + Python 3.11+，安装时勾选 “Add python.exe to PATH”）：
+
+```bat
+start.bat
+```
+
+也可以直接双击 `start.bat`。参数与 `start.sh` 相同：
+`--reset`、`--no-open`、`--seed-only`、`--port 8766`、`--host 0.0.0.0`、`--help`。
+`start.bat` 使用系统的 `py`/`python` 创建 `.venv`，首次需联网安装依赖；PowerShell 用于健康检查与自动打开浏览器。
+
 常用参数：
 
 ```bash
@@ -291,8 +301,9 @@ app/
   obs_tools.py       select_skill / read_skill / finish 协议
   samples/           示例 Skill 包、工具协议、Prompt、数据集、环境
   seed.py            演示项目初始化
-start.sh             一键启动（自动装依赖/初始化示例/启动/打开浏览器）
+start.sh             一键启动（macOS/Linux；自动装依赖/初始化示例/启动/打开浏览器）
 start.command        macOS 双击启动入口
+start.bat            Windows 一键启动（双击或 cmd 运行）
 web/                 原生 ES Modules 深色中文 SPA（无构建）
 tests/               A01–A20 自动化验收
 docs/CONTRACTS.md    模块/API/事件契约

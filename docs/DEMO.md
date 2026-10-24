@@ -3,11 +3,17 @@
 ## 1. 准备
 
 ```bash
-./start.sh --reset           # 一键安装 + 重置示例 + 启动并打开浏览器
+./start.sh --reset           # macOS/Linux：一键安装 + 重置示例 + 启动并打开浏览器
 # 或分步：
 bash scripts/setup.sh
 .venv/bin/python -m app.seed --reset --with-optimize
 ./run.sh                     # http://127.0.0.1:8765
+```
+
+Windows 10/11 在安装 Python 3.11+ 后，双击 `start.bat`，或在 cmd 执行：
+
+```bat
+start.bat --reset
 ```
 
 `seed --with-optimize` 会真实执行：导入 21 子技能 Skill 包 → 发布环境 → 发布 45 条数据集 →

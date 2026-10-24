@@ -35,3 +35,21 @@ jobs:
 
       - name: Seed demo project (smoke test)
         run: python -m app.seed
+
+  windows-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: start.bat --help
+        run: cmd /c start.bat --help
+
+      - name: start.bat --seed-only (one-click setup + demo seed)
+        run: cmd /c start.bat --seed-only
