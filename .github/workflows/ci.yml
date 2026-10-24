@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Backend acceptance tests (A01–A20)
+        env:
+          SKILLOPT_DISABLE_WORKER: "1"
+        run: python -m pytest -q
+
+      - name: Frontend syntax check
+        run: |
+          for f in web/js/*.js web/js/views/*.js; do node --check "$f"; done
+
+      - name: Seed demo project (smoke test)
+        env:
+          SKILLOPT_DATA_DIR: ${{ runner.temp }}/skillopt-data
+          SKILLOPT_DB_PATH: ${{ runner.temp }}/skillopt-data/app.db
+        run: python -m app.seed --reset

@@ -1,5 +1,7 @@
 # Skill 优化平台（单轮评测与优化）
 
+[![CI](https://github.com/zishuo-xu/skill-optimization-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/zishuo-xu/skill-optimization-platform/actions/workflows/ci.yml)
+
 面向产品、前端、后端、Agent 工程及测试人员：导入 Skill 包（主 Skill + 21 个子技能），
 固化执行环境与结构化测试集，先跑基线评测，再执行**一次点击一轮**的单轮优化：
 定位错误 → 生成一个局部补丁 → 同条件复测 → 按冻结规则判定 → 人工应用/回滚/导出。
@@ -7,11 +9,15 @@
 本仓库按根目录 `Skill优化平台需求文档_v1.docx` 实现，覆盖需求 §1–§54 与验收 A01–A20
 （含运行记录 UX 增量）。**不训练/微调模型，不优化业务 Prompt，不做最终自然语言答案综合评分。**
 
+![平台概览](docs/images/overview.png)
+
 ---
 
 ## 1. 快速开始
 
 ```bash
+git clone https://github.com/zishuo-xu/skill-optimization-platform
+cd skill-optimization-platform
 bash scripts/setup.sh          # 创建 .venv 并安装纯 Python 依赖
 .venv/bin/python -m app.seed   # 初始化示例项目并运行基线（约 2 秒）
 ./run.sh                       # http://127.0.0.1:8765
@@ -32,9 +38,20 @@ bash scripts/setup.sh          # 创建 .venv 并安装纯 Python 依赖
 .venv/bin/python -m pytest -q        # 219 passed
 ```
 
-接口与事件契约见 [`docs/CONTRACTS.md`](docs/CONTRACTS.md)，示例数据说明见
-[`app/samples/README.md`](app/samples/README.md)，验收执行记录见
-[`docs/VERIFICATION.md`](docs/VERIFICATION.md)。
+### 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 组件边界、数据模型、状态机、事件模型、可靠性、设计取舍 |
+| [docs/API.md](docs/API.md) | `/api/v3` REST/SSE 接口、示例请求、错误与状态码 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 安装、配置、数据备份、反向代理/SSE、生产加固、故障排查 |
+| [docs/DEMO.md](docs/DEMO.md) | 演示数据、预期结果、界面验证步骤（含截图） |
+| [docs/CONTRACTS.md](docs/CONTRACTS.md) | 模块/数据结构/API/事件契约（开发基线） |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | A01–A20 自动化验收与界面联调记录 |
+| [docs/REQUIREMENTS_TRACEABILITY.md](docs/REQUIREMENTS_TRACEABILITY.md) | 需求 §1–§54 追溯与差异说明 |
+| [app/samples/README.md](app/samples/README.md) | 示例 Skill 包、数据集与刻意保留的缺陷 |
+
+更多文档索引见 [docs/README.md](docs/README.md)。
 
 ---
 
