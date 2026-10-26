@@ -30,7 +30,7 @@ from collections import Counter
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .errors import ValidationError
-from .evaluation import tool_names
+from .evaluation import compare_rules_error, normalise_judge_criteria, tool_names
 from .ids import stable_case_id
 
 SPLITS = ("optimize", "validation", "final_test")
@@ -646,7 +646,7 @@ def _normalise_compact_case(raw: Mapping[str, Any],
         return data
     compact_keys = {"route", "skill", "tool", "tools", "arguments",
                     "missing", "mock", "mocks", "action", "call_match",
-                    "route_ordered", "variants", "compare"}
+                    "route_ordered", "variants", "compare", "judge"}
     has_compact = any(key in data for key in compact_keys)
     if expected_raw is None and not has_compact:
         return data
@@ -700,7 +700,7 @@ def _normalise_compact_case(raw: Mapping[str, Any],
                 break
     if "action" not in exp and exp.get("missing_fields"):
         exp["action"] = "clarify"
-    for key in ("call_match", "route_ordered", "variants", "compare"):
+    for key in ("call_match", "route_ordered", "variants", "compare", "judge"):
         if key not in exp and key in data:
             exp[key] = data[key]
 
@@ -872,11 +872,22 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
         if not isinstance(compare_raw, Mapping):
             add("expected.compare", "invalid_compare",
                 "compare 必须是版本化比较规则对象")
-        elif compare_raw.get("version") != COMPARE_RULE_VERSION:
+        elif compare_raw.get("version") not in (COMPARE_RULE_VERSION, "compare-v2"):
             add("expected.compare.version", "invalid_compare_version",
-                f"compare.version 必须是 {COMPARE_RULE_VERSION}")
+                f"compare.version 必须是 {COMPARE_RULE_VERSION} 或 compare-v2")
+        elif compare_rules_error(compare_raw):
+            add("expected.compare", "invalid_compare", compare_rules_error(compare_raw))
         else:
             compare_out = dict(compare_raw)
+
+    judge_out: dict[str, Any] | None = None
+    judge_raw = expected.get("judge")
+    if judge_raw is not None:
+        _, judge_error = normalise_judge_criteria(judge_raw)
+        if judge_error:
+            add("expected.judge", "invalid_judge", judge_error)
+        else:
+            judge_out = {str(path): dict(spec) for path, spec in judge_raw.items()}
 
     critical = raw.get("critical", expected.get("critical", False))
     if not isinstance(critical, bool):
@@ -928,6 +939,8 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
         expected_out["variants"] = variants_out
     if compare_out is not None:
         expected_out["compare"] = compare_out
+    if judge_out:
+        expected_out["judge"] = judge_out
     if critical:
         expected_out["critical"] = True
 

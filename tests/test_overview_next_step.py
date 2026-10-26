@@ -89,7 +89,8 @@ def test_all_passing_baseline_suggests_cases_and_marks_no_failures(client):
 
     decisions = persistence.list_events(optimize["id"], event_type=event_types.DECISION_MADE)
     assert decisions and decisions[-1]["level"] == "info"
-    assert not services.run_view(optimize["id"])["issues_summary"]["items"]
+    issues = services.run_view(optimize["id"])["issues_summary"]["items"]
+    assert not [item for item in issues if item["stage"] == "decision"]
 
 
 def test_failing_baseline_still_offers_optimize(demo, baseline_run):

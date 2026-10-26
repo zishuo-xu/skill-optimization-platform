@@ -4874,3 +4874,33 @@ pre,
   .validation-summary__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-header__details-body { overflow-wrap: anywhere; }
 }
+
+/* Scoring rules: one row per field rule. */
+.field-rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.code-block {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media (max-width: 720px) {
+  .field-rule-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.param-diff__note {
+  margin-top: 4px;
+  color: var(--text-2);
+}

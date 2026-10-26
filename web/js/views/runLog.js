@@ -94,6 +94,11 @@ function eventTitle(event) {
   if (payload.title) return payload.title;
   if (payload.issue && payload.issue.title) return payload.issue.title;
   const meta = eventMeta(event.type);
+  if (payload.purpose === 'judge' && event.type.startsWith('model_call')) return `评分模型 · ${meta.label}`;
+  if (event.type === 'judge_completed') {
+    const cached = Number(payload.cached || 0);
+    return `${meta.label}：${payload.passed ?? 0}/${payload.items ?? 0} 项一致${cached ? `（${cached} 项复用缓存）` : ''}`;
+  }
   if (event.type === 'stage_started' || event.type === 'stage_completed' || event.type === 'stage_failed') {
     return `${meta.label} · ${STAGE_LABELS[event.stage] || event.stage || ''}`.replace(/ · $/, '');
   }
@@ -1486,8 +1491,8 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
 
   function deriveIssuesFromEvents() {
     const items = sortedEvents()
-      .filter((event) => ['warning', 'error'].includes(event.level) && event.payload?.issue)
-      .map((event) => normalizeExpectedHeuristicIssue(normalizeIssue({ seq: event.seq, level: event.level, type: event.type, stage: event.stage, case_id: event.case_id, ...event.payload.issue })));
+      .filter((event) => ['warning', 'error'].includes(event.level) && (event.payload?.issue || (event.payload?.error_code && event.payload?.title)))
+      .map((event) => normalizeExpectedHeuristicIssue(normalizeIssue({ seq: event.seq, level: event.level, type: event.type, stage: event.stage, case_id: event.case_id, ...(event.payload.issue || event.payload) })));
     state.issues = items.filter((issue) => issue && (issue.level === 'error' || issue.level === 'warning'));
     state.issueCounts = {
       error: state.issues.filter((issue) => issue.level === 'error').length,

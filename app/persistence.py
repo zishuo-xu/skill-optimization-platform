@@ -1220,3 +1220,35 @@ def assert_project_version(project_id: str, expected_current_version: str | None
             details={"current_version": project["current_skill_version_id"],
                      "expected_current_version": expected_current_version},
         )
+
+
+# --------------------------------------------------------------------------- #
+# judge cache
+# --------------------------------------------------------------------------- #
+def get_judgments(keys: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Cached judge verdicts by cache key."""
+    keys = [key for key in dict.fromkeys(keys) if key]
+    if not keys:
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(keys), 500):
+        chunk = keys[start:start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        for row in _fetchall(f"SELECT * FROM judge_cache WHERE key IN ({placeholders})", chunk):
+            found[row["key"]] = {"passed": bool(row["passed"]), "reason": row["reason"],
+                                 "judge_model": row["judge_model"], "cached": True}
+    return found
+
+
+def save_judgments(verdicts: Mapping[str, Mapping[str, Any]], judge_model: str) -> None:
+    """Store verdicts; the first verdict for a key wins (never overwritten)."""
+    if not verdicts:
+        return
+    stamp = now_iso()
+    with transaction() as conn:
+        for key, verdict in verdicts.items():
+            conn.execute(
+                "INSERT OR IGNORE INTO judge_cache (key, passed, reason, judge_model, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (key, 1 if verdict.get("passed") else 0, str(verdict.get("reason") or "")[:500],
+                 judge_model, stamp))

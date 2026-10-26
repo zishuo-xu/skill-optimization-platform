@@ -178,7 +178,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 2026-10-26：423 passed
+.venv/bin/python -m pytest -q        # 2026-10-26：446 passed
 ```
 
 ### 文档导航
@@ -307,8 +307,15 @@ Worker 线程（租约 + 心跳）── app/single_round.py
   clarify（action + missing_fields 集合）与 no_action 也计入。
 - 基础设施错误（认证/网络/超时/限流等）不计入分母、单独报告并阻止自动晋级；
   能力失败（格式错误、拒答、步数耗尽、超限、fixture_miss 等）计入分母。
-- 参数比较默认严格 JSON 深度比较（键序无关、类型严格、缺失≠null、数组顺序敏感、
-  额外参数判错）；放宽规则必须由 `expected.compare` 显式声明版本化规则。
+- 参数比较方式在执行环境「评分规则」中配置（`scorer_config.compare`，`compare-v2`），
+  单个案例可用 `expected.compare` 覆盖：
+  - **语义**：子技能、工具名、字段是否齐全由代码判断；参数**值**是否意思一致交给「评分模型」
+    （标准 API / WebSocket 网关，温度 0，判定按输出缓存复用）。数据集可为字段写
+    `judge.keywords` / `judge.requirement` 作为依据，关键词字面全部出现时直接算对；
+  - **宽松**：字段一致，值归一化后相等（空格、全半角、大小写、`"3"==3`、数组不计顺序）；
+  - **只看字段**：字段一致即可，不比较取值；
+  - **严格**：逐值完全相等（未配置规则的旧环境保持此口径）。
+  另可设置「允许多余字段」与按字段路径的单独规则（含「不比较」）。详见 [评分规则与评分模型](docs/SCORING.md)。
 - 分母为 0 显示“未评估”，不能当作满分；验证集核心指标缺有效案例不得晋级。
 
 接受规则 `accept-v1`：R、A 均不下降，至少一项严格提高，J 不下降；critical 案例不得

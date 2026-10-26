@@ -78,7 +78,7 @@ def build_report(run_id: str) -> dict[str, Any]:
                 "hash": (env or {}).get("hash"),
                 "model_config": (env or {}).get("model_config"),
                 "optimizer_config": (env or {}).get("optimizer_config"),
-                "scorer_config": (env or {}).get("scorer_config"),
+                "scorer_config": _redact((env or {}).get("scorer_config")),
                 "run_config": (env or {}).get("run_config"),
                 "acceptance_config": (env or {}).get("acceptance_config"),
                 "reproducibility_note": (env or {}).get("reproducibility_note"),

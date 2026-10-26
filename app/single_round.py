@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import config, event_types, evaluation, execution, hashing, persistence, patch
+from . import judge as judge_mod
 from . import optimizer, services, skill_package
 from .adapters.registry import build_adapter
 from .errors import AppError
@@ -558,6 +559,21 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                       extra={"case_ids": fixture_cases[:20]})
     else:
         check("fixture_coverage", True, "所有预期业务调用都有模拟返回")
+    compare = (env.get("scorer_config") or {}).get("compare") or {}
+    semantic = compare.get("mode") == "semantic" or any(
+        (item or {}).get("mode") == "semantic" for item in compare.get("field_rules") or [])
+    mode_label = evaluation.COMPARE_MODE_LABELS.get(compare.get("mode") or "strict", "严格")
+    if semantic and judge_mod.judge_config_from_env(env) is None:
+        emitter.issue("judge_not_configured",
+                      error_code="judge_not_configured",
+                      title="未配置评分模型",
+                      message="评分规则使用了语义比较，但执行环境没有配置评分模型。",
+                      impact="需要语义判断的参数值会按宽松规则判定（归一化后相等才算对）。",
+                      next_action="在执行环境「评分模型」中配置标准 API 或 WebSocket 网关后发布新版本。",
+                      level="warning", stage="preflight")
+    else:
+        check("scoring_rules", True,
+              f"参数比较：{mode_label}" + ("，评分模型已配置" if semantic else ""))
     acceptance = run.get("acceptance") or {}
     check("acceptance_frozen", bool(acceptance.get("rules_version")),
           f"接受规则版本: {acceptance.get('rules_version')}", level="warning")
@@ -603,6 +619,8 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
     usage_total: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     duration_total = 0
     rows: list[dict[str, Any]] = []
+    compare_rules = (env.get("scorer_config") or {}).get("compare")
+    value_judge = judge_mod.ValueJudge.from_env(env)
 
     def emit_mapping(event: Mapping[str, Any]) -> dict[str, Any]:
         return emitter.emit(
@@ -639,9 +657,9 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                 "capabilities": {"routing": True, "tool_arguments": True},
                 "events": [], "fixture_misses": [],
             }
-        score = evaluation.score_case(
-            case.get("expected") or {}, actual, env.get("tool_schema") or [],
-            (env.get("scorer_config") or {}).get("compare"))
+        score, judge_usage = _score_with_judge(
+            case, actual, env, compare_rules, value_judge, emitter, emit_mapping,
+            repeat=repeat, cancel=cancel, budget=budget)
         persistence.save_case_result(
             run_id, case["case_id"], phase, variant="main", repeat_index=repeat,
             split=case.get("split") or phase,
@@ -688,7 +706,7 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                          case_id=case["case_id"], split=case.get("split"),
                          repeat_index=repeat)
         emitter.case_finished(case["case_id"])
-        return {"case": case, "score": score, "actual": actual}
+        return {"case": case, "score": score, "actual": actual, "judge_usage": judge_usage}
 
     executor = ThreadPoolExecutor(max_workers=concurrency,
                                   thread_name_prefix=f"case-{phase}")
@@ -729,6 +747,12 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                     usage_total[key] += int(value)
             duration_total += int(entry["actual"].get("duration_ms") or 0)
             budget.consume(usage)
+            judge_usage = entry.get("judge_usage") or {}
+            for key in ("input_tokens", "output_tokens"):
+                value = judge_usage.get(key)
+                if isinstance(value, (int, float)):
+                    usage_total[key] += int(value)
+            budget.consume(judge_usage)
             completed += 1
             emitter.progress(completed=completed, total=total)
     finally:
@@ -750,6 +774,51 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
         "duration_ms": int((time.monotonic() - started) * 1000),
     }, stage=emitter.stage)
     return metrics
+
+
+def _score_with_judge(case: Mapping[str, Any], actual: Mapping[str, Any],
+                      env: Mapping[str, Any], compare_rules: Any,
+                      value_judge: "judge_mod.ValueJudge | None", emitter: EventEmitter,
+                      emit_mapping: Any, *, repeat: int, cancel: Any,
+                      budget: "_Budget") -> tuple[dict[str, Any], dict[str, Any]]:
+    """Score a case; values needing semantic judgment go to the judge model."""
+    expected = case.get("expected") or {}
+    tool_schema = env.get("tool_schema") or []
+    score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
+                                  semantic_fallback=value_judge is None)
+    pending = score.get("pending_judgments") or []
+    if not pending or value_judge is None:
+        return score, {}
+    case_id = case["case_id"]
+
+    def judge_emit(event: Mapping[str, Any]) -> Any:
+        tagged = dict(event)
+        tagged["payload"] = {**dict(tagged.get("payload") or {}), "purpose": "judge"}
+        tagged.setdefault("case_id", case_id)
+        tagged.setdefault("split", case.get("split"))
+        tagged.setdefault("repeat_index", repeat)
+        return emit_mapping(tagged)
+
+    runtime: dict[str, Any] = {"cancel_check": cancel.cancelled}
+    if budget.max_seconds is not None:
+        runtime["deadline_monotonic"] = budget.started + float(budget.max_seconds)
+    try:
+        verdicts, stats = value_judge.judge(pending, query=case.get("query"),
+                                            emit=judge_emit, runtime=runtime)
+    except judge_mod.JudgeError as exc:
+        emitter.issue(event_types.JUDGE_FAILED, error_code=exc.code,
+                      title="评分模型调用失败", message=exc.message,
+                      impact="该案例不计入指标分母，也不会被当作通过或失败。",
+                      next_action="检查评分模型地址、凭据与连通性后重新运行。",
+                      case_id=case_id, split=case.get("split"), repeat_index=repeat)
+        return evaluation.mark_infrastructure(score, f"评分模型不可用：{exc.message}"), {}
+    score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
+                                  judgments=verdicts)
+    score["judge"] = {key: stats[key] for key in ("items", "cached", "judged", "passed")}
+    emitter.emit(event_types.JUDGE_COMPLETED,
+                 judge_mod.judge_event_payload(stats, verdicts, pending),
+                 case_id=case_id, split=case.get("split"), repeat_index=repeat)
+    return score, dict(stats.get("usage") or {})
 
 
 def _case_request(run: Mapping[str, Any], env: Mapping[str, Any],

@@ -1485,6 +1485,35 @@ export default async function runDetailsView(container, ctx) {
     );
   }
 
+  /** Judge-model verdicts on argument values (semantic comparison). */
+  function judgmentsBlock(detail) {
+    const sides = [['基线', detail.baseline], ['候选', detail.candidate]]
+      .filter(([, side]) => side && (side.judgments || []).length);
+    if (!sides.length) return null;
+    return h(
+      'div.case-section',
+      null,
+      h('div.case-section__title', null, h('span', { text: '评分模型判定' })),
+      ...sides.map(([label, side]) =>
+        h(
+          'div.stack.stack--sm',
+          null,
+          sides.length > 1 ? h('div.xsmall.muted', { text: label }) : null,
+          ...side.judgments.map((item) =>
+            h(
+              'div.param-diff',
+              null,
+              h('div.param-diff__path', null, h('div', { text: item.path || '$' }), statusBadge(item.passed ? 'pass' : 'fail', 'case')),
+              h('div.param-diff__cell', null, h('span.param-diff__label', { text: '预期 → 实际' }),
+                h('span.param-diff__value', { text: `${typeof item.expected === 'string' ? item.expected : safeJsonStringify(item.expected, 0)} → ${typeof item.actual === 'string' ? item.actual : safeJsonStringify(item.actual, 0)}` })),
+              h('div.param-diff__cell', null, h('span.param-diff__label', { text: '理由' }), h('span.param-diff__value', { text: item.reason || '—' }))
+            )
+          )
+        )
+      )
+    );
+  }
+
   function paramDiffBlock(detail) {
     const diagnostics = detail.diagnostics || [];
     const diffs = [];
@@ -1493,7 +1522,7 @@ export default async function runDetailsView(container, ctx) {
       const key = `${diff.field_path}|${safeJsonStringify(diff.expected_value)}|${safeJsonStringify(diff.actual_value)}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      diffs.push({ path: diff.field_path || '$', expected: diff.expected_value, actual: diff.actual_value, category: diff.category });
+      diffs.push({ path: diff.field_path || '$', expected: diff.expected_value, actual: diff.actual_value, category: diff.category, note: diff.note });
     }
     if (!diffs.length) {
       for (const path of ['routing', 'tool_args']) {
@@ -1512,7 +1541,7 @@ export default async function runDetailsView(container, ctx) {
         h(
           'div.param-diff',
           null,
-          h('div.param-diff__path', null, h('div', { text: diff.path }), diff.category ? h('div.xsmall.muted', { text: diff.category }) : null),
+          h('div.param-diff__path', null, h('div', { text: diff.path }), diff.category ? h('div.xsmall.muted', { text: diff.category }) : null, diff.note ? h('div.xsmall.param-diff__note', { text: diff.note }) : null),
           h(
             'div.param-diff__cell',
             null,
@@ -1612,6 +1641,7 @@ export default async function runDetailsView(container, ctx) {
         h('div.case-section__title', null, h('span', { text: '参数差异（预期 vs 实际）' })),
         paramDiffBlock(detail)
       ),
+      judgmentsBlock(detail),
       h(
         'div',
         null,

@@ -85,6 +85,9 @@ export const EVENT_META = {
   fixture_miss: { label: '模拟返回缺失', icon: 'alert', category: 'tool', defaultLevel: 'warning' },
   score_completed: { label: '评分完成', icon: 'check', category: 'score' },
   score_failed: { label: '评分失败', icon: 'x', category: 'score', defaultLevel: 'error' },
+  judge_completed: { label: '评分模型完成判定', icon: 'shield', category: 'score' },
+  judge_failed: { label: '评分模型调用失败', icon: 'x', category: 'score', defaultLevel: 'error' },
+  judge_not_configured: { label: '未配置评分模型', icon: 'alert', category: 'score', defaultLevel: 'warning' },
 
   // optimizer
   optimizer_input_built: { label: '已构建优化器输入', icon: 'info', category: 'optimizer' },

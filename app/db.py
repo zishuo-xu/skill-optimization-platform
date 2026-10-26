@@ -228,6 +228,18 @@ CREATE TABLE IF NOT EXISTS decisions (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
+
+-- Judge-model verdicts on argument values. The key covers the judge model
+-- identity, prompt version, field path, expected/actual values and criteria,
+-- so an identical output always receives the identical verdict (stable
+-- paired validation) and is never paid for twice.
+CREATE TABLE IF NOT EXISTS judge_cache (
+    key TEXT PRIMARY KEY,
+    passed INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    judge_model TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 _local = threading.local()

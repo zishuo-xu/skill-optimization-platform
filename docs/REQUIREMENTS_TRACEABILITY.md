@@ -21,7 +21,7 @@
 | §13 字段与扩展（context/fixtures/action/clarify/no_action/missing_fields） | `app/dataset.py`、`app/execution.py`、`app/fixtures.py`、`app/evaluation.py` | A03、A04、A10 |
 | §14 划分与覆盖（group 70/20/10、固定种子、覆盖提示、未覆盖不算满分） | `app/dataset.py`、`app/services.py` | A03、界面数据集页 |
 | §15 指标与有效案例（R/A/J、诊断、执行与成本、infra/能力失败） | `app/evaluation.py`、`app/single_round.py` | A04/A05/A10 |
-| §16 参数比较（严格 JSON、schema 先校验、显式版本化规则） | `app/evaluation.py` | A04 |
+| §16 参数比较（严格 JSON、schema 先校验、显式版本化规则） | `app/evaluation.py`、`app/judge.py`；比较方式可配置，见差异说明 12 | A04、`tests/test_semantic_scoring.py` |
 | §17 候选接受规则（R/A/J、critical、infra、证据不足、3 次配对） | `app/acceptance.py`、`app/single_round.py` | A07、A09 |
 | §18 执行阶段（预检→基线→错误分析→候选→静态检查→复测→结论） | `app/single_round.py` | A06、A08、A09 |
 | §19 优化器契约（输入范围、diagnosis/hypotheses/patch、局部修改、禁止硬编码） | `app/optimizer.py`、`app/patch.py` | A06 |
@@ -75,7 +75,7 @@
 | A19 | `tests/test_a19_cancel_restart.py` | 通过 |
 | A20 | `tests/test_a20_security.py` | 通过 |
 
-最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **423 passed**，1 个已有 Starlette/httpx 弃用提示。
+最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **446 passed**，1 个已有 Starlette/httpx 弃用提示。
 覆盖修图语流扩展、最小界面改版、HTTP 网关、模型输出查看、自定义输入连接测试与数据集在线修订。
 各批次原始结果见 [VERIFICATION.md](VERIFICATION.md)。
 
@@ -102,9 +102,14 @@
    模型接入（优化模型另可选规则修复）。§37 中的流程级 Python 接入（`flow` / `run_case`）已从前后端
    移除，与需求原文的“两种粒度”存在差异；`provider: flow` 返回 422。A13「仅分发能力时 A 未评估」
    由纯文本路由适配器用例覆盖，不依赖流程级接入。离线演示模型保留给示例项目与自动化测试，界面不再提供选择。
-8. **多候选/多轮迭代/优化器自我改进/多人权限/真实生产工具执行**：按 §2「后续扩展」范围未实现。
-9. **A 评分的参数子树扩展**：在需求 §15 的完整工具参数比较之外，增加可选的
+9. **多候选/多轮迭代/优化器自我改进/多人权限/真实生产工具执行**：按 §2「后续扩展」范围未实现。
+10. **A 评分的参数子树扩展**：在需求 §15 的完整工具参数比较之外，增加可选的
    `tool_calls[].arguments_path`（简化写法 `tool.args`），仅当数据集显式声明时生效；
    默认仍比较完整 `arguments`。当前修图示例完整校验方法与参数包装；子树比较作为显式选项继续兼容。
-10. **第二个示例项目**：修图 Skill 已扩展为 12 类语流参数子技能，数据集覆盖口语、否定改口、
+11. **第二个示例项目**：修图 Skill 已扩展为 12 类语流参数子技能，数据集覆盖口语、否定改口、
     澄清与最多三步有序任务，逐项比较 method/script/request/args；不改变 A01–A20 的通用验收口径。
+12. **参数值可由评分模型判断（2026-10-26）**：需求 §15/§16 要求确定性评分与严格 JSON 比较。按产品决定，
+    参数比较方式改为可配置（`compare-v2`：语义 / 宽松 / 只看字段 / 严格，含字段单独规则），新环境默认宽松，
+    既有环境保持严格。「语义」由执行环境中独立的评分模型判断参数值是否意思一致；分发、工具名、字段结构仍由代码判断。
+    评分函数保持纯函数：判定结果作为输入二次评分，并按评分模型与输入缓存，相同输出得到相同结论；评分模型失败的案例
+    记为基础设施错误。详见 [SCORING.md](SCORING.md)。

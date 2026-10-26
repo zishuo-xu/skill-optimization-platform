@@ -8,6 +8,7 @@
 | [CONNECTION_TEST.md](CONNECTION_TEST.md) | 业务/优化模型真实连接测试、自定义输入与验收边界 |
 | [HTTP_GATEWAY_INTEGRATION.md](HTTP_GATEWAY_INTEGRATION.md) | 标准 API（OpenAI 兼容）：URL、模型 ID、API Key 与旧配置说明 |
 | [WS_GATEWAY_INTEGRATION.md](WS_GATEWAY_INTEGRATION.md) | WebSocket 网关：协议差异、页面填写、返回解析规则 |
+| [SCORING.md](SCORING.md) | 评分规则（语义/宽松/只看字段/严格、字段规则）与评分模型、数据集判断依据 |
 | [MODEL_OUTPUT_VISIBILITY.md](MODEL_OUTPUT_VISIBILITY.md) | 运行记录中的模型正文、工具参数与历史结果查看规则 |
 | [DATASET_EDITING.md](DATASET_EDITING.md) | 导入后创建草稿、编辑案例、CAS 发布与版本保护 |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 安装、配置、数据备份、反向代理/SSE、生产加固、故障排查 |

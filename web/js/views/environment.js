@@ -126,6 +126,26 @@ function dropMasksInJsonText(text, path, removed) {
 
 const CREDENTIAL_SWITCH_HINT = '原接入方式的凭据不会带到新接入方式，请重新填写';
 
+const TARGET_LABELS = { business: '业务模型', optimizer: '优化模型', judge: '评分模型' };
+
+/** Form paths of one model connection: business / optimizer / judge. */
+function groupPaths(target) {
+  if (target === 'optimizer' || target === 'optimizer_config') {
+    return { target: 'optimizer', cfg: 'optimizer_config', template: 'optimizer_request_template_text', headers: 'optimizer_headers_text' };
+  }
+  if (target === 'judge' || target === 'judge_config') {
+    return { target: 'judge', cfg: 'judge_config', template: 'judge_request_template_text', headers: 'judge_headers_text' };
+  }
+  return { target: 'business', cfg: 'model_config', template: 'request_template_text', headers: 'model_headers_text' };
+}
+
+/** Provider of a connection group in a saved environment version. */
+function savedProvider(env, group) {
+  if (!env) return undefined;
+  if (group === 'judge_config') return env.scorer_config?.judge?.provider || 'none';
+  return env[group]?.provider;
+}
+
 function defaults() {
   return {
     prompt: DEFAULT_PROMPT,
@@ -166,6 +186,27 @@ function defaults() {
       temperature: 0,
       max_tokens: 4096,
     },
+    // Judge model for semantic value comparison (stored in scorer_config.judge).
+    judge_config: {
+      provider: 'none',
+      base_url: '',
+      ws_url: '',
+      model: '',
+      api_key_ref: '',
+      request_template: {},
+      headers: {},
+      temperature: 0,
+      max_tokens: 1024,
+      connect_timeout_s: 10,
+      first_packet_timeout_s: 30,
+      idle_timeout_s: 60,
+      total_timeout_s: 120,
+      heartbeat_interval_s: 20,
+    },
+    // Tool-argument comparison (scorer_config.compare, compare-v2). New
+    // environments default to lenient; existing ones without rules are strict.
+    scorer_compare: { mode: 'lenient', allow_extra_keys: true, field_rules: [] },
+    scorer_compare_extra: {},
     tool_schema: [],
     loader_config: {
       main_skill_mode: 'inject',
@@ -198,6 +239,8 @@ function toForm(env) {
       optimizer_request_template_text: '{}',
       model_headers_text: '{}',
       optimizer_headers_text: '{}',
+      judge_request_template_text: '{}',
+      judge_headers_text: '{}',
       tool_schema_text: '[\n  {\n    "name": "list_tasks",\n    "description": "查询任务列表",\n    "parameters": {"type": "object", "properties": {}}\n  }\n]',
     };
   }
@@ -213,8 +256,14 @@ function toForm(env) {
   // so saving can request server-side inheritance instead of persisting ***.
   modelConfig.api_key_ref = publicCredential(modelConfig.api_key_ref);
   optimizerConfig.api_key_ref = publicCredential(optimizerConfig.api_key_ref);
+  const scorerSource = env.scorer_config || {};
+  const compareSource = scorerSource.compare || {};
+  const compareMode = compareSource.mode || 'strict';
+  const judgeSource = scorerSource.judge || {};
+  const judgeConfig = { ...base.judge_config, ...judgeSource, provider: judgeSource.provider || 'none' };
+  judgeConfig.api_key_ref = publicCredential(judgeConfig.api_key_ref);
   // Standard API has a single URL field; a former full request URL moves into it.
-  for (const config of [modelConfig, optimizerConfig]) {
+  for (const config of [modelConfig, optimizerConfig, judgeConfig]) {
     if (config.provider === 'openai_http' && !String(config.base_url || '').trim() && String(config.url || '').trim()) {
       config.base_url = config.url;
     }
@@ -267,6 +316,19 @@ function toForm(env) {
       (env.model_config && env.model_config.headers) || {}, null, 2),
     optimizer_headers_text: JSON.stringify(
       (env.optimizer_config && env.optimizer_config.headers) || {}, null, 2),
+    judge_request_template_text: JSON.stringify(judgeSource.request_template || {}, null, 2),
+    judge_headers_text: JSON.stringify(judgeSource.headers || {}, null, 2),
+    judge_config: judgeConfig,
+    scorer_compare: {
+      mode: compareMode,
+      allow_extra_keys: compareSource.allow_extra_keys ?? compareMode !== 'strict',
+      field_rules: (compareSource.field_rules || []).map((rule) => ({
+        path: rule.path || '', mode: rule.mode || 'strict', tool: rule.tool || '',
+      })),
+    },
+    scorer_compare_extra: Object.fromEntries(
+      Object.entries(compareSource).filter(([key]) => !['version', 'mode', 'allow_extra_keys', 'field_rules'].includes(key))
+    ),
     tool_schema_text: JSON.stringify(env.tool_schema || [], null, 2),
     reproducibility_note: env.reproducibility_note || '',
   };
@@ -284,10 +346,10 @@ export default async function environmentView(container, ctx) {
     dirty: false,
     busy: false,
     fieldErrors: {},
-    testResult: { business: null, optimizer: null },
-    testLoading: { business: false, optimizer: false },
-    testSeq: { business: 0, optimizer: 0 },
-    testInput: { business: '只回复 OK', optimizer: '只回复 OK' },
+    testResult: { business: null, optimizer: null, judge: null },
+    testLoading: { business: false, optimizer: false, judge: false },
+    testSeq: { business: 0, optimizer: 0, judge: 0 },
+    testInput: { business: '只回复 OK', optimizer: '只回复 OK', judge: '只回复 OK' },
     promptPreview: false,
     promptOpen: false,
     credentialStatus: { model_config: {}, optimizer_config: {} },
@@ -300,11 +362,11 @@ export default async function environmentView(container, ctx) {
 
   function markDirty() {
     state.dirty = true;
-    state.testResult = { business: null, optimizer: null };
-    state.testLoading.business = false;
-    state.testLoading.optimizer = false;
-    state.testSeq.business += 1;
-    state.testSeq.optimizer += 1;
+    state.testResult = { business: null, optimizer: null, judge: null };
+    for (const target of ['business', 'optimizer', 'judge']) {
+      state.testLoading[target] = false;
+      state.testSeq[target] += 1;
+    }
     document.querySelectorAll('[data-test-result]').forEach((node) => node.remove());
     document.querySelectorAll('.test-connection-button').forEach((node) => { node.disabled = false; });
     ctx.setDirty('执行环境有未保存的修改，离开当前页面会丢失。');
@@ -327,6 +389,10 @@ export default async function environmentView(container, ctx) {
     const details = error.details || {};
     for (const entry of details.errors || details.fields || []) {
       if (entry && entry.field_path) map[entry.field_path] = entry.message || '字段不合法';
+    }
+    // The judge model is stored under scorer_config.judge but edited as judge_config.
+    for (const key of Object.keys(map)) {
+      if (key.startsWith('scorer_config.judge')) map[key.replace('scorer_config.judge', 'judge_config')] = map[key];
     }
     return map;
   }
@@ -361,6 +427,18 @@ export default async function environmentView(container, ctx) {
       errors.optimizer_request_template_text = `优化器请求模板不是合法 JSON：${error.message}`;
       optimizerRequestTemplate = {};
     }
+    const parseJsonObject = (textPath, label) => {
+      try {
+        const value = form[textPath]?.trim() ? JSON.parse(form[textPath]) : {};
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('必须是 JSON 对象');
+        return value;
+      } catch (error) {
+        errors[textPath] = `${label}不是合法 JSON：${error.message}`;
+        return {};
+      }
+    };
+    const judgeRequestTemplate = parseJsonObject('judge_request_template_text', '评分模型请求体附加字段');
+    const judgeHeaders = parseJsonObject('judge_headers_text', '评分模型请求头');
     for (const [textPath, errorPath, label] of [
       ['model_headers_text', 'model_headers_text', '自定义 Headers'],
       ['optimizer_headers_text', 'optimizer_headers_text', '优化器自定义 Headers'],
@@ -518,8 +596,54 @@ export default async function environmentView(container, ctx) {
       require_critical_no_regression: true,
     };
 
-    for (const [group, config] of [['model_config', modelConfig], ['optimizer_config', optimizerConfig]]) {
-      const parentProvider = state.env?.[group]?.provider;
+    // ---- scoring: comparison rules + judge model -------------------------
+    const judgeForm = form.judge_config || {};
+    const judgeProvider = judgeForm.provider || 'none';
+    let judgeConfig = null;
+    if (judgeProvider === 'openai_http' || judgeProvider === 'enterprise_ws') {
+      judgeConfig = {
+        provider: judgeProvider,
+        model: String(judgeForm.model || '').trim(),
+        api_key_ref: credentialForSubmit(judgeForm.api_key_ref),
+        request_template: judgeRequestTemplate,
+        headers: judgeHeaders,
+        temperature: 0,
+        max_tokens: num(judgeForm.max_tokens, 1024),
+      };
+      if (judgeProvider === 'openai_http') {
+        judgeConfig.base_url = String(judgeForm.base_url || '').trim();
+        judgeConfig.stream = false;
+        if (!judgeConfig.base_url) errors['judge_config.base_url'] = 'URL 不能为空';
+      } else {
+        judgeConfig.ws_url = String(judgeForm.ws_url || '').trim();
+        for (const key of ['connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
+          const value = num(judgeForm[key], null);
+          if (value !== null) judgeConfig[key] = value;
+        }
+        if (!judgeConfig.ws_url) errors['judge_config.ws_url'] = 'WebSocket 地址不能为空';
+      }
+      if (!judgeConfig.model) errors['judge_config.model'] = '模型 ID 不能为空';
+    }
+    const compareForm = form.scorer_compare || {};
+    const fieldRules = (compareForm.field_rules || [])
+      .map((rule) => ({ path: String(rule.path || '').trim(), mode: rule.mode || 'strict', tool: String(rule.tool || '').trim() }))
+      .filter((rule) => rule.path)
+      .map((rule) => (rule.tool ? rule : { path: rule.path, mode: rule.mode }));
+    const scorerConfig = {
+      version: 'score-v1',
+      compare: {
+        ...(form.scorer_compare_extra || {}),
+        version: 'compare-v2',
+        mode: compareForm.mode || 'strict',
+        allow_extra_keys: Boolean(compareForm.allow_extra_keys),
+        field_rules: fieldRules,
+      },
+    };
+    if (judgeConfig) scorerConfig.judge = judgeConfig;
+
+    for (const [group, config] of [['model_config', modelConfig], ['optimizer_config', optimizerConfig], ['judge_config', judgeConfig]]) {
+      if (!config) continue;
+      const parentProvider = savedProvider(state.env, group);
       if (parentProvider && config.provider !== parentProvider) dropCredentialMasks(config, group);
     }
 
@@ -531,7 +655,7 @@ export default async function environmentView(container, ctx) {
       loader_config: loaderConfig,
       run_config: runConfig,
       budget_config: budgetConfig,
-      scorer_config: { version: 'score-v1' },
+      scorer_config: scorerConfig,
       acceptance_config: acceptanceConfig,
       reproducibility_note: form.reproducibility_note || '',
     };
@@ -543,9 +667,9 @@ export default async function environmentView(container, ctx) {
     const value = getPath(state.form, path);
     const editable = EDITABLE() && !disabled;
     const credential = path.endsWith('.api_key_ref');
-    const credentialGroup = path.startsWith('optimizer_config.') ? 'optimizer_config' : 'model_config';
+    const credentialGroup = groupPaths(path.split('.')[0]).cfg;
     const credentialConfigured = Boolean(state.credentialStatus?.[credentialGroup]?.api_key_ref)
-      && state.form[credentialGroup]?.provider === state.env?.[credentialGroup]?.provider;
+      && state.form[credentialGroup]?.provider === savedProvider(state.env, credentialGroup);
     const error = state.fieldErrors[path] || state.fieldErrors[path.replace('model_config.', '')] || '';
     let control;
     if (options) {
@@ -555,13 +679,14 @@ export default async function environmentView(container, ctx) {
           disabled: !editable,
           onchange: (event) => {
             setPath(state.form, path, event.target.value);
-            if (path === 'model_config.provider' || path === 'optimizer_config.provider') {
-              clearFormCredentialMasks(path.split('.')[0]);
+            const providerPath = /^(model_config|optimizer_config|judge_config)\.provider$/.test(path);
+            if (providerPath) clearFormCredentialMasks(path.split('.')[0]);
+            if (path === 'scorer_compare.mode') {
+              // Defaults agreed for extra fields: strict rejects them, other modes allow them.
+              state.form.scorer_compare.allow_extra_keys = event.target.value !== 'strict';
             }
             markDirty();
-            if (path === 'model_config.provider' || path === 'optimizer_config.provider') {
-              renderForm();
-            }
+            if (providerPath || path === 'scorer_compare.mode') renderForm();
           },
         },
         ...options.map((option) => h('option', { value: option.value, selected: String(value) === String(option.value) }, option.label))
@@ -788,9 +913,7 @@ export default async function environmentView(container, ctx) {
 
   /** Standard API (OpenAI compatible): URL, model id and API key. */
   function standardApiFields(target) {
-    const cfg = target === 'optimizer' ? 'optimizer_config' : 'model_config';
-    const templatePath = target === 'optimizer' ? 'optimizer_request_template_text' : 'request_template_text';
-    const headersPath = target === 'optimizer' ? 'optimizer_headers_text' : 'model_headers_text';
+    const { cfg, template: templatePath, headers: headersPath } = groupPaths(target);
     // Body/header overrides belong to the former "enterprise HTTP gateway" setup.
     // They are not part of the standard form, but configs that still carry them
     // stay visible so nothing is sent that the page does not show.
@@ -878,9 +1001,7 @@ export default async function environmentView(container, ctx) {
 
   /** WebSocket gateway form shared by the business and optimizer models. */
   function wsGatewayFields(target) {
-    const cfg = target === 'optimizer' ? 'optimizer_config' : 'model_config';
-    const templatePath = target === 'optimizer' ? 'optimizer_request_template_text' : 'request_template_text';
-    const headersPath = target === 'optimizer' ? 'optimizer_headers_text' : 'model_headers_text';
+    const { cfg, template: templatePath, headers: headersPath } = groupPaths(target);
     return h(
       'div.stack',
       null,
@@ -968,7 +1089,7 @@ export default async function environmentView(container, ctx) {
 
   function testResultView(target) {
     if (state.testLoading[target]) {
-      return h('div.test-result', null, h('span.spinner.spinner--sm'), h('span', { text: `正在测试${target === 'optimizer' ? '优化模型' : '业务模型'}…` }));
+      return h('div.test-result', null, h('span.spinner.spinner--sm'), h('span', { text: `正在测试${TARGET_LABELS[target] || '业务模型'}…` }));
     }
     const result = state.testResult[target];
     if (!result) return null;
@@ -1019,9 +1140,8 @@ export default async function environmentView(container, ctx) {
       config.api_key_ref = '';
       removed.push(`${group}.api_key_ref`);
     }
-    const textFields = group === 'optimizer_config'
-      ? [['optimizer_request_template_text', `${group}.request_template`], ['optimizer_headers_text', `${group}.headers`]]
-      : [['request_template_text', `${group}.request_template`], ['model_headers_text', `${group}.headers`]];
+    const paths = groupPaths(group);
+    const textFields = [[paths.template, `${group}.request_template`], [paths.headers, `${group}.headers`]];
     for (const [textPath, fieldPath] of textFields) {
       state.form[textPath] = dropMasksInJsonText(state.form[textPath], fieldPath, removed);
     }
@@ -1056,7 +1176,7 @@ export default async function environmentView(container, ctx) {
         maxLength: 16000,
         value: state.testInput[target],
         disabled: offline,
-        'aria-label': `${target === 'optimizer' ? '优化模型' : '业务模型'}测试输入`,
+        'aria-label': `${TARGET_LABELS[target] || '业务模型'}测试输入`,
         oninput: (event) => {
           state.testInput[target] = event.target.value;
           state.testSeq[target] += 1;
@@ -1385,6 +1505,156 @@ export default async function environmentView(container, ctx) {
     ]);
   }
 
+  const COMPARE_MODE_OPTIONS = [
+    { value: 'semantic', label: '语义（大模型判断）' },
+    { value: 'lenient', label: '宽松（字段一致，值归一化后相等）' },
+    { value: 'keys', label: '只看字段（字段一致即可，不比值）' },
+    { value: 'strict', label: '严格（逐值完全相等）' },
+  ];
+  const FIELD_RULE_OPTIONS = [
+    { value: 'strict', label: '严格' },
+    { value: 'lenient', label: '宽松' },
+    { value: 'keys', label: '只看字段' },
+    { value: 'semantic', label: '语义（大模型）' },
+    { value: 'ignore', label: '不比较（可缺省）' },
+  ];
+  const COMPARE_MODE_HINTS = {
+    semantic: '子技能、工具名、字段是否齐全由规则判断；参数值是否「意思一致」交给评分模型。命中数据集中写的关键词、或归一化后相等的值直接算对，不调用模型。',
+    lenient: '字段必须一致；值去掉首尾空格、全半角、大小写差异后比较，"3" 与 3、数组顺序不同都算相等。',
+    keys: '只要求字段一致（预期字段都在），不比较取值，也不校验取值的类型、枚举与范围。',
+    strict: '字段与取值都要完全相等，与旧版评分一致。',
+  };
+
+  function fieldRulesEditor() {
+    const editable = EDITABLE();
+    const rules = state.form.scorer_compare.field_rules || [];
+    const update = (index, key, value) => {
+      rules[index] = { ...rules[index], [key]: value };
+      markDirty();
+    };
+    const rows = rules.map((rule, index) =>
+      h(
+        'div.field-rule-row',
+        null,
+        h('input.input.mono', {
+          value: rule.path || '', placeholder: '$.args.method', disabled: !editable,
+          'aria-label': '字段路径', oninput: (event) => update(index, 'path', event.target.value),
+        }),
+        h(
+          'select.select',
+          { disabled: !editable, 'aria-label': '比较方式', onchange: (event) => update(index, 'mode', event.target.value) },
+          ...FIELD_RULE_OPTIONS.map((option) => h('option', { value: option.value, selected: option.value === rule.mode }, option.label))
+        ),
+        h('input.input', {
+          value: rule.tool || '', placeholder: '工具名（可选）', disabled: !editable,
+          'aria-label': '工具名', oninput: (event) => update(index, 'tool', event.target.value),
+        }),
+        editable
+          ? button({ label: '删除', variant: 'ghost', size: 'sm', iconName: 'x', onClick: () => {
+              rules.splice(index, 1);
+              markDirty();
+              renderForm();
+            } })
+          : null
+      )
+    );
+    return h(
+      'div.form-field',
+      null,
+      h('span.form-field__label', { text: '字段单独规则' }),
+      rows.length ? h('div.stack.stack--sm', null, ...rows) : h('p.small.muted', { text: '没有单独规则，所有字段按上面的方式比较。' }),
+      editable
+        ? h('div', null, button({ label: '添加字段规则', variant: 'secondary', size: 'sm', iconName: 'plus', onClick: () => {
+            rules.push({ path: '', mode: 'strict', tool: '' });
+            state.form.scorer_compare.field_rules = rules;
+            markDirty();
+            renderForm();
+          } }))
+        : null,
+      h('p.form-field__hint', { text: '路径与案例对比里的字段路径一致，如 $.args.method；[*] 匹配任意数组下标，* 匹配任意字段名。例：整体用语义，但 $.args.method 设为严格；自由文本字段设为不比较。' })
+    );
+  }
+
+  function scoringRulesSection() {
+    const compare = state.form.scorer_compare;
+    const judgeReady = ['openai_http', 'enterprise_ws'].includes(state.form.judge_config?.provider);
+    const body = h(
+      'div.stack',
+      null,
+      inputFor('scorer_compare.mode', {
+        label: '参数比较方式',
+        options: COMPARE_MODE_OPTIONS,
+        hint: COMPARE_MODE_HINTS[compare.mode] || '',
+      }),
+      compare.mode === 'semantic' && !judgeReady
+        ? callout({ tone: 'warning', title: '还没有配置评分模型', body: '在下方「评分模型」中配置后才会调用大模型；未配置时这些值按宽松规则判断。' })
+        : null,
+      inputFor('scorer_compare.allow_extra_keys', {
+        label: '多余字段',
+        type: 'checkbox',
+        hint: '允许模型多传预期里没有的字段（工具协议明确禁止的字段仍算错）',
+      }),
+      fieldRulesEditor(),
+      advancedSettings(
+        '数据集里怎么写判断依据',
+        h(
+          'div.stack.stack--sm',
+          null,
+          h('p.small', { text: '语义比较时，可以给某个字段写关键词或一句要求，评分模型据此判断；关键词按字面全部出现时直接算对。也可以在单个案例里用 compare 覆盖这里的设置。' }),
+          h('pre.code-block', { text: '{"query": "把图调成蓝色", "skill": "image_color_transfer",\n "tool": {"name": "imageEditWorkflow", "args": {"targetColor": "蓝色"}},\n "judge": {"$.args.targetColor": {"keywords": ["蓝"], "requirement": "表示蓝色系即可"}}}' })
+        )
+      )
+    );
+    return sectionCard({
+      title: '评分规则',
+      description: `参数比较：${(COMPARE_MODE_OPTIONS.find((item) => item.value === compare.mode) || {}).label || compare.mode}${compare.field_rules?.length ? ` · ${compare.field_rules.length} 条字段规则` : ''}`,
+      collapsible: true,
+      open: compare.mode === 'semantic' && !judgeReady,
+      body,
+    });
+  }
+
+  const JUDGE_PROVIDERS = [
+    { value: 'none', label: '不使用（语义比较按宽松规则）' },
+    { value: 'openai_http', label: '标准 API' },
+    { value: 'enterprise_ws', label: 'WebSocket 网关' },
+  ];
+
+  function judgeSection() {
+    const config = state.form.judge_config || {};
+    const provider = config.provider || 'none';
+    const active = provider === 'openai_http' || provider === 'enterprise_ws';
+    const editable = EDITABLE();
+    const connection = provider === 'enterprise_ws' ? wsGatewayFields('judge') : provider === 'openai_http' ? standardApiFields('judge') : null;
+    const facts = active
+      ? factsList([{ label: '接入方式', value: (JUDGE_PROVIDERS.find((item) => item.value === provider) || {}).label },
+          ...(provider === 'enterprise_ws' ? wsGatewayFacts(config, 'judge_config') : standardApiFacts(config, 'judge_config'))])
+      : null;
+    const body = h(
+      'div.stack',
+      null,
+      editable
+        ? inputFor('judge_config.provider', {
+            label: '接入方式',
+            options: JUDGE_PROVIDERS,
+            hint: '只用于判断参数值是否语义一致，与业务模型、优化模型相互独立；温度固定为 0，相同输出的判定会缓存复用。',
+          })
+        : null,
+      editable ? connection : facts,
+      active ? testBlock('judge', provider) : null
+    );
+    return sectionCard({
+      title: '评分模型',
+      description: active ? `${(JUDGE_PROVIDERS.find((item) => item.value === provider) || {}).label} · ${config.model || '未设置模型'}` : '未配置',
+      actions: active
+        ? [button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--judge', onClick: () => testConnection('judge'), disabled: state.testLoading.judge })]
+        : [],
+      collapsible: true,
+      open: active || state.form.scorer_compare?.mode === 'semantic',
+      body,
+    });
+  }
+
   function budgetSection() {
     const editable = EDITABLE();
     const budget = state.form.budget_config || {};
@@ -1488,6 +1758,13 @@ export default async function environmentView(container, ctx) {
           : (optimizer.model || '未设置模型'),
       },
       {
+        label: '评分',
+        value: ({ semantic: '语义（大模型）', lenient: '宽松', keys: '只看字段', strict: '严格' })[form.scorer_compare?.mode] || '严格',
+        hint: form.scorer_compare?.mode === 'semantic'
+          ? (['openai_http', 'enterprise_ws'].includes(form.judge_config?.provider) ? (form.judge_config.model || '未设置模型') : '未配置评分模型')
+          : '规则判断',
+      },
+      {
         label: '执行策略',
         value: `并发 ${run.concurrency ?? 3}`,
         hint: `单案例 ${secondsText(run.case_timeout_s ?? 120)} · 验证 ${run.validation_repeats ?? 3} 次`,
@@ -1565,7 +1842,7 @@ export default async function environmentView(container, ctx) {
     const groups = [
       ['业务接入', '先选择业务模型；Prompt 属于高级上下文设置。', [businessModelSection(), advancedSettings('高级：业务 Prompt', promptSection())]],
       ['执行与工具', '工具协议、上下文加载和并发只在需要调整时展开。', [advancedSettings('高级：工具、上下文与并发', h('div.stack', null, toolsSection(), loaderSection(), runParamsSection()))]],
-      ['优化与验收', '优化模型与预算直接可见；验收规则按需查看。', [optimizerSection(), budgetSection(), advancedSettings('高级：接受条件', acceptanceSection())]],
+      ['优化与验收', '优化模型、评分方式与预算直接可见；验收规则按需查看。', [optimizerSection(), scoringRulesSection(), judgeSection(), budgetSection(), advancedSettings('高级：接受条件', acceptanceSection())]],
     ];
     const children = [
       banner,
@@ -1735,11 +2012,12 @@ export default async function environmentView(container, ctx) {
   }
 
   function buildTestConfig(target) {
-    const source = target === 'optimizer' ? state.form.optimizer_config : state.form.model_config;
+    const paths = groupPaths(target);
+    const source = state.form[paths.cfg];
     const config = { ...(source || {}) };
     const provider = config.provider;
-    const templatePath = target === 'optimizer' ? 'optimizer_request_template_text' : 'request_template_text';
-    const headersPath = target === 'optimizer' ? 'optimizer_headers_text' : 'model_headers_text';
+    const templatePath = paths.template;
+    const headersPath = paths.headers;
     const parseObject = (path, label) => {
       const raw = String(state.form[path] || '').trim();
       if (!raw) return {};
@@ -1765,7 +2043,7 @@ export default async function environmentView(container, ctx) {
   }
 
   async function testConnection(target = 'business') {
-    const provider = (target === 'optimizer' ? state.form.optimizer_config : state.form.model_config)?.provider;
+    const provider = state.form[groupPaths(target).cfg]?.provider;
     const requestSeq = ++state.testSeq[target];
     state.testLoading[target] = true;
     state.testResult[target] = null;
@@ -1777,7 +2055,7 @@ export default async function environmentView(container, ctx) {
           performed: false,
           target,
           provider,
-          model: target === 'optimizer' ? state.form.optimizer_config.model : state.form.model_config.model,
+          model: state.form[groupPaths(target).cfg]?.model,
           message: provider === 'heuristic' ? '规则修复不调用模型，无需网络探测。' : '演示模型为离线模拟，无需网络探测。',
         };
       } else {

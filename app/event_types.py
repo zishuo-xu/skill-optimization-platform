@@ -82,6 +82,8 @@ TOOL_RESULT = "tool_result"
 FIXTURE_MISS = "fixture_miss"
 SCORE_COMPLETED = "score_completed"
 SCORE_FAILED = "score_failed"
+JUDGE_COMPLETED = "judge_completed"
+JUDGE_FAILED = "judge_failed"
 
 # ---- optimizer ------------------------------------------------------------
 OPTIMIZER_INPUT_BUILT = "optimizer_input_built"

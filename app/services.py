@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import config, hashing, ids, persistence, skill_package
+from . import config, evaluation, hashing, ids, persistence, skill_package
 from .errors import ConflictError, NotFoundError, ValidationError
 
 
@@ -245,6 +245,10 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
     run_config.setdefault("validation_repeats", run_config.get("repeats_validation", 3))
     budget_config.setdefault("max_seconds", budget_config.get("max_duration_s"))
     scorer_config.setdefault("version", scorer_config.get("scorer_version", config.SCORER_VERSION))
+    compare_error = evaluation.compare_rules_error(scorer_config.get("compare"))
+    if compare_error:
+        raise ValidationError(f"评分规则无效：{compare_error}", field_path="scorer_config.compare")
+    scorer_config = _normalise_judge_config(scorer_config, parent)
     if not (budget_config.get("max_tokens") or budget_config.get("max_cost")):
         raise ValidationError(
             "必须设置总 Token 或金额上限（金额未知时以 Token 硬限制为准）",
@@ -379,13 +383,53 @@ def redact_secrets(value: Any) -> Any:
     return value
 
 
+JUDGE_PROVIDERS = ("openai_http", "enterprise_ws")
+
+
+def _normalise_judge_config(scorer_config: dict[str, Any],
+                            parent: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Validate ``scorer_config.judge`` and restore its credentials like other models."""
+    judge = scorer_config.get("judge")
+    if judge in (None, {}, "") or (isinstance(judge, Mapping)
+                                    and str(judge.get("provider") or "") in ("", "none")):
+        scorer_config.pop("judge", None)
+        return scorer_config
+    if not isinstance(judge, Mapping):
+        raise ValidationError("评分模型配置必须是对象", field_path="scorer_config.judge")
+    if judge.get("provider") not in JUDGE_PROVIDERS:
+        raise ValidationError("评分模型只支持标准 API 或 WebSocket 网关",
+                              field_path="scorer_config.judge.provider")
+    judge = normalize_model_config(dict(judge))
+    parent_judge = (((parent or {}).get("scorer_config") or {}).get("judge")) or {}
+    same_provider = judge.get("provider") == parent_judge.get("provider")
+    judge = _inherit_credentials(judge, parent_judge if same_provider else {})
+    _reject_credential_masks(judge, "scorer_config.judge")
+    if not str(judge.get("model") or "").strip():
+        raise ValidationError("评分模型 ID 不能为空", field_path="scorer_config.judge.model")
+    endpoint = judge.get("ws_url") if judge["provider"] == "enterprise_ws" else (
+        judge.get("base_url") or judge.get("url"))
+    if not str(endpoint or "").strip():
+        raise ValidationError("评分模型地址不能为空", field_path="scorer_config.judge")
+    scorer_config["judge"] = judge
+    return scorer_config
+
+
+def public_scorer_config(scorer_config: Mapping[str, Any] | None) -> dict[str, Any]:
+    public = dict(scorer_config or {})
+    if isinstance(public.get("judge"), Mapping):
+        public["judge"] = redact_secrets(public["judge"])
+    return public
+
+
 def public_environment(env: Mapping[str, Any]) -> dict[str, Any]:
     public = dict(env)
     public["model_config"] = redact_secrets(env.get("model_config") or {})
     public["optimizer_config"] = redact_secrets(env.get("optimizer_config") or {})
+    public["scorer_config"] = public_scorer_config(env.get("scorer_config"))
     public["credential_status"] = {
         "model_config": _credential_status(env.get("model_config") or {}),
         "optimizer_config": _credential_status(env.get("optimizer_config") or {}),
+        "judge_config": _credential_status(((env.get("scorer_config") or {}).get("judge")) or {}),
     }
     return public
 
@@ -448,15 +492,19 @@ def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _probe_config(payload: Mapping[str, Any], target: str) -> dict[str, Any]:
-    if target not in ("business", "optimizer"):
-        raise ValidationError("target 必须是 business 或 optimizer", field_path="target")
+    if target not in ("business", "optimizer", "judge"):
+        raise ValidationError("target 必须是 business、optimizer 或 judge", field_path="target")
+    group = {"optimizer": "optimizer_config", "judge": "judge_config"}.get(target, "model_config")
     stored: dict[str, Any] = {}
     if payload.get("environment_id"):
         env = persistence.get_environment(str(payload["environment_id"]))
-        stored = dict(env.get("optimizer_config" if target == "optimizer" else "model_config") or {})
+        if target == "judge":
+            stored = dict(((env.get("scorer_config") or {}).get("judge")) or {})
+        else:
+            stored = dict(env.get(group) or {})
     supplied = payload.get("model_config")
     if not isinstance(supplied, Mapping):
-        supplied = payload.get("optimizer_config" if target == "optimizer" else "model_config")
+        supplied = payload.get(group)
     if not isinstance(supplied, Mapping):
         _reject_credential_masks(stored, "model_config")
         return normalize_model_config(stored)
@@ -1257,8 +1305,13 @@ def _issues_summary(run_id: str, *, heuristic_mode: bool = False) -> dict[str, A
     events = persistence.list_events(run_id, after_seq=0, limit=1000, errors_only=True)
     items = []
     for event in events:
-        issue = (event.get("payload") or {}).get("issue")
-        if not issue:
+        payload = event.get("payload") or {}
+        issue = payload.get("issue")
+        # EventEmitter.issue() records the issue fields at the top level of the
+        # payload; adapters/optimizer nest them under "issue". Accept both.
+        if not isinstance(issue, Mapping) and payload.get("error_code") and payload.get("title"):
+            issue = payload
+        if not isinstance(issue, Mapping) or not issue:
             continue
         if heuristic_mode and issue.get("error_code") == "optimizer_not_configured":
             # Rule-based repair was chosen on purpose; older runs recorded it
@@ -1385,6 +1438,7 @@ def _side(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "tool_args": scores.get("tool_args"),
         "action_ok": scores.get("action_ok"),
         "diagnostics": scores.get("diagnostics") or [],
+        "judgments": scores.get("judgments") or [],
     }
 
 

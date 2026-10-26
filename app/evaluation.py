@@ -14,6 +14,26 @@ It follows the frozen rules in ``docs/CONTRACTS.md`` §2.4 and requirement §15/
   allowed values only activate through an explicit versioned ``compare-v1``
   rule set on ``expected["compare"]`` (or the ``compare_rules`` argument).
   Unknown rule versions make the case ``invalid`` rather than guessing.
+* ``compare-v2`` adds a comparison ``mode`` for tool arguments:
+  ``strict`` (default, exact values), ``lenient`` (same keys; scalar values
+  compared after normalisation: NFKC/trim/whitespace/case, ``"3" == 3``,
+  ``"true" == True``, ISO datetimes, arrays ignore order) and ``keys`` (same
+  keys; values ignored). ``allow_extra_keys`` tolerates arguments the
+  expectation does not list. ``field_rules`` override the mode for a subtree
+  (``strict`` / ``lenient`` / ``keys`` / ``ignore`` — ignore also allows the
+  field to be absent), optionally scoped to one tool; ``[*]`` / ``*`` match
+  any array index / key. Tool-schema checks keep required fields and explicit
+  ``additionalProperties: false`` in every mode; value checks (scalar type,
+  enum, range) are normalised in ``lenient`` and skipped in ``keys``.
+  Environment rules are the default; case rules (``expected["compare"]``)
+  override them.
+* ``semantic`` keeps every structural check in code (route, tool name, keys,
+  required fields) and only delegates *values* to a judge model. Scoring stays
+  a pure function: values that need a verdict are returned as
+  ``pending_judgments``; the caller obtains verdicts and scores again with
+  ``judgments``. Literal keyword hits (``expected["judge"][path].keywords``)
+  and lenient-equal values pass without a verdict. ``semantic_fallback=True``
+  (no judge configured) scores semantic values leniently.
 * Capability failures (format_error/refused/steps_exhausted/context_overflow/
   truncated/protocol_error/fixture_miss/parse_failed) count in denominators and
   fail the case; infrastructure errors (auth/network/timeout/...) are reported
@@ -31,6 +51,7 @@ No database, network, global state or debug output.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from collections import Counter
 from datetime import datetime, timezone
@@ -41,7 +62,17 @@ from .fixtures import json_deep_equal
 
 SCORER_VERSION = "score-v1"
 COMPARE_RULE_VERSION = "compare-v1"
-KNOWN_COMPARE_RULE_VERSIONS = frozenset({COMPARE_RULE_VERSION})
+COMPARE_RULE_VERSION_V2 = "compare-v2"
+KNOWN_COMPARE_RULE_VERSIONS = frozenset({COMPARE_RULE_VERSION, COMPARE_RULE_VERSION_V2})
+#: Tool argument comparison modes (compare-v2). ``semantic`` asks the frozen
+#: judge model whether values mean the same thing (see ``app/judge.py``).
+COMPARE_MODES = ("strict", "lenient", "keys", "semantic")
+#: Modes a single field rule may use; ``ignore`` also accepts an absent field.
+FIELD_RULE_MODES = COMPARE_MODES + ("ignore",)
+COMPARE_MODE_LABELS = {"strict": "严格", "lenient": "宽松", "keys": "只看字段",
+                       "semantic": "语义（大模型）", "ignore": "不比较"}
+#: Bumped whenever what the judge is asked (or how verdicts are keyed) changes.
+JUDGE_PROMPT_VERSION = "judge-v1"
 
 ACTIONS = ("tool_call", "clarify", "no_action")
 CALL_MATCH_MODES = ("ordered_exact", "unordered")
@@ -87,10 +118,11 @@ def _diag(category: str, *, case_id: str | None = None,
           skill_id: str | None = None, tool: str | None = None,
           field_path: str | None = None,
           expected_value: Any = _MISSING,
-          actual_value: Any = _MISSING) -> dict[str, Any]:
+          actual_value: Any = _MISSING,
+          note: str | None = None) -> dict[str, Any]:
     """Build one diagnostic entry (all contract fields always present)."""
 
-    return {
+    entry = {
         "category": category,
         "skill_id": skill_id,
         "tool": tool,
@@ -99,6 +131,9 @@ def _diag(category: str, *, case_id: str | None = None,
         "actual_value": None if actual_value is _MISSING else actual_value,
         "case_id": case_id,
     }
+    if note:
+        entry["note"] = note
+    return entry
 
 
 def _case_id(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> str | None:
@@ -193,13 +228,58 @@ def _normalise_path(path: str) -> str:
 
 _COMPARE_RULE_KEYS = ("numeric_tolerance", "normalize_datetime",
                       "unordered_arrays", "allowed_values")
+_COMPARE_V2_KEYS = ("mode", "allow_extra_keys", "field_rules")
 _DEFAULT_COMPARE_RULES = {
     "version": None,
     "numeric_tolerance": None,
     "normalize_datetime": False,
     "unordered_arrays": False,
     "allowed_values": {},
+    "mode": "strict",
+    "allow_extra_keys": False,
+    "field_rules": [],
 }
+
+
+def _rule_version_error(version: Any) -> str | None:
+    if version is None:
+        return "参数比较规则必须显式声明 version"
+    if version not in KNOWN_COMPARE_RULE_VERSIONS:
+        return (f"未知的参数比较规则版本: {version!r}"
+                f"（支持 {COMPARE_RULE_VERSION} / {COMPARE_RULE_VERSION_V2}）")
+    return None
+
+
+def _compile_field_path(path: str) -> re.Pattern[str]:
+    """``args.items[*].name`` / ``$.args.*.id`` -> regex over normalised paths."""
+    pattern = re.escape(_normalise_path(path))
+    pattern = pattern.replace(r"\[\*\]", r"\[\d+\]").replace(r"\*", r"[^.\[\]]+")
+    return re.compile(pattern)
+
+
+def _normalise_field_rules(raw: Any) -> tuple[list[dict[str, Any]], str | None]:
+    if raw is None:
+        return [], None
+    if not _is_sequence(raw):
+        return [], "field_rules 必须是数组"
+    rules: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            return [], f"field_rules[{index}] 必须是对象"
+        path = item.get("path")
+        if not isinstance(path, str) or not _normalise_path(path.strip()):
+            return [], f"field_rules[{index}].path 必须是非空字段路径，如 $.args.color"
+        mode = item.get("mode")
+        if mode not in FIELD_RULE_MODES:
+            return [], (f"field_rules[{index}].mode 必须是 "
+                        f"{' / '.join(FIELD_RULE_MODES)}")
+        tool = item.get("tool")
+        if tool is not None and (not isinstance(tool, str) or not tool.strip()):
+            return [], f"field_rules[{index}].tool 必须是工具名"
+        rules.append({"path": path.strip(), "mode": mode,
+                      "tool": tool.strip() if isinstance(tool, str) else None,
+                      "pattern": _compile_field_path(path.strip())})
+    return rules, None
 
 
 def _normalise_compare_rules(compare_rules: Any,
@@ -211,36 +291,45 @@ def _normalise_compare_rules(compare_rules: Any,
     * the frozen environment scorer config, e.g. ``{"version": "score-v1",
       "route_compare": "set", "param_compare": "strict_json"}`` — it selects the
       scorer but does **not** activate relaxed comparison rules;
-    * an optional versioned comparison rule set (``compare-v1``).
+    * an optional versioned comparison rule set (``compare-v1`` / ``compare-v2``).
 
-    Case-level rules live in ``expected["compare"]`` and must always be a valid
-    ``compare-v1`` object. Rule keys passed through ``compare_rules`` are only
+    Case-level rules live in ``expected["compare"]`` and must always carry a
+    supported version. Rule keys passed through ``compare_rules`` are only
     applied when they carry an explicit supported version; otherwise they are
     ignored as scorer configuration and strict comparison stays the default.
+    ``compare-v2`` keys (mode / allow_extra_keys / field_rules) from the case
+    override the environment; case field rules are consulted first.
     """
 
     raw: dict[str, Any] = {}
+    env_v2: dict[str, Any] = {}
+    case_v2: dict[str, Any] = {}
     expected_compare = expected.get("compare")
     if isinstance(expected_compare, Mapping) and expected_compare:
-        if expected_compare.get("version") != COMPARE_RULE_VERSION:
-            return {}, (f"未知的参数比较规则版本: "
-                        f"{expected_compare.get('version')!r}"
-                        f"（仅支持 {COMPARE_RULE_VERSION}）")
-        raw.update(expected_compare)
+        error = _rule_version_error(expected_compare.get("version"))
+        if error:
+            return {}, error
+        raw.update({key: expected_compare[key] for key in _COMPARE_RULE_KEYS
+                    if key in expected_compare})
+        case_v2 = {key: expected_compare[key] for key in _COMPARE_V2_KEYS
+                   if key in expected_compare}
+        if case_v2 and expected_compare.get("version") != COMPARE_RULE_VERSION_V2:
+            return {}, f"mode / allow_extra_keys / field_rules 需要 version {COMPARE_RULE_VERSION_V2}"
     if isinstance(compare_rules, Mapping) and compare_rules:
         rule_keys = [key for key in _COMPARE_RULE_KEYS if key in compare_rules]
-        if rule_keys:
-            version = compare_rules.get("version")
-            if version is None:
-                return {}, "参数比较规则必须显式声明 version"
-            if version not in KNOWN_COMPARE_RULE_VERSIONS:
-                return {}, (f"未知的参数比较规则版本: {version!r}"
-                            f"（仅支持 {COMPARE_RULE_VERSION}）")
+        v2_keys = [key for key in _COMPARE_V2_KEYS if key in compare_rules]
+        if rule_keys or v2_keys:
+            error = _rule_version_error(compare_rules.get("version"))
+            if error:
+                return {}, error
+            if v2_keys and compare_rules.get("version") != COMPARE_RULE_VERSION_V2:
+                return {}, f"mode / allow_extra_keys / field_rules 需要 version {COMPARE_RULE_VERSION_V2}"
             for key in rule_keys:
                 raw[key] = compare_rules[key]
+            env_v2 = {key: compare_rules[key] for key in v2_keys}
         # No comparison-rule keys: treat the input as the environment scorer
         # config (e.g. {"version": "score-v1"}) and keep strict comparison.
-    if not raw:
+    if not raw and not env_v2 and not case_v2:
         return dict(_DEFAULT_COMPARE_RULES), None
     tolerance = raw.get("numeric_tolerance")
     if tolerance is not None and (not _is_number(tolerance) or tolerance < 0):
@@ -260,13 +349,106 @@ def _normalise_compare_rules(compare_rules: Any,
             if not _is_sequence(values):
                 return {}, "allowed_values 的每个值必须是数组"
             allowed[_normalise_path(key)] = list(values)
+
+    mode = case_v2.get("mode", env_v2.get("mode", "strict"))
+    if mode not in COMPARE_MODES:
+        return {}, f"mode 必须是 {' / '.join(COMPARE_MODES)}"
+    allow_extra = case_v2.get("allow_extra_keys",
+                              env_v2.get("allow_extra_keys", mode != "strict"))
+    if not isinstance(allow_extra, bool):
+        return {}, "allow_extra_keys 必须是布尔值"
+    case_fields, error = _normalise_field_rules(case_v2.get("field_rules"))
+    if error:
+        return {}, error
+    env_fields, error = _normalise_field_rules(env_v2.get("field_rules"))
+    if error:
+        return {}, error
     return {
-        "version": COMPARE_RULE_VERSION,
+        "version": COMPARE_RULE_VERSION_V2 if (env_v2 or case_v2) else COMPARE_RULE_VERSION,
         "numeric_tolerance": float(tolerance) if tolerance is not None else None,
         "normalize_datetime": normalize_dt,
         "unordered_arrays": unordered,
         "allowed_values": allowed,
+        "mode": mode,
+        "allow_extra_keys": allow_extra,
+        "field_rules": case_fields + env_fields,
     }, None
+
+
+def compare_rules_error(rules: Any) -> str | None:
+    """Validate a ``compare`` object (dataset import / environment save)."""
+    if rules is None:
+        return None
+    if not isinstance(rules, Mapping):
+        return "compare 必须是版本化比较规则对象"
+    _, error = _normalise_compare_rules(None, {"compare": rules})
+    return error
+
+
+def compare_summary(rules: Mapping[str, Any]) -> dict[str, Any]:
+    """Public, JSON-safe description of the effective comparison rules."""
+    return {
+        "mode": rules.get("mode", "strict"),
+        "allow_extra_keys": bool(rules.get("allow_extra_keys")),
+        "field_rules": [{"path": item["path"], "mode": item["mode"],
+                         **({"tool": item["tool"]} if item.get("tool") else {})}
+                        for item in rules.get("field_rules") or []],
+    }
+
+
+def _mode_at(path: str, ctx: Mapping[str, Any]) -> str:
+    """Comparison mode for ``path``: a matching field rule, else the inherited mode."""
+    rules = ctx.get("rules") or {}
+    inherited = ctx.get("mode") or rules.get("mode") or "strict"
+    field_rules = rules.get("field_rules") or ()
+    if not field_rules:
+        return inherited
+    normalised = _normalise_path(path)
+    tool = ctx.get("tool")
+    for rule in field_rules:
+        if rule.get("tool") and rule["tool"] != tool:
+            continue
+        if rule["pattern"].fullmatch(normalised):
+            return rule["mode"]
+    return inherited
+
+
+_NUMERIC_TEXT = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
+
+
+def _lenient_key(value: Any) -> tuple[str, Any] | None:
+    """Normalised comparison key for a scalar; ``None`` for containers."""
+    if isinstance(value, bool):
+        return ("bool", value)
+    if _is_number(value):
+        return ("num", float(value))
+    if value is None:
+        return ("null", None)
+    if isinstance(value, str):
+        text = unicodedata.normalize("NFKC", value).strip()
+        text = re.sub(r"\s+", " ", text).casefold()
+        if text in ("true", "false"):
+            return ("bool", text == "true")
+        if _NUMERIC_TEXT.match(text):
+            return ("num", float(text))
+        return ("str", text)
+    return None
+
+
+def _lenient_equal(expected: Any, actual: Any, rules: Mapping[str, Any]) -> bool:
+    if json_deep_equal(expected, actual):
+        return True
+    left, right = _lenient_key(expected), _lenient_key(actual)
+    if left is not None and left == right:
+        return True
+    tolerance = rules.get("numeric_tolerance")
+    if tolerance is not None and left and right and left[0] == right[0] == "num":
+        return abs(left[1] - right[1]) <= float(tolerance)
+    if isinstance(expected, str) and isinstance(actual, str):
+        parsed_left, parsed_right = _parse_datetime(expected.strip()), _parse_datetime(actual.strip())
+        if parsed_left is not None and parsed_right is not None:
+            return parsed_left == parsed_right
+    return False
 
 
 def _allowed_value(path: str, actual: Any, rules: Mapping[str, Any]) -> bool:
@@ -517,6 +699,11 @@ def _compare_call_arguments(expect_call: Mapping[str, Any],
 
 def _compare_arguments(expected: Any, actual: Any, path: str,
                        ctx: dict[str, Any]) -> bool:
+    mode = _mode_at(path, ctx)
+    if mode == "ignore":
+        return True
+    if mode != ctx.get("mode"):
+        ctx = dict(ctx, mode=mode)
     diags: list[dict[str, Any]] = ctx["diags"]
     rules: Mapping[str, Any] = ctx["rules"]
     tool = ctx.get("tool")
@@ -532,6 +719,8 @@ def _compare_arguments(expected: Any, actual: Any, path: str,
         for key, value in expected.items():
             child = _child_path(path, str(key))
             if key not in actual:
+                if _mode_at(child, ctx) == "ignore":
+                    continue
                 diags.append(_diag("missing_arg", case_id=case_id, tool=tool,
                                    field_path=child, expected_value=value))
                 ok = False
@@ -539,9 +728,11 @@ def _compare_arguments(expected: Any, actual: Any, path: str,
                 ok = _compare_arguments(value, actual[key], child, ctx) and ok
         for key in actual:
             if key not in expected:
+                child = _child_path(path, str(key))
+                if rules.get("allow_extra_keys") or _mode_at(child, ctx) == "ignore":
+                    continue
                 diags.append(_diag("extra_arg", case_id=case_id, tool=tool,
-                                   field_path=_child_path(path, str(key)),
-                                   actual_value=actual[key]))
+                                   field_path=child, actual_value=actual[key]))
                 ok = False
         return ok
 
@@ -551,7 +742,11 @@ def _compare_arguments(expected: Any, actual: Any, path: str,
                                field_path=path, expected_value=expected,
                                actual_value=actual))
             return False
-        if rules.get("unordered_arrays"):
+        if mode == "keys":
+            return True
+        if mode == "semantic" and all(_is_scalar(item) for item in list(expected) + list(actual)):
+            return _semantic_value(list(expected), list(actual), path, ctx)
+        if rules.get("unordered_arrays") or mode == "lenient":
             return _compare_arguments_unordered(list(expected), list(actual), path, ctx)
         ok = True
         common = min(len(expected), len(actual))
@@ -570,12 +765,142 @@ def _compare_arguments(expected: Any, actual: Any, path: str,
                                     f"{path}[{index}]", ctx) and ok
         return ok
 
-    if _values_equal(expected, actual, path, rules) or _allowed_value(path, actual, rules):
+    if mode == "keys":
+        return True
+    if mode == "semantic":
+        if _allowed_value(path, actual, rules):
+            return True
+        return _semantic_value(expected, actual, path, ctx)
+    if mode == "lenient":
+        equal = _lenient_equal(expected, actual, rules)
+    else:
+        equal = _values_equal(expected, actual, path, rules)
+    if equal or _allowed_value(path, actual, rules):
         return True
     category = ("type_error" if _json_type(expected) != _json_type(actual)
+                and not (mode == "lenient" and _lenient_key(actual) is not None
+                         and _lenient_key(expected) is not None)
                 else "value_error")
     diags.append(_diag(category, case_id=case_id, tool=tool, field_path=path,
                        expected_value=expected, actual_value=actual))
+    return False
+
+
+def _is_scalar(value: Any) -> bool:
+    return not isinstance(value, (Mapping, list, tuple))
+
+
+def normalise_judge_criteria(raw: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """``expected["judge"]``: ``{path: {"keywords": [...], "requirement": "..."}}``."""
+    if raw is None:
+        return [], None
+    if not isinstance(raw, Mapping):
+        return [], "judge 必须是 {字段路径: {keywords, requirement}} 对象"
+    out: list[dict[str, Any]] = []
+    for path, spec in raw.items():
+        if not isinstance(path, str) or not _normalise_path(path.strip()):
+            return [], "judge 的键必须是字段路径，如 $.args.color"
+        if not isinstance(spec, Mapping):
+            return [], f"judge[{path!r}] 必须是对象"
+        keywords = spec.get("keywords", [])
+        if not _is_sequence(keywords) or not all(isinstance(item, str) and item.strip()
+                                                   for item in keywords):
+            return [], f"judge[{path!r}].keywords 必须是非空字符串数组"
+        requirement = spec.get("requirement", "")
+        if not isinstance(requirement, str):
+            return [], f"judge[{path!r}].requirement 必须是字符串"
+        if not keywords and not requirement.strip():
+            return [], f"judge[{path!r}] 至少需要 keywords 或 requirement"
+        out.append({"path": path.strip(), "pattern": _compile_field_path(path.strip()),
+                    "keywords": [item.strip() for item in keywords],
+                    "requirement": requirement.strip()})
+    return out, None
+
+
+def _criteria_at(path: str, rules: Mapping[str, Any]) -> dict[str, Any] | None:
+    normalised = _normalise_path(path)
+    for item in rules.get("criteria") or ():
+        if item["pattern"].fullmatch(normalised):
+            return {"keywords": item["keywords"], "requirement": item["requirement"]}
+    return None
+
+
+def _keywords_hit(actual: Any, keywords: Sequence[str]) -> bool:
+    if not keywords:
+        return False
+    text = actual if isinstance(actual, str) else json_dumps_compact(actual)
+    haystack = unicodedata.normalize("NFKC", text).casefold()
+    return all(unicodedata.normalize("NFKC", word).casefold() in haystack
+               for word in keywords)
+
+
+def json_dumps_compact(value: Any) -> str:
+    import json
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def judgment_key(path: str, expected: Any, actual: Any,
+                 criteria: Mapping[str, Any] | None) -> str:
+    """Stable key of one value judgment (independent of judge model)."""
+    import hashlib
+    payload = json_dumps_compact({"v": JUDGE_PROMPT_VERSION, "path": _normalise_path(path),
+                                  "expected": expected, "actual": actual,
+                                  "criteria": criteria or {}})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _lenient_multiset_equal(expected: Sequence[Any], actual: Sequence[Any],
+                            rules: Mapping[str, Any]) -> bool:
+    if len(expected) != len(actual):
+        return False
+    remaining = list(actual)
+    for item in expected:
+        for index, candidate in enumerate(remaining):
+            if _lenient_equal(item, candidate, rules):
+                del remaining[index]
+                break
+        else:
+            return False
+    return True
+
+
+def _semantic_value(expected: Any, actual: Any, path: str, ctx: dict[str, Any]) -> bool:
+    """Judge one scalar (or array of scalars) value in ``semantic`` mode."""
+    rules: Mapping[str, Any] = ctx["rules"]
+    criteria = _criteria_at(path, rules)
+    if criteria and _keywords_hit(actual, criteria["keywords"]):
+        return True
+    if isinstance(expected, (list, tuple)):
+        if isinstance(actual, (list, tuple)) and _lenient_multiset_equal(expected, actual, rules):
+            return True
+    elif _lenient_equal(expected, actual, rules):
+        return True
+    if rules.get("semantic_fallback"):
+        ctx["diags"].append(_diag("value_error", case_id=ctx.get("case_id"), tool=ctx.get("tool"),
+                                  field_path=path, expected_value=expected, actual_value=actual,
+                                  note="未配置评分模型，按宽松规则判定"))
+        return False
+    key = judgment_key(path, expected, actual, criteria)
+    verdict = (rules.get("judgments") or {}).get(key)
+    if verdict is None:
+        pending = rules.get("pending")
+        if isinstance(pending, dict) and key not in pending:
+            pending[key] = {"key": key, "path": path, "tool": ctx.get("tool"),
+                            "expected": expected, "actual": actual,
+                            "criteria": criteria or {}}
+        ctx["diags"].append(_diag("value_error", case_id=ctx.get("case_id"), tool=ctx.get("tool"),
+                                  field_path=path, expected_value=expected, actual_value=actual,
+                                  note="等待评分模型判定"))
+        return False
+    used = rules.get("used_judgments")
+    if isinstance(used, dict):
+        used[key] = {"path": path, "tool": ctx.get("tool"), "passed": bool(verdict.get("passed")),
+                     "reason": verdict.get("reason") or "", "expected": expected, "actual": actual}
+    if verdict.get("passed"):
+        return True
+    ctx["diags"].append(_diag("value_error", case_id=ctx.get("case_id"), tool=ctx.get("tool"),
+                              field_path=path, expected_value=expected, actual_value=actual,
+                              note=f"评分模型：{verdict.get('reason') or '语义不一致'}"))
     return False
 
 
@@ -642,10 +967,39 @@ def _check_schema_type(value: Any, declared: Any) -> bool:
     return True
 
 
+_CONTAINER_TYPES = ("object", "array")
+
+
+def _lenient_type_ok(value: Any, declared: Any) -> bool:
+    """Scalar type check after lenient normalisation ("3" for integer etc.)."""
+    if _check_schema_type(value, declared):
+        return True
+    key = _lenient_key(value)
+    if key is None:
+        return False
+    names = [declared] if isinstance(declared, str) else list(declared) if _is_sequence(declared) else []
+    kind, normalised = key
+    for name in names:
+        if name == "number" and kind == "num":
+            return True
+        if name == "integer" and kind == "num" and float(normalised).is_integer():
+            return True
+        if name == "boolean" and kind == "bool":
+            return True
+        if name == "string" and kind in ("num", "bool"):
+            return True
+    return False
+
+
 def _validate_schema(schema: Any, value: Any, path: str,
                      ctx: dict[str, Any]) -> bool:
     if not isinstance(schema, Mapping) or not schema:
         return True
+    mode = _mode_at(path, ctx) if ctx.get("rules") else "strict"
+    if mode == "ignore":
+        return True
+    if mode != ctx.get("mode"):
+        ctx = dict(ctx, mode=mode)
     diags: list[dict[str, Any]] = ctx["diags"]
     tool = ctx.get("tool")
     case_id = ctx.get("case_id")
@@ -653,16 +1007,27 @@ def _validate_schema(schema: Any, value: Any, path: str,
 
     declared_type = schema.get("type")
     if declared_type is not None and not _check_schema_type(value, declared_type):
-        diags.append(_diag("type_error", case_id=case_id, tool=tool,
-                           field_path=path, expected_value=declared_type,
-                           actual_value=_json_type(value)))
-        return False
+        declared = [declared_type] if isinstance(declared_type, str) else list(declared_type) \
+            if _is_sequence(declared_type) else []
+        container_declared = any(name in _CONTAINER_TYPES for name in declared)
+        if mode == "keys" and not container_declared:
+            pass  # values (including their scalar type) are not compared
+        elif mode in ("lenient", "semantic") and _lenient_type_ok(value, declared_type):
+            pass
+        else:
+            diags.append(_diag("type_error", case_id=case_id, tool=tool,
+                               field_path=path, expected_value=declared_type,
+                               actual_value=_json_type(value)))
+            return False
+    if mode == "keys" and not isinstance(value, (Mapping, list, tuple)):
+        return ok  # enum / range are value checks
 
     if isinstance(value, Mapping):
         required = schema.get("required")
         if _is_sequence(required):
             for key in required:
-                if isinstance(key, str) and key not in value:
+                if isinstance(key, str) and key not in value \
+                        and _mode_at(_child_path(path, key), ctx) != "ignore":
                     diags.append(_diag("missing_arg", case_id=case_id, tool=tool,
                                        field_path=_child_path(path, key),
                                        expected_value="required"))
@@ -694,6 +1059,8 @@ def _validate_schema(schema: Any, value: Any, path: str,
         if isinstance(items, Mapping):
             for index, item in enumerate(value):
                 ok = _validate_schema(items, item, f"{path}[{index}]", ctx) and ok
+        if mode == "keys":
+            return ok
         min_items = schema.get("minItems")
         if isinstance(min_items, int) and len(value) < min_items:
             diags.append(_diag("value_error", case_id=case_id, tool=tool,
@@ -708,7 +1075,14 @@ def _validate_schema(schema: Any, value: Any, path: str,
             ok = False
 
     enum = schema.get("enum")
-    if _is_sequence(enum) and not any(json_deep_equal(value, item) for item in enum):
+    if mode == "semantic" and _is_sequence(enum):
+        return ok  # the judge decides whether the value means one of them
+    if mode == "lenient":
+        enum_hit = _is_sequence(enum) and any(_lenient_equal(item, value, ctx.get("rules") or {})
+                                              for item in enum)
+    else:
+        enum_hit = _is_sequence(enum) and any(json_deep_equal(value, item) for item in enum)
+    if _is_sequence(enum) and not enum_hit:
         diags.append(_diag("value_error", case_id=case_id, tool=tool,
                            field_path=path, expected_value=list(enum),
                            actual_value=value))
@@ -716,6 +1090,10 @@ def _validate_schema(schema: Any, value: Any, path: str,
 
     minimum = schema.get("minimum")
     maximum = schema.get("maximum")
+    if mode in ("lenient", "semantic") and not _is_number(value):
+        key = _lenient_key(value)
+        if key and key[0] == "num":
+            value = key[1]
     if _is_number(value):
         if _is_number(minimum) and value < minimum:
             diags.append(_diag("value_error", case_id=case_id, tool=tool,
@@ -1202,8 +1580,15 @@ def _expected_structure_errors(expected: Mapping[str, Any]) -> list[dict[str, An
 
 
 def score_case(expected: Any, actual: Any, tool_schema: Any = None,
-               compare_rules: Any = None) -> dict[str, Any]:
-    """Score one case with ``score-v1`` (see module docstring for the rules)."""
+               compare_rules: Any = None, *,
+               judgments: Mapping[str, Mapping[str, Any]] | None = None,
+               semantic_fallback: bool = False) -> dict[str, Any]:
+    """Score one case with ``score-v1`` (see module docstring for the rules).
+
+    ``judgments`` maps :func:`judgment_key` to ``{"passed": bool, "reason": str}``
+    verdicts from the judge model; values still lacking a verdict are returned
+    in ``pending_judgments`` (the case is then provisional).
+    """
 
     if not isinstance(expected, Mapping):
         return _invalid_result("预期结果必须是 JSON 对象", None,
@@ -1223,6 +1608,14 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
     if rules_error:
         return _invalid_result(rules_error, case_id,
                                field_path="expected.compare")
+    criteria, criteria_error = normalise_judge_criteria(expected.get("judge"))
+    if criteria_error:
+        return _invalid_result(criteria_error, case_id, field_path="expected.judge")
+    pending: dict[str, dict[str, Any]] = {}
+    used: dict[str, dict[str, Any]] = {}
+    rules = dict(rules, criteria=criteria, judgments=dict(judgments or {}),
+                 pending=pending, used_judgments=used,
+                 semantic_fallback=bool(semantic_fallback))
 
     action = expected.get("action") or "tool_call"
     actual_calls, calls_invalid = _actual_business_calls(actual)
@@ -1313,7 +1706,12 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
         "evaluable": tool_evaluable,
         "passed": tool_passed,
         "reason": (chosen_tool_args["reason"] if not tool_passed
-                   else "业务工具调用与参数完全匹配"),
+                   else {"strict": "业务工具调用与参数完全匹配",
+                         "lenient": "业务工具调用与参数按宽松规则匹配",
+                         "keys": "业务工具调用与参数字段一致（只看字段）",
+                         "semantic": "业务工具调用与参数语义一致"}.get(
+                             rules.get("mode", "strict"), "业务工具调用与参数完全匹配")),
+        "compare": compare_summary(rules),
         "call_match": (chosen_tool_args.get("call_match")
                        if not tool_passed else
                        (next((item["tool_args"].get("call_match")
@@ -1352,7 +1750,7 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
         status = "pass" if joint else "fail"
         passed = bool(joint)
 
-    return {
+    result = {
         "status": status,
         "passed": passed,
         "error_kind": error_kind,
@@ -1362,6 +1760,18 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
         "joint": bool(joint),
         "diagnostics": _dedupe_diagnostics(diagnostics),
     }
+    if pending and error_kind is None:
+        result["pending_judgments"] = list(pending.values())
+    if used:
+        result["judgments"] = list(used.values())
+    if semantic_fallback and _uses_semantic(rules):
+        result["tool_args"]["semantic_fallback"] = True
+    return result
+
+
+def _uses_semantic(rules: Mapping[str, Any]) -> bool:
+    return rules.get("mode") == "semantic" or any(
+        item.get("mode") == "semantic" for item in rules.get("field_rules") or ())
 
 
 # --------------------------------------------------------------------------- #
@@ -1533,3 +1943,13 @@ def aggregate_metrics(results: Iterable[Any], planned: int | None = None,
 # Contract §2.4 names the aggregation entry point ``aggregate``; keep an alias so
 # integration code may import either name.
 aggregate = aggregate_metrics
+
+
+def mark_infrastructure(score: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    """Turn a provisional score into an infrastructure result (excluded from metrics)."""
+    result = dict(score)
+    result.pop("pending_judgments", None)
+    result.update(status="infra", passed=False, joint=False, error_kind="infrastructure")
+    result["routing"] = dict(score.get("routing") or {}, evaluable=False, passed=False, reason=reason)
+    result["tool_args"] = dict(score.get("tool_args") or {}, evaluable=False, passed=False, reason=reason)
+    return result
