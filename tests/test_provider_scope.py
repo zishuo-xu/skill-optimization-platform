@@ -43,3 +43,27 @@ def test_connection_test_rejects_python_flow(client):
     })
     assert response.status_code == 422, response.text
     assert "Python 流程接入已移除" in response.json()["error"]["message"]
+
+
+# --------------------------------------------------------------------------- #
+# standard API: URL + model id + API key (OpenAI compatible)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("url, expected", [
+    ("https://api.example.com/v1", "https://api.example.com/v1/chat/completions"),
+    ("https://api.example.com/v1/", "https://api.example.com/v1/chat/completions"),
+    ("https://api.example.com/v1/chat/completions", "https://api.example.com/v1/chat/completions"),
+])
+def test_standard_api_single_url_field(url, expected):
+    adapter = OpenAIHTTPAdapter({"provider": "openai_http", "base_url": url, "model": "m"})
+    assert adapter.url == expected
+
+
+def test_standard_api_key_is_sent_as_bearer(monkeypatch):
+    literal = OpenAIHTTPAdapter({"provider": "openai_http", "base_url": "https://h/v1",
+                                 "model": "m", "api_key_ref": "sk-test-123"})
+    assert literal._headers(literal.model_config)["Authorization"] == "Bearer sk-test-123"
+
+    monkeypatch.setenv("STD_API_KEY_FOR_TEST", "sk-from-env")
+    from_env = OpenAIHTTPAdapter({"provider": "openai_http", "base_url": "https://h/v1",
+                                  "model": "m", "api_key_ref": "env:STD_API_KEY_FOR_TEST"})
+    assert from_env._headers(from_env.model_config)["Authorization"] == "Bearer sk-from-env"

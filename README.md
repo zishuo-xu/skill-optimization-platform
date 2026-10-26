@@ -178,7 +178,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 2026-10-26：419 passed
+.venv/bin/python -m pytest -q        # 2026-10-26：423 passed
 ```
 
 ### 文档导航
@@ -338,7 +338,7 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 ## 8. 接入真实模型 / 企业网关
 
-优先使用标准 API；企业 HTTP 网关可配置完整请求 URL、Body 扩展字段和 Headers。内网专有协议适配与示例见 [HTTP 网关接入指南](docs/HTTP_GATEWAY_INTEGRATION.md)。
+模型接入只有两种：「标准 API」（OpenAI 兼容，填 URL、模型 ID、API Key）和「WebSocket 网关」。见 [标准 API 接入](docs/HTTP_GATEWAY_INTEGRATION.md) 与 [WebSocket 网关接入](docs/WS_GATEWAY_INTEGRATION.md)。
 
 业务模型与优化模型均可直接“测试连接”，包括已发布版本；支持自定义测试输入，发送一次短模型请求，显示耗时、回复摘要或错误，不启动评测、不执行业务工具。见 [连接测试说明](docs/CONNECTION_TEST.md)。
 
@@ -348,8 +348,8 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 界面只提供两种接入方式：
 
-- 「标准 API」（`openai_http`）：标准 Chat Completions HTTP；`base_url`、模型标识、超时/重试。
-  企业 HTTP 网关也走这一项，在「高级」里配置完整请求地址、请求模板和 Headers。
+- 「标准 API」（`openai_http`）：OpenAI 兼容的 Chat Completions，页面只填 URL、模型 ID、API Key
+  （以 `Authorization: Bearer` 发送），见 [标准 API 接入](docs/HTTP_GATEWAY_INTEGRATION.md)。
 - 「WebSocket 网关」（`enterprise_ws`）：OpenAI 兼容报文经 WebSocket 发送的企业多模型网关，
   请求体 `api_key` + 握手头 `sender` 鉴权、逐帧完整 JSON、每帧 usage、无 `[DONE]`，
   填写方法与解析规则见 [WebSocket 网关接入](docs/WS_GATEWAY_INTEGRATION.md)。附加字段原样发送，

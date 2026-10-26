@@ -1,58 +1,44 @@
-# 标准 API 与企业 HTTP 网关接入
+# 标准 API 接入（OpenAI 兼容）
 
-优先使用标准 Chat Completions API。企业 HTTP 网关复用同一适配器，额外配置完整 URL、请求 Body 扩展字段和 Headers。企业内部的特殊协议由内网环境按本文列出的边界适配。
+执行环境里的「标准 API」（`provider: openai_http`）按 OpenAI 兼容的 Chat Completions 协议调用模型，
+页面上只需要三项：**URL、模型 ID、API Key**。业务模型和优化模型分别配置，可以使用不同服务。
+除标准 API 外，平台只支持 [WebSocket 网关](WS_GATEWAY_INTEGRATION.md)。
 
-## 配置
+## 页面上怎么填
 
-业务模型和优化模型分别保存配置，两者可以使用不同服务。网页的「标准 API」选项对应 `provider: openai_http`；企业 HTTP 网关的完整 URL、请求模板和 Headers 在该选项的「高级」里配置。
+| 字段 | 填什么 | 平台怎么用 |
+| --- | --- | --- |
+| URL | API 根地址，如 `https://api.example.com/v1`；也可直接填完整的 `…/chat/completions` | 根地址自动追加 `/chat/completions`；已以该路径结尾时原样使用。不会自动插入 `/v1` |
+| 模型 ID | 服务商的模型 ID | 请求体 `model` |
+| API Key | 密钥本身，或 `env:变量名`（由服务端从环境变量读取） | 请求头 `Authorization: Bearer <key>` |
 
-标准服务示例（所有凭据均为占位，不可直接用于生产）：
+温度、最大输出 Token、超时和是否流式在「高级：采样与超时」里，评测建议温度固定为 0。
+
+保存后页面只显示 API Key「已配置」，不会回填原值；编辑草稿时留空表示沿用原密钥。切换到 WebSocket 网关时不会带走这个密钥。
+「测试连接」会发一次短请求，显示耗时、回复摘要或错误原因，详见 [连接测试](CONNECTION_TEST.md)。
+
+对应的环境配置（占位值）：
 
 ```json
 {
   "provider": "openai_http",
-  "base_url": "https://model.example.invalid/v1",
-  "model": "your-model",
+  "base_url": "https://api.example.invalid/v1",
+  "model": "your-model-id",
   "api_key_ref": "env:MODEL_API_KEY",
-  "stream": true,
+  "temperature": 0,
+  "max_tokens": 2048,
   "timeout_s": 120,
-  "max_retries": 2,
-  "max_tokens": 2048
+  "stream": true
 }
 ```
 
-`base_url` 为 API 根路径，平台追加 `/chat/completions`；若已经以该路径结尾，不重复追加。平台不会自动插入 `/v1`。
+## 旧配置
 
-企业网关如果提供完整请求地址，使用高级配置中的 `url`：
+早期版本允许在标准 API 下配置「完整请求地址」`url`、请求体附加字段 `request_template` 和请求头 `headers`（企业 HTTP 网关写法）。现在：
 
-```json
-{
-  "provider": "openai_http",
-  "url": "https://gateway.example.invalid/company/model/invoke",
-  "model": "your-model",
-  "headers": {
-    "Authorization": "YOUR_COMPANY_AUTH_VALUE",
-    "X-Company": "your-tenant"
-  },
-  "request_template": {
-    "api_key": "YOUR_SERVICE_ID",
-    "user": "your-user",
-    "extra_body": {"enable_thinking": false},
-    "stream_options": {"include_usage": false}
-  },
-  "stream": true,
-  "timeout_s": 120
-}
-```
-
-- `url` 为最终 POST 地址，优先于 `base_url`，不会追加任何路径。
-- `request_template` 是实际 JSON Body 的扩展字段，`api_key`、`user`、嵌套 `extra_body` 等按原结构发送。
-- 平台根据当前任务写入 `model`、`messages`、`tools`、`stream` 和采样参数。这些执行字段不接受 `extra_body` 覆盖，模板中的 tools 也不能替代运行时工具列表。
-- HTTP 的 `api_key_ref` 在没有显式 `Authorization` Header 时生成 `Bearer <value>`；与 Body 中的 `api_key` 是两个独立配置。若网关只需要 Body 中的 `api_key`，不必配置 `api_key_ref`。
-- `headers` 中的值按字符串发送；当前不对自定义 Header 值提供模板占位符解析。
-- `api_key_ref` 支持 `env:NAME` / `{"env":"NAME"}`，在服务端解析。浏览器不会拿到引用的实际值。缺失显式引用会报鉴权错误。
-- 公共 API 返回字面凭据掩码；同 provider 创建草稿时，未更改的凭据按父版本同路径继承，包含嵌套 Body 和 Headers。请保留 `parent_id`，不能把独立的 `***` 作为新凭据。
-- 若网关不支持尾部 usage，可通过 `stream_options.include_usage=false` 明确配置；缺少 usage 不会被伪造为有统计数据。
+- 页面加载旧环境时，`url` 合并进 URL 一项；保存后只保留 `base_url`。不以 `/chat/completions` 结尾的自定义路径不再属于标准 API，请改用 WebSocket 网关或让网关提供兼容地址。
+- 仍带 `request_template` / `headers` 的环境，会在表单里显示为「旧配置」并照常随请求发送；清空为 `{}` 并保存即可移除。
+- 通过接口直接提交这些字段仍然有效：`url` 优先于 `base_url`；`request_template` 合并进请求体，但不能覆盖 `model`、`messages`、`tools`、`stream` 和采样参数；显式的 `Authorization` 请求头优先于 API Key。
 
 ## 当前支持的响应
 
