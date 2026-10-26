@@ -78,6 +78,54 @@ function credentialForSubmit(value) {
   return text === '***' ? '' : text;
 }
 
+// Mirrors services._is_secret_key: these fields come back from the API as "***".
+const SECRET_KEYS = new Set(['api_key', 'apikey', 'authorization', 'access_token', 'refresh_token',
+  'id_token', 'token', 'secret', 'client_secret', 'password', 'passwd', 'cookie', 'set-cookie']);
+
+function isSecretKey(key) {
+  const lowered = String(key).toLowerCase().replace(/-/g, '_');
+  if (lowered.endsWith('_ref') || SECRET_KEYS.has(lowered)) return true;
+  return /(_api_key|_secret|_password|_token)$/.test(lowered)
+    && !['max_tokens', 'total_tokens', 'token_budget'].includes(lowered);
+}
+
+/**
+ * Remove masked credentials ("***") at any depth. The server only restores a
+ * masked credential from the parent version when the connection method is
+ * unchanged, so after a switch these masks must not be submitted.
+ * Returns the removed field paths.
+ */
+function dropCredentialMasks(value, path, removed = []) {
+  if (!value || typeof value !== 'object') return removed;
+  for (const key of Object.keys(value)) {
+    const item = value[key];
+    const field = Array.isArray(value) ? `${path}[${key}]` : `${path}.${key}`;
+    if (item === '***' && isSecretKey(key)) {
+      delete value[key];
+      removed.push(field);
+    } else if (item && typeof item === 'object') {
+      dropCredentialMasks(item, field, removed);
+    }
+  }
+  return removed;
+}
+
+/** Same as dropCredentialMasks for a JSON text field; leaves invalid JSON untouched. */
+function dropMasksInJsonText(text, path, removed) {
+  const raw = String(text || '').trim();
+  if (!raw || !raw.includes('***')) return text;
+  try {
+    const parsed = JSON.parse(raw);
+    const before = removed.length;
+    dropCredentialMasks(parsed, path, removed);
+    return removed.length > before ? JSON.stringify(parsed, null, 2) : text;
+  } catch {
+    return text;
+  }
+}
+
+const CREDENTIAL_SWITCH_HINT = '原接入方式的凭据不会带到新接入方式，请重新填写';
+
 function defaults() {
   return {
     prompt: DEFAULT_PROMPT,
@@ -464,6 +512,11 @@ export default async function environmentView(container, ctx) {
       require_critical_no_regression: true,
     };
 
+    for (const [group, config] of [['model_config', modelConfig], ['optimizer_config', optimizerConfig]]) {
+      const parentProvider = state.env?.[group]?.provider;
+      if (parentProvider && config.provider !== parentProvider) dropCredentialMasks(config, group);
+    }
+
     const payload = {
       prompt: form.prompt,
       model_config: modelConfig,
@@ -496,6 +549,9 @@ export default async function environmentView(container, ctx) {
           disabled: !editable,
           onchange: (event) => {
             setPath(state.form, path, event.target.value);
+            if (path === 'model_config.provider' || path === 'optimizer_config.provider') {
+              clearFormCredentialMasks(path.split('.')[0]);
+            }
             markDirty();
             if (path === 'model_config.provider' || path === 'optimizer_config.provider') {
               renderForm();
@@ -665,6 +721,7 @@ export default async function environmentView(container, ctx) {
               // The demo model id means nothing to a real endpoint; start blank.
               if (provider === 'demo_scripted') state.form.model_config.model = '';
               state.form.model_config.provider = option.value;
+              clearFormCredentialMasks('model_config');
               markDirty();
               renderForm();
             },
@@ -898,6 +955,24 @@ export default async function environmentView(container, ctx) {
 
   function testHint(target, provider) {
     return '单次模型测试，最多 64 个输出 Token；不运行 Skill 或业务工具，可能产生少量调用费用。';
+  }
+
+  /** Clear masked credentials left in the form after switching a connection method. */
+  function clearFormCredentialMasks(group) {
+    const removed = [];
+    const config = state.form[group] || {};
+    if (config.api_key_ref === '***') {
+      config.api_key_ref = '';
+      removed.push(`${group}.api_key_ref`);
+    }
+    const textFields = group === 'optimizer_config'
+      ? [['optimizer_request_template_text', `${group}.request_template`], ['optimizer_headers_text', `${group}.headers`]]
+      : [['request_template_text', `${group}.request_template`], ['model_headers_text', `${group}.headers`]];
+    for (const [textPath, fieldPath] of textFields) {
+      state.form[textPath] = dropMasksInJsonText(state.form[textPath], fieldPath, removed);
+    }
+    if (removed.length) toast(`${CREDENTIAL_SWITCH_HINT}。`, { type: 'warning' });
+    return removed;
   }
 
   function isOffline(provider) {
@@ -1598,11 +1673,15 @@ export default async function environmentView(container, ctx) {
         provider: option.value,
       };
       if (currentProvider === 'demo_scripted') payload.model_config.model = '';
+      const dropped = dropCredentialMasks(payload.model_config, 'model_config');
       const draft = await api.createEnvironment(project.id, payload);
       await load(draft.id);
-      toast(`已创建草稿并切换为「${option.label}」，保存草稿后生效`, {
-        type: 'success',
-      });
+      toast(
+        dropped.length
+          ? `已创建草稿并切换为「${option.label}」。${CREDENTIAL_SWITCH_HINT}后保存草稿。`
+          : `已创建草稿并切换为「${option.label}」，保存草稿后生效`,
+        { type: dropped.length ? 'warning' : 'success' }
+      );
     } catch (error) {
       toast(`创建草稿失败：${error.message}`, { type: 'error' });
     } finally {

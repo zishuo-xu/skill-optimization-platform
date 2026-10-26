@@ -349,8 +349,10 @@ def _reject_credential_masks(value: Any, path: str) -> None:
         for key, item in value.items():
             field = f"{path}.{key}"
             if _is_secret_key(str(key)) and item == "***":
-                raise ValidationError("没有可继承的凭据，不能把掩码当作凭据保存",
-                                      field_path=field)
+                raise ValidationError(
+                    f"{field} 是掩码 ***，没有可继承的凭据。切换接入方式时不会沿用原凭据，"
+                    "请为新接入方式重新填写",
+                    field_path=field)
             _reject_credential_masks(item, field)
     elif isinstance(value, list):
         for index, item in enumerate(value):
