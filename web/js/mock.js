@@ -2104,16 +2104,22 @@ async function fetchImpl({ method, path, query = {}, body }) {
 
   if (route === 'POST /environments/test-connection') {
     const config = body?.model_config || body || {};
+    const target = body?.target || 'business';
+    const probeInput = typeof body?.input === 'string' && body.input ? body.input : 'ping';
     await sleep(450);
     if (String(config.api_key_ref || '').includes('missing') || String(config.base_url || '').includes('fail')) {
-      return ok({ ok: false, message: '连接失败：网关返回 401，鉴权引用不可用。', latency_ms: 480, error_code: 'auth_failed' });
+      return ok({ ok: false, performed: false, simulated: true, target, provider: config.provider || 'openai_http', message: '模拟连接检查失败：鉴权引用不可用。', latency_ms: 480, error_code: 'auth_failed', response_preview: null });
     }
     return ok({
       ok: true,
-      message: '连接成功，模型可用',
+      performed: false,
+      simulated: true,
+      target,
+      provider: config.provider || 'openai_http',
+      message: '模拟连接检查完成；未发起真实模型请求。',
       latency_ms: 320,
       model: config.model || 'Qwen/Qwen3.5-397B-A17B',
-      capabilities: { routing: true, tool_arguments: true, native_tools: true, usage: true, streaming: true },
+      response_preview: `mock response preview: ${probeInput}`,
     });
   }
 

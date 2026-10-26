@@ -1,5 +1,11 @@
 # 验收执行记录（A01–A20 + 界面联调）
 
+## 真实连接测试验收
+
+- 全量 pytest：386 passed，1 个已有弃用提示；新增 22 项 probe 与集成回归。
+- 已发布/草稿、业务/优化两个目标、真实本地 HTTP/WS、鉴权/超时/格式异常、事件循环响应和浏览器交互均已验证。
+- 真实内网/付费模型未自动探测，详见 [CONNECTION_TEST.md](CONNECTION_TEST.md)。
+
 ## 模型输出可见性验收
 
 - 全量 pytest：364 passed，1 个已有弃用提示；新增 18 项回归。
@@ -34,7 +40,7 @@
 
 ```bash
 bash scripts/setup.sh
-.venv/bin/python -m pytest -q          # 364 passed
+.venv/bin/python -m pytest -q          # 386 passed
 ```
 
 用例按需求编号组织在 `tests/`：

@@ -338,6 +338,8 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 优先使用标准 API；企业 HTTP 网关可配置完整请求 URL、Body 扩展字段和 Headers。内网专有协议适配与示例见 [HTTP 网关接入指南](docs/HTTP_GATEWAY_INTEGRATION.md)。
 
+业务模型与优化模型均可直接“测试连接”，包括已发布版本；支持自定义测试输入，发送一次短模型请求，显示耗时、回复摘要或错误，不启动评测、不执行业务工具。见 [连接测试说明](docs/CONNECTION_TEST.md)。
+
 在「执行环境」中选择业务模型适配器并发布新环境版本：
 
 - `openai_http`：标准 Chat Completions HTTP；`base_url`、模型标识、超时/重试。

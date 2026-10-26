@@ -231,8 +231,10 @@ export default async function environmentView(container, ctx) {
     dirty: false,
     busy: false,
     fieldErrors: {},
-    testResult: null,
-    testLoading: false,
+    testResult: { business: null, optimizer: null },
+    testLoading: { business: false, optimizer: false },
+    testSeq: { business: 0, optimizer: 0 },
+    testInput: { business: '只回复 OK', optimizer: '只回复 OK' },
     promptPreview: false,
     promptOpen: false,
     credentialStatus: { model_config: {}, optimizer_config: {} },
@@ -245,6 +247,13 @@ export default async function environmentView(container, ctx) {
 
   function markDirty() {
     state.dirty = true;
+    state.testResult = { business: null, optimizer: null };
+    state.testLoading.business = false;
+    state.testLoading.optimizer = false;
+    state.testSeq.business += 1;
+    state.testSeq.optimizer += 1;
+    document.querySelectorAll('[data-test-result]').forEach((node) => node.remove());
+    document.querySelectorAll('.test-connection-button').forEach((node) => { node.disabled = false; });
     ctx.setDirty('执行环境有未保存的修改，离开当前页面会丢失。');
     updateFooter();
   }
@@ -816,27 +825,33 @@ export default async function environmentView(container, ctx) {
     );
   }
 
-  function testResultView() {
-    if (state.testLoading) {
-      return h('div.test-result', null, h('span.spinner.spinner--sm'), h('span', { text: '正在检查配置…' }));
+  function testResultView(target) {
+    if (state.testLoading[target]) {
+      return h('div.test-result', null, h('span.spinner.spinner--sm'), h('span', { text: `正在测试${target === 'optimizer' ? '优化模型' : '业务模型'}…` }));
     }
-    const result = state.testResult;
+    const result = state.testResult[target];
     if (!result) return null;
     const ok = result.ok !== false;
+    const performed = result.performed !== false;
+    const preview = result.response_preview;
     return h(
-      `div.test-result${ok ? ' test-result--success' : ' test-result--danger'}`,
-      null,
-      icon(ok ? 'check' : 'alert', { size: 15 }),
+      `div.test-result${ok && performed ? ' test-result--success' : ok ? ' test-result--info' : ' test-result--danger'}`,
+      { 'data-test-result': target },
+      icon(ok && performed ? 'check' : ok ? 'info' : 'alert', { size: 15 }),
       h(
         'div',
         null,
-        h('div', { text: result.message || (ok ? '连接成功' : '连接失败') }),
+        h('div', { text: result.message || (ok ? (performed ? '连接成功' : '无需网络探测') : '连接失败') }),
         h(
           'div.xsmall.muted',
           { style: { marginTop: '3px' } },
           [
-            result.latency_ms !== undefined ? `耗时 ${result.latency_ms} ms` : null,
+            result.performed === false ? '未发起网络请求' : null,
+            result.latency_ms != null ? `耗时 ${result.latency_ms} ms` : null,
             result.model ? `模型 ${result.model}` : null,
+            result.error_code ? `错误码 ${result.error_code}` : null,
+            preview ? `响应摘要：${String(preview)}${result.response_truncated ? '…' : ''}` : null,
+            result.response_truncated ? '测试回复已截断' : null,
             result.capabilities
               ? `能力：${Object.entries(result.capabilities)
                   .filter(([, value]) => value)
@@ -848,6 +863,41 @@ export default async function environmentView(container, ctx) {
             .join(' · ')
         )
       )
+    );
+  }
+
+  function testHint(target, provider) {
+    if (provider === 'heuristic' || provider === 'demo_scripted') {
+      return '离线检查，不发送网络请求。';
+    }
+    if (target === 'business' && provider === 'flow') {
+      return 'Python 流程不支持单独连接探测，请使用 HTTP 或 WebSocket 接入。';
+    }
+    return '单次模型测试，最多 64 个输出 Token；不运行 Skill 或业务工具，可能产生少量调用费用。';
+  }
+
+  function testInputView(target, provider) {
+    const offline = provider === 'heuristic' || provider === 'demo_scripted';
+    return h(
+      'div.form-field.test-input-field',
+      null,
+      h('span.form-field__label', { text: '本次测试输入' }),
+      h('textarea.textarea', {
+        rows: 2,
+        maxLength: 16000,
+        value: state.testInput[target],
+        disabled: offline,
+        'aria-label': `${target === 'optimizer' ? '优化模型' : '业务模型'}测试输入`,
+        oninput: (event) => {
+          state.testInput[target] = event.target.value;
+          state.testSeq[target] += 1;
+          state.testLoading[target] = false;
+          state.testResult[target] = null;
+          document.querySelector(`[data-test-result="${target}"]`)?.remove();
+          document.querySelector(`.test-connection-button--${target}`)?.removeAttribute('disabled');
+        },
+      }),
+      h('p.form-field__hint', { text: offline ? '离线模式不发送测试请求。' : '仅用于本次单次探测，不会写入环境配置；留空时服务端使用 ping。' })
     );
   }
 
@@ -968,15 +1018,15 @@ export default async function environmentView(container, ctx) {
         ? h('p.form-field__hint', { text: '当前版本已发布，配置只读；点击任一接入方式会提示创建草稿后切换。' })
         : null,
       editable ? modelFields(provider) : modelFacts(),
-      testResultView()
+      testInputView('business', provider),
+      h('p.form-field__hint', { text: testHint('business', provider) }),
+      testResultView('business')
     );
     return sectionCard({
       title: '业务模型',
       description: `${providerLabel(provider)} · ${config.model || '未设置模型'}`,
       actions: [
-        editable
-          ? button({ label: '检查接入配置', variant: 'secondary', size: 'sm', iconName: 'link', onClick: testConnection, disabled: state.testLoading })
-          : null,
+        button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--business', onClick: () => testConnection('business'), disabled: state.testLoading.business }),
         provider === 'demo_scripted' ? chip('离线演示', 'info') : null,
       ].filter(Boolean),
       body,
@@ -1097,14 +1147,27 @@ export default async function environmentView(container, ctx) {
               inputFor('optimizer_config.temperature', { label: '温度', type: 'number' }),
               inputFor('optimizer_config.max_tokens', { label: '最大输出 Token', type: 'number' })
             )
-          )
+          ),
+          testInputView('optimizer', provider),
+          h('p.form-field__hint', { text: testHint('optimizer', provider) }),
+          testResultView('optimizer')
         )
-      : optimizerFacts();
+      : h(
+          'div.stack',
+          null,
+          optimizerFacts(),
+          testInputView('optimizer', provider),
+          h('p.form-field__hint', { text: testHint('optimizer', provider) }),
+          testResultView('optimizer')
+        );
     return sectionCard({
       title: '优化模型',
       description: `${optimizerLabel(provider)}${provider === 'heuristic' ? '' : ` · ${config.model || '未设置模型'}`}`,
+      actions: [
+        button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--optimizer', onClick: () => testConnection('optimizer'), disabled: state.testLoading.optimizer }),
+      ],
       collapsible: true,
-      open: provider !== 'heuristic' || Boolean(state.fieldErrors['optimizer_config.model']),
+      open: provider !== 'heuristic' || Boolean(state.testResult.optimizer) || state.testLoading.optimizer || Boolean(state.fieldErrors['optimizer_config.model']),
       body,
     });
   }
@@ -1586,22 +1649,75 @@ export default async function environmentView(container, ctx) {
     }
   }
 
-  async function testConnection() {
-    const { payload } = serialize({});
-    state.testLoading = true;
-    state.testResult = null;
+  function buildTestConfig(target) {
+    const source = target === 'optimizer' ? state.form.optimizer_config : state.form.model_config;
+    const config = { ...(source || {}) };
+    const provider = config.provider;
+    const templatePath = target === 'optimizer' ? 'optimizer_request_template_text' : 'request_template_text';
+    const headersPath = target === 'optimizer' ? 'optimizer_headers_text' : 'model_headers_text';
+    const parseObject = (path, label) => {
+      const raw = String(state.form[path] || '').trim();
+      if (!raw) return {};
+      const value = JSON.parse(raw);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是 JSON 对象`);
+      return value;
+    };
+    if (provider === 'flow' && target === 'business') {
+      throw new Error('Python 流程不支持单独连接探测');
+    }
+    if (provider !== 'heuristic' && provider !== 'demo_scripted') {
+      config.api_key_ref = credentialForSubmit(config.api_key_ref);
+      config.request_template = parseObject(templatePath, target === 'optimizer' ? '优化器请求模板' : '请求模板');
+      config.headers = parseObject(headersPath, target === 'optimizer' ? '优化器自定义 Headers' : '自定义 Headers');
+    }
+    if (provider === 'openai_http' && !String(config.base_url || '').trim() && !String(config.url || '').trim()) {
+      throw new Error('基础地址或完整请求地址至少填写一个');
+    }
+    if (provider === 'enterprise_ws' && !String(config.ws_url || '').trim()) {
+      throw new Error('WebSocket 地址不能为空');
+    }
+    if (provider !== 'heuristic' && provider !== 'demo_scripted' && !String(config.model || '').trim()) {
+      throw new Error('模型标识不能为空');
+    }
+    return config;
+  }
+
+  async function testConnection(target = 'business') {
+    const provider = (target === 'optimizer' ? state.form.optimizer_config : state.form.model_config)?.provider;
+    const requestSeq = ++state.testSeq[target];
+    state.testLoading[target] = true;
+    state.testResult[target] = null;
     renderForm();
     try {
-      const result = await api.testConnection({
-        environment_id: state.env?.id || undefined,
-        model_config: payload.model_config,
-      });
-      state.testResult = result;
+      if (provider === 'heuristic' || provider === 'demo_scripted') {
+        state.testResult[target] = {
+          ok: true,
+          performed: false,
+          target,
+          provider,
+          model: target === 'optimizer' ? state.form.optimizer_config.model : state.form.model_config.model,
+          message: provider === 'heuristic' ? '冻结启发式无需网络探测。' : '演示模型为离线模拟，无需网络探测。',
+        };
+      } else {
+        const body = {
+          environment_id: state.env?.id || undefined,
+          target,
+          input: String(state.testInput[target] || ''),
+        };
+        // Published versions resolve credentials server-side; draft edits may be sent
+        // as a target-only overlay without persisting the new credential.
+        if (state.env?.status !== 'published') body.model_config = buildTestConfig(target);
+        else buildTestConfig(target);
+        const result = await api.testConnection(body);
+        if (requestSeq === state.testSeq[target]) state.testResult[target] = result;
+      }
     } catch (error) {
-      state.testResult = { ok: false, message: error.message };
+      if (requestSeq === state.testSeq[target]) state.testResult[target] = { ok: false, performed: false, target, provider, message: error.message, error_code: error.code };
     } finally {
-      state.testLoading = false;
-      renderForm();
+      if (requestSeq === state.testSeq[target]) {
+        state.testLoading[target] = false;
+        renderForm();
+      }
     }
   }
 
@@ -1622,7 +1738,10 @@ export default async function environmentView(container, ctx) {
     state.credentialStatus = env.credential_status || { model_config: {}, optimizer_config: {} };
     state.dirty = false;
     state.fieldErrors = {};
-    state.testResult = null;
+    state.testResult = { business: null, optimizer: null };
+    state.testLoading = { business: false, optimizer: false };
+    state.testSeq.business += 1;
+    state.testSeq.optimizer += 1;
     state.form = toForm(env);
     renderVersionBar();
     renderForm();
@@ -1649,6 +1768,10 @@ export default async function environmentView(container, ctx) {
       state.form = toForm(target);
       state.dirty = false;
       state.fieldErrors = {};
+      state.testResult = { business: null, optimizer: null };
+      state.testLoading = { business: false, optimizer: false };
+      state.testSeq.business += 1;
+      state.testSeq.optimizer += 1;
       ctx.setDirty(null);
     } catch (error) {
       state.error = error;

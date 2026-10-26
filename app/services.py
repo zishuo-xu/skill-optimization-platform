@@ -452,6 +452,47 @@ def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {"ok": False, "provider": provider, "message": "未知 provider"}
 
 
+def _probe_config(payload: Mapping[str, Any], target: str) -> dict[str, Any]:
+    if target not in ("business", "optimizer"):
+        raise ValidationError("target 必须是 business 或 optimizer", field_path="target")
+    stored: dict[str, Any] = {}
+    if payload.get("environment_id"):
+        env = persistence.get_environment(str(payload["environment_id"]))
+        stored = dict(env.get("optimizer_config" if target == "optimizer" else "model_config") or {})
+    supplied = payload.get("model_config")
+    if not isinstance(supplied, Mapping):
+        supplied = payload.get("optimizer_config" if target == "optimizer" else "model_config")
+    if not isinstance(supplied, Mapping):
+        _reject_credential_masks(stored, "model_config")
+        return normalize_model_config(stored)
+    provider = supplied.get("provider") or stored.get("provider")
+    merged = dict(stored) if provider == stored.get("provider") else {}
+    merged.update(supplied)
+    if provider == stored.get("provider"):
+        merged = _inherit_credentials(merged, stored)
+    _reject_credential_masks(merged, "model_config")
+    merged.setdefault("provider", provider)
+    return normalize_model_config(merged)
+
+
+def probe_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
+    target = str(payload.get("target") or "business")
+    input_text = payload.get("input")
+    if input_text is not None:
+        if not isinstance(input_text, str):
+            raise ValidationError("input 必须是字符串", field_path="input")
+        if len(input_text) > 16000:
+            raise ValidationError("input 不能超过 16000 个字符", field_path="input")
+    mode = str(payload.get("mode") or "probe")
+    if mode not in ("probe", "check"):
+        raise ValidationError("mode 必须是 probe 或 check", field_path="mode")
+    if mode == "check":
+        return test_connection({"model_config": _probe_config(payload, target),
+                                "tool_schema": payload.get("tool_schema")})
+    from .connection_probe import probe_connection as _probe
+    return _probe(_probe_config(payload, target), target=target, input_text=input_text)
+
+
 # --------------------------------------------------------------------------- #
 # datasets
 # --------------------------------------------------------------------------- #

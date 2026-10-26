@@ -362,7 +362,8 @@ async def activate_environment(request: Request) -> Response:
 
 async def test_connection(request: Request) -> Response:
     body = await json_body(request)
-    return ok(services.test_connection(body))
+    from starlette.concurrency import run_in_threadpool
+    return ok(await run_in_threadpool(services.probe_connection, body))
 
 
 async def environment_template(request: Request) -> Response:
