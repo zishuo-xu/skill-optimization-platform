@@ -1027,6 +1027,26 @@ def overview(project_id: str) -> dict[str, Any]:
         "reason": "" if ready else "缺少: " + "、".join(items[key]["label"] for key in missing),
     }
     recent = persistence.list_runs(project_id=project_id, limit=8)
+    for item in recent["items"]:
+        item["decision_code"] = run_decision_code(item)
+    pending_candidate = (_pending_candidate(project, recent["items"])
+                         if ready and compatible else None)
+    no_failures = bool(ready and compatible and _baseline_has_no_failures(metrics))
+    if pending_candidate:
+        primary_action = {
+            "mode": "apply",
+            "label": "查看并应用候选",
+            "enabled": True,
+            "run_id": pending_candidate["run_id"],
+            "reason": "上一轮候选已通过评测，应用后才会成为当前版本。",
+        }
+    elif no_failures:
+        primary_action = {
+            "mode": "add_cases",
+            "label": "补充测试案例",
+            "enabled": True,
+            "reason": "当前基线在优化集上已全部通过，没有可改进的失败案例。",
+        }
     return {
         "project": project,
         "completeness": {"ready": ready, "missing": missing, "items": items},
@@ -1048,8 +1068,58 @@ def overview(project_id: str) -> dict[str, Any]:
             "reason": reason,
         },
         "primary_action": primary_action,
+        "pending_candidate": pending_candidate,
+        "baseline_all_passed": no_failures,
         "template_available": True,
     }
+
+
+def run_decision_code(run: Mapping[str, Any]) -> str | None:
+    """Finer-grained outcome for display (e.g. ``no_failures``).
+
+    ``decision`` stays ``accept / reject / inconclusive``; the code tells the UI
+    when an inconclusive run simply had nothing to fix.
+    """
+    if run.get("decision") != "inconclusive":
+        return None
+    record = persistence.get_decision_for_run(run["id"])
+    rationale = (record or {}).get("rationale") or {}
+    return rationale.get("error_code") or None
+
+
+def _baseline_has_no_failures(metrics: Mapping[str, Any] | None) -> bool:
+    joint = (metrics or {}).get("joint") or {}
+    evaluated = joint.get("evaluated")
+    passed = joint.get("passed")
+    total = joint.get("total_cases", evaluated)
+    if not isinstance(evaluated, int) or not isinstance(passed, int) or evaluated <= 0:
+        return False
+    return passed == evaluated and total == evaluated
+
+
+def _pending_candidate(project: Mapping[str, Any],
+                       runs: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Latest accepted, still-applicable candidate of the project (if any)."""
+    for run in runs:
+        if run.get("mode") != "optimize":
+            continue
+        if run.get("status") != "completed" or run.get("decision") != "accept":
+            # Only the most recent finished optimize run counts; an older
+            # accepted run behind a newer one is no longer the next step.
+            if run.get("status") in config.TERMINAL_RUN_STATUSES:
+                return None
+            continue
+        view = run_view(run["id"])
+        if not view.get("can_apply"):
+            return None
+        joint = (view.get("metrics") or {})
+        return {
+            "run_id": run["id"],
+            "finished_at": run.get("finished_at"),
+            "baseline_joint": ((joint.get("baseline") or {}).get("joint") or {}).get("value"),
+            "candidate_joint": ((joint.get("candidate") or {}).get("joint") or {}).get("value"),
+        }
+    return None
 
 
 def run_view(run_id: str) -> dict[str, Any]:
@@ -1160,8 +1230,26 @@ def run_view(run_id: str) -> dict[str, Any]:
         "message": "当前评测条件仍有效" if not stale_reasons else "；".join(stale_reasons) + "，需要重新评测",
     }
     run["stage_labels"] = _stage_labels()
-    run["issues_summary"] = _issues_summary(run_id)
+    run["optimizer_mode"] = _optimizer_mode(run.get("environment_id"))
+    run["decision_code"] = ((decision or {}).get("rationale") or {}).get("error_code") \
+        if run.get("decision") == "inconclusive" else None
+    run["issues_summary"] = _issues_summary(
+        run_id, heuristic_mode=run["optimizer_mode"] == "heuristic")
     return run
+
+
+def _optimizer_mode(environment_id: str | None) -> str | None:
+    """``heuristic`` when the environment deliberately uses rule-based repair."""
+    if not environment_id:
+        return None
+    try:
+        env = persistence.get_environment(environment_id)
+    except NotFoundError:
+        return None
+    provider = str(((env.get("optimizer_config") or {}).get("provider")) or "").strip().lower()
+    if provider == "heuristic":
+        return "heuristic"
+    return "model" if provider and provider not in ("none", "disabled", "off") else None
 
 
 def _stage_labels() -> dict[str, str]:
@@ -1170,12 +1258,16 @@ def _stage_labels() -> dict[str, str]:
     return dict(event_types.STAGE_LABELS)
 
 
-def _issues_summary(run_id: str) -> dict[str, Any]:
+def _issues_summary(run_id: str, *, heuristic_mode: bool = False) -> dict[str, Any]:
     events = persistence.list_events(run_id, after_seq=0, limit=1000, errors_only=True)
     items = []
     for event in events:
         issue = (event.get("payload") or {}).get("issue")
         if not issue:
+            continue
+        if heuristic_mode and issue.get("error_code") == "optimizer_not_configured":
+            # Rule-based repair was chosen on purpose; older runs recorded it
+            # as an error, which is not a problem the user has to fix.
             continue
         items.append({
             "seq": event["seq"],

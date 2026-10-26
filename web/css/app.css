@@ -1809,6 +1809,26 @@ pre,
   max-width: 320px;
 }
 
+.link-button {
+  display: inline;
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-button:hover,
+.link-button:focus-visible {
+  text-decoration: underline;
+}
+
+.topbar__run-link {
+  display: inline-flex;
+}
+
 .primary-action-block {
   display: flex;
   flex-direction: column;
@@ -3305,6 +3325,11 @@ pre,
   flex-direction: column;
   gap: 12px;
   min-height: 420px;
+}
+
+/* Empty issue/notice slots should not leave gaps above the toolbar. */
+.run-log > div:empty {
+  display: none;
 }
 
 .log-issues {

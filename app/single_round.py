@@ -478,7 +478,7 @@ def _finish_inconclusive(run: Mapping[str, Any], emitter: EventEmitter,
         {"reason": reason, "error_code": error_code, "rules": []})
     emitter.emit(event_types.DECISION_MADE, {
         "decision": decision, "reason": reason, "error_code": error_code,
-    }, level="warning", stage="decision")
+    }, level="info" if error_code == "no_failures" else "warning", stage="decision")
     persistence.finish_run(run["id"], status="completed", decision=decision,
                            decision_reason=reason, metrics=metrics,
                            stage="decision")

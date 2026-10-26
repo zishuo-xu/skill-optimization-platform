@@ -508,6 +508,7 @@ def _run_list_item(run: Mapping[str, Any]) -> dict[str, Any]:
         "id": run["id"], "project_id": run["project_id"], "mode": run["mode"],
         "status": run["status"], "stage": run["stage"],
         "decision": run.get("decision"), "decision_reason": run.get("decision_reason"),
+        "decision_code": services.run_decision_code(run),
         "created_at": run.get("created_at"), "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
         "baseline_cache_hit": bool(run.get("baseline_cache_hit")),

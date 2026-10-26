@@ -490,7 +490,6 @@ export default async function versionsView(container, ctx) {
       title: '版本记录',
       description: '所有 Skill、环境与数据集版本均不可变；设为当前只切换项目指针，历史运行保留原快照。',
       actions: [
-        button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => load() }),
         button({
           label: '比较版本',
           variant: 'primary',

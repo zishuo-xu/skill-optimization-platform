@@ -158,7 +158,16 @@ export const DECISION_META = {
   accept: { label: '评测有改善', short: '有改善', icon: 'check', tone: 'success' },
   reject: { label: '未达标', short: '未达标', icon: 'x', tone: 'danger' },
   inconclusive: { label: '证据不足', short: '证据不足', icon: 'info', tone: 'warning' },
+  // Display-only: an inconclusive run whose optimize set had nothing to fix.
+  no_failures: { label: '无需优化', short: '无需优化', icon: 'check', tone: 'neutral' },
 };
+
+/** Key into DECISION_META for a run, refining inconclusive runs with nothing to fix. */
+export function decisionKey(run) {
+  if (!run || !run.decision) return null;
+  if (run.decision === 'inconclusive' && run.decision_code === 'no_failures') return 'no_failures';
+  return run.decision;
+}
 
 export const MODE_META = {
   baseline: { label: '基线评测', icon: 'play' },

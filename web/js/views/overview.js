@@ -30,7 +30,7 @@ import {
   shortenId,
   splitLabel,
 } from '../format.js';
-import { DECISION_META, MODE_META, RULE_LABELS, STAGE_LABELS } from '../eventTypes.js';
+import { DECISION_META, MODE_META, RULE_LABELS, STAGE_LABELS, decisionKey } from '../eventTypes.js';
 
 export default async function overviewView(container, ctx) {
   const { project } = ctx;
@@ -71,6 +71,34 @@ export default async function overviewView(container, ctx) {
           href: item?.route || `#/projects/${encodeURIComponent(project.id)}/skill`,
         }),
         h('span.start-hint', { text: primary?.reason || '配置尚未完成，补齐后即可运行基线评测。' })
+      );
+    }
+
+    if (primary?.mode === 'apply' && primary.run_id) {
+      const pending = overview?.pending_candidate || {};
+      const change =
+        typeof pending.baseline_joint === 'number' && typeof pending.candidate_joint === 'number'
+          ? `联合通过率 ${formatPercent(pending.baseline_joint)} → ${formatPercent(pending.candidate_joint)}，`
+          : '';
+      return h(
+        'div.primary-action-block',
+        null,
+        button({ label: primary.label || '查看并应用候选', variant: 'primary', iconName: 'check', href: `#/runs/${encodeURIComponent(primary.run_id)}/result` }),
+        h('span.start-hint', { text: `候选已通过评测：${change}应用后才会成为当前版本。` })
+      );
+    }
+
+    if (primary?.mode === 'add_cases') {
+      return h(
+        'div.primary-action-block',
+        null,
+        button({ label: primary.label || '补充测试案例', variant: 'primary', iconName: 'plus', href: `#/projects/${encodeURIComponent(project.id)}/dataset` }),
+        h(
+          'span.start-hint',
+          null,
+          '基线在优化集上已全部通过，没有可改进的失败案例。',
+          h('button.link-button', { type: 'button', onClick: () => openStartDrawer('optimize') }, '仍要运行单轮优化')
+        )
       );
     }
 
@@ -238,7 +266,7 @@ export default async function overviewView(container, ctx) {
             'div.run-list',
             null,
             ...runs.map((run) => {
-              const decision = run.decision ? DECISION_META[run.decision] : null;
+              const decision = run.decision ? DECISION_META[decisionKey(run)] : null;
               const historical = [
                 ['baseline_skill_version_id', 'current_skill_version_id'],
                 ['environment_id', 'current_environment_id'],
@@ -259,7 +287,7 @@ export default async function overviewView(container, ctx) {
                     null,
                     h('span', { text: modeLabel(run.mode) }),
 
-                    decision ? statusBadge(run.decision, 'decision') : null,
+                    decision ? statusBadge(decisionKey(run), 'decision') : null,
                     historical ? chip('历史配置', 'neutral') : null
                   ),
                   h('div.run-list__meta', {
@@ -474,17 +502,41 @@ export default async function overviewView(container, ctx) {
     }
   }
 
-  async function load() {
-    loading = true;
-    error = null;
-    render();
+  let pollTimer = null;
+  let disposed = false;
+
+  function hasActiveRun() {
+    return Boolean(
+      overview?.active_run ||
+        (overview?.recent_runs?.items || []).some((run) => ['queued', 'running', 'cancel_requested'].includes(run.status))
+    );
+  }
+
+  function schedulePoll() {
+    if (pollTimer || disposed || !hasActiveRun()) return;
+    // A run is in progress: keep the page current without a manual refresh.
+    pollTimer = setTimeout(async () => {
+      pollTimer = null;
+      if (disposed) return;
+      await load({ silent: true });
+    }, 5000);
+  }
+
+  async function load({ silent = false } = {}) {
+    if (!silent) {
+      loading = true;
+      error = null;
+      render();
+    }
     try {
       overview = await api.getOverview(project.id);
+      error = null;
     } catch (err) {
-      error = err;
+      if (!silent) error = err;
     } finally {
       loading = false;
-      render();
+      if (!disposed) render();
+      schedulePoll();
     }
   }
 
@@ -493,7 +545,6 @@ export default async function overviewView(container, ctx) {
       title: project.name,
       description: project.description || '从失败案例改进 Skill，再用独立案例验证',
       actions: [
-        button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => load() }),
         loading ? null : primaryActionView(),
       ].filter(Boolean),
     });
@@ -501,5 +552,9 @@ export default async function overviewView(container, ctx) {
 
   mount(container, makeHeader(), contentHost);
   await load();
-  return () => {};
+  return () => {
+    disposed = true;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+  };
 }

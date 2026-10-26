@@ -178,7 +178,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 2026-10-26：395 passed
+.venv/bin/python -m pytest -q        # 2026-10-26：402 passed
 ```
 
 ### 文档导航

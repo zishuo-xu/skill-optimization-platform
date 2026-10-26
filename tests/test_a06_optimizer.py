@@ -1094,9 +1094,15 @@ def test_generate_candidate_heuristic_provider_is_not_configured():
     assert adapter.calls == []
     assert result["status"] == "ok" and result["used_fallback"] is True
     not_configured = emit.by_type(event_types.OPTIMIZER_NOT_CONFIGURED)
-    assert not_configured and not_configured[0]["level"] == "error"
+    # Rule-based repair is a deliberate choice: the direct reason is still
+    # recorded before the fallback, but as information rather than an error.
+    assert not_configured and not_configured[0]["level"] == "info"
+    assert not_configured[0]["payload"]["optimizer_mode"] == "heuristic"
+    assert not_configured[0]["payload"]["issue"]["title"] == "规则修复模式"
     assert not_configured[0]["payload"]["issue"]["error_code"] == \
         "optimizer_not_configured"
+    assert emit.types.index(event_types.OPTIMIZER_NOT_CONFIGURED) < \
+        emit.types.index(event_types.FALLBACK_STARTED)
 
 
 def test_generate_candidate_accepts_remaining_token_budget_keys():

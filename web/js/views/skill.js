@@ -630,7 +630,6 @@ export default async function skillView(container, ctx) {
       description: '编辑主 Skill 与子技能参考文件；保存草稿不会改变当前版本，发布后生成不可变版本。',
       actions: [
         button({ label: '导入 ZIP', variant: 'primary', iconName: 'upload', onClick: () => fileInput.click() }),
-        button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => loadVersions(state.version?.id) }),
       ],
     }),
     versionBarHost,

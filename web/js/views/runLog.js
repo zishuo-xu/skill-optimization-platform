@@ -274,18 +274,25 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   }
 
   function heuristicConfigured() {
+    if (currentRun?.optimizer_mode) return currentRun.optimizer_mode === 'heuristic';
     const environment = currentRun?.snapshot?.environment || currentRun?.environment || {};
     return environment?.optimizer_config?.provider === 'heuristic';
   }
+
+  // Rule-based repair chosen in the environment is expected behaviour, not a
+  // problem: show it as information (older runs stored it as an error).
+  const HEURISTIC_TITLE = '规则修复模式';
+  const HEURISTIC_MESSAGE = '执行环境选择了规则修复模式：按固定规则生成候选，不调用优化模型。';
+  const HEURISTIC_IMPACT = '候选仍需通过静态检查与配对验证后才会给出结论。';
 
   function normalizeExpectedHeuristicIssue(issue) {
     if (!issue || issue.errorCode !== 'optimizer_not_configured' || !heuristicConfigured()) return issue;
     return {
       ...issue,
-      level: 'warning',
-      title: '使用冻结启发式回退',
-      message: issue.message || '未配置优化模型，本轮按固定规则尝试生成候选。',
-      impact: issue.impact || '不会调用优化模型；候选仍需通过静态检查与配对验证。',
+      level: 'info',
+      title: HEURISTIC_TITLE,
+      message: HEURISTIC_MESSAGE,
+      impact: HEURISTIC_IMPACT,
     };
   }
 
@@ -293,13 +300,14 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     if (!event || !heuristicConfigured() || event.payload?.issue?.error_code !== 'optimizer_not_configured') return event;
     return {
       ...event,
-      level: 'warning',
+      level: 'info',
       payload: {
         ...event.payload,
         issue: {
           ...event.payload.issue,
-          title: '使用冻结启发式回退',
-          message: event.payload.issue.message || '未配置优化模型，本轮按固定规则尝试生成候选。',
+          title: HEURISTIC_TITLE,
+          message: HEURISTIC_MESSAGE,
+          impact: HEURISTIC_IMPACT,
         },
       },
     };
@@ -1457,7 +1465,11 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   async function loadIssues() {
     try {
       const payload = await api.getRunIssues(currentRun.id);
-      const items = asItems(payload).map(normalizeIssue).filter(Boolean).map(normalizeExpectedHeuristicIssue);
+      const items = asItems(payload)
+        .map(normalizeIssue)
+        .filter(Boolean)
+        .map(normalizeExpectedHeuristicIssue)
+        .filter((issue) => issue.level === 'error' || issue.level === 'warning');
       state.issues = items;
       state.issueCounts = {
         error: heuristicConfigured() ? items.filter((issue) => issue.level === 'error').length : (payload?.counts?.error ?? items.filter((issue) => issue.level === 'error').length),
@@ -1476,7 +1488,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     const items = sortedEvents()
       .filter((event) => ['warning', 'error'].includes(event.level) && event.payload?.issue)
       .map((event) => normalizeExpectedHeuristicIssue(normalizeIssue({ seq: event.seq, level: event.level, type: event.type, stage: event.stage, case_id: event.case_id, ...event.payload.issue })));
-    state.issues = items.filter(Boolean);
+    state.issues = items.filter((issue) => issue && (issue.level === 'error' || issue.level === 'warning'));
     state.issueCounts = {
       error: state.issues.filter((issue) => issue.level === 'error').length,
       warning: state.issues.filter((issue) => issue.level === 'warning').length,

@@ -9,7 +9,7 @@
 
 import { api, isMockMode } from './api_v3.js';
 import { h, mount, icon, focusElement, clear } from './dom.js';
-import { button, statusBadge, emptyState, errorState, loadingState, toast, confirmDialog } from './components.js';
+import { button, statusBadge, emptyState, errorState, loadingState, toast, confirmDialog, closeAllOverlays } from './components.js';
 import { relativeTime, shortenId, modeLabel } from './format.js';
 import { RUN_STATUS_META, MODE_META } from './eventTypes.js';
 
@@ -191,7 +191,7 @@ function buildSidebarNav() {
               'span.nav-run__body',
               null,
               h('span.nav-run__title', { text: modeLabel(run.mode) }),
-              h('span.nav-run__meta', { text: `${shortenId(run.id, 12)}` })
+              h('span.nav-run__meta', { text: relativeTime(run.created_at) || shortenId(run.id, 12) })
             )
           )
         );
@@ -275,14 +275,12 @@ function renderTopbar() {
     );
   }
   if (state.project && route.name !== 'run') {
-    const latest = state.recentRuns[0];
-    if (latest) {
-      rightItems.push(statusBadge(latest.status, 'run'));
+    // Only surface a run here while it is still in progress; finished runs are
+    // already summarised on the page itself.
+    const active = state.recentRuns.find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
+    if (active) {
+      rightItems.push(h('a.topbar__run-link', { href: `#/runs/${encodeURIComponent(active.id)}`, title: '查看运行进度' }, statusBadge(active.status, 'run')));
     }
-  }
-  if (route.name === 'run' && state.run) {
-    rightItems.push(statusBadge(state.run.status, 'run'));
-    if (state.run.decision) rightItems.push(statusBadge(state.run.decision, 'decision'));
   }
   if (isMockMode()) {
     rightItems.push(h('span.mock-badge', { text: '演示数据' }));
@@ -418,6 +416,9 @@ async function renderRoute() {
   state.lastHash = hash;
   const route = parseHash(hash);
   setDocumentTitle(route);
+
+  // Drawers and dialogs belong to the page that opened them.
+  closeAllOverlays();
 
   if (state.currentCleanup) {
     try {

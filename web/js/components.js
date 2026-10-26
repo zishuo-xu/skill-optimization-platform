@@ -230,6 +230,17 @@ function handleOverlayKeydown(event) {
 
 document.addEventListener('keydown', handleOverlayKeydown);
 
+/** Force-close every open modal/drawer (used when the route changes). */
+export function closeAllOverlays() {
+  for (const entry of overlayStack.slice().reverse()) {
+    try {
+      entry.close('route', { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, footer = null, dismissible = true, onClose, onBeforeClose = null, initialFocus = null }) {
   const root = document.getElementById('overlay-root');
   const layer = h(`div.overlay.overlay--${variant}`, { role: 'presentation' });

@@ -298,6 +298,11 @@ def _config_is_model_backed(config: Mapping[str, Any] | None) -> bool:
     return provider not in _NON_MODEL_PROVIDERS
 
 
+def adapter_mode_is_heuristic(config: Mapping[str, Any] | None) -> bool:
+    """True when the optimizer is deliberately configured as rule-based repair."""
+    return str((config or {}).get("provider") or "").strip().lower() == "heuristic"
+
+
 def _resolve_optimizer_config(context: Mapping[str, Any]) -> tuple[dict[str, Any] | None, bool]:
     """Return ``(config, explicitly_configured_key_present)``."""
     for key in ("optimizer_config", "model_config"):
@@ -1452,6 +1457,27 @@ def generate_candidate(context: Mapping[str, Any],
     config, explicit = _resolve_optimizer_config(context)
     configured = adapter is not None and (
         _config_is_model_backed(config) if explicit else True)
+    if not configured and explicit and adapter_mode_is_heuristic(config):
+        # The environment deliberately chose rule-based repair: record the
+        # direct reason first (§49) but as information, not as a failure.
+        event = _emit(emit, event_types.OPTIMIZER_NOT_CONFIGURED, {
+            "adapter_present": adapter is not None,
+            "optimizer_config_present": explicit,
+            "optimizer_mode": "heuristic",
+            **_issue_payload(
+                "optimizer_not_configured",
+                "执行环境选择了规则修复模式：按固定规则生成候选，不调用优化模型。",
+                title="规则修复模式",
+                impact="候选仍需通过静态检查与配对验证后才会给出结论。",
+                next_action="需要由模型提出修改时，在执行环境配置优化模型并发布新版本。",
+                technical_detail={"adapter_present": adapter is not None,
+                                  "optimizer_config_present": explicit,
+                                  "provider": "heuristic"},
+            ),
+        }, level="info")
+        return _fallback(context, emit, "optimizer_not_configured",
+                         _seq_of(event), allow_fallback)
+
     if not configured:
         event = _emit(emit, event_types.OPTIMIZER_NOT_CONFIGURED, {
             "adapter_present": adapter is not None,

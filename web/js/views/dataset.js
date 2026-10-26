@@ -160,7 +160,6 @@ export default async function datasetView(container, ctx) {
         state.dataset && state.dataset.status === 'published'
           ? button({ label: '创建编辑草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createEditDraft })
           : null,
-        button({ label: '刷新', variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => load() }),
         button({ label: '导入数据集', variant: 'primary', size: 'sm', iconName: 'upload', onClick: openImportModal })
       )
     );

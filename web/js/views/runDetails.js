@@ -54,6 +54,7 @@ import {
   STAGE_LABELS,
   TERMINAL_STATUSES,
   eventLabel,
+  decisionKey,
 } from '../eventTypes.js';
 import { createRunLog } from './runLog.js';
 
@@ -242,8 +243,8 @@ export default async function runDetailsView(container, ctx) {
               null,
               h('span.run-header__id', { text: `运行 ${run.id}` }),
               copyButtonFor(run.id),
-              statusBadge(run.status, 'run'),
-              run.decision ? statusBadge(run.decision, 'decision') : null,
+              // One status chip: the conclusion once there is one, otherwise the run state.
+              run.decision ? statusBadge(decisionKey(run), 'decision') : statusBadge(run.status, 'run'),
               chip(modeMeta.label, 'neutral'),
               isTerminalStatus(run.status) ? null : chip('运行中不可修改配置', 'warning')
             )
@@ -251,7 +252,6 @@ export default async function runDetailsView(container, ctx) {
           h(
             'div.run-header__actions',
             null,
-            button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => refreshRun({ forceTab: true }) }),
             active()
               ? button({ label: run.status === 'cancel_requested' ? '正在取消…' : '取消运行', variant: 'danger', size: 'sm', iconName: 'cancel', disabled: run.status === 'cancel_requested' || state.busyCancel, onClick: cancelRun })
               : null,
@@ -584,7 +584,6 @@ export default async function runDetailsView(container, ctx) {
     if (decisionErrorCode === 'no_failures' || (run.mode === 'baseline' && run.status === 'completed' && !candVersion)) {
       return sectionCard({
         title: '结论与下一步',
-        actions: [chip(run.mode === 'baseline' ? '基线已完成' : '当前测试未发现可改进问题', 'neutral', { iconName: 'info' })],
         body: h(
           'div.decision-block',
           null,
@@ -603,7 +602,6 @@ export default async function runDetailsView(container, ctx) {
     if (decision === 'accept') {
       return sectionCard({
         title: '结论与应用',
-        actions: [statusBadge(decision, 'decision')],
         body: h(
           'div.decision-block',
           null,
@@ -648,7 +646,6 @@ export default async function runDetailsView(container, ctx) {
       const failedRules = acceptanceRules().filter((rule) => rule.ok === false);
       return sectionCard({
         title: '结论与应用',
-        actions: [statusBadge(decision, 'decision')],
         body: h(
           'div.decision-block',
           null,
@@ -702,7 +699,6 @@ export default async function runDetailsView(container, ctx) {
       const failedRules = acceptanceRules().filter((rule) => rule.ok === false);
       return sectionCard({
         title: '结论与应用',
-        actions: [statusBadge(decision, 'decision')],
         body: h(
           'div.decision-block',
           null,
@@ -1145,11 +1141,13 @@ export default async function runDetailsView(container, ctx) {
           null,
           h('div.search-field', null, icon('search', { size: 15 }), searchInput),
           onlyFailed,
-          statusBadge(state.run.status, 'run'),
           !isTerminalStatus(state.run.status) ? chip('结果可能仍会变化', 'warning', { iconName: 'clock' }) : null,
           h('span.case-toolbar__spacer'),
           h('span.muted.xsmall', { text: `显示 ${items.length} / ${allCount} 条，回归优先排序` }),
-          button({ label: '刷新', variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => loadCases({ force: true }) })
+          // Results only change while the run is still in progress.
+          !isTerminalStatus(state.run.status)
+            ? button({ label: '刷新', variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => loadCases({ force: true }) })
+            : null
         ),
         h('div', { id: 'cases-table-host' })
       )

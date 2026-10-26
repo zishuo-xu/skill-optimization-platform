@@ -1787,14 +1787,6 @@ export default async function environmentView(container, ctx) {
     pageHeader({
       title: '执行环境',
       description: '业务 Prompt、模型接入与工具协议在启动时冻结；发布后只读，修改生成草稿。',
-      actions: [
-        button({
-          label: '刷新',
-          variant: 'ghost',
-          iconName: 'refresh',
-          onClick: () => load(state.env?.id),
-        }),
-      ],
     }),
     versionHost,
     formHost
