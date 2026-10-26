@@ -1,6 +1,6 @@
 /** 数据集：版本、导入预检（上传→校验→划分预览→覆盖）、筛选表格、案例侧栏表单/JSON 切换。 */
 
-import { api, request } from '../api_v3.js';
+import { api } from '../api_v3.js';
 import { h, mount, icon, debounce } from '../dom.js';
 import {
   button,
@@ -14,6 +14,7 @@ import {
   loadingState,
   openModal,
   openDrawer,
+  confirmDialog,
   formField,
   toast,
   inlineError,
@@ -91,6 +92,7 @@ export default async function datasetView(container, ctx) {
   const summaryHost = h('div');
   const filtersHost = h('div');
   const tableHost = h('div');
+  let activeDrawer = null;
 
   const searchInput = h('input.input', {
     type: 'search',
@@ -154,6 +156,9 @@ export default async function datasetView(container, ctx) {
         h('span.dataset-toolbar__spacer'),
         state.dataset && state.dataset.status === 'draft'
           ? button({ label: '发布数据集', variant: 'primary', size: 'sm', iconName: 'check', onClick: publishDataset })
+          : null,
+        state.dataset && state.dataset.status === 'published'
+          ? button({ label: '创建编辑草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createEditDraft })
           : null,
         button({ label: '刷新', variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => load() }),
         button({ label: '导入数据集', variant: 'primary', size: 'sm', iconName: 'upload', onClick: openImportModal })
@@ -359,31 +364,60 @@ export default async function datasetView(container, ctx) {
         h(
           'p.muted.xsmall',
           { style: { marginTop: '10px' } },
-          `共 ${state.total} 条匹配案例。已发布数据不可原地修改；修正标签请重新导入生成新版本并重跑基线。`
+          `共 ${state.total} 条匹配案例。${state.dataset?.status === 'draft'
+            ? '点击案例即可编辑 JSON；保存后发布为新版本。'
+            : '已发布版本不可原地修改；修正案例请创建编辑草稿并在发布后重跑基线。'}`
         )
       )
     );
   }
 
   async function openCaseDrawer(caseId) {
+    const datasetId = state.dataset.id;
     let detail = state.cases.find((item) => item.case_id === caseId);
     try {
-      const full = await api.getDatasetCase(state.dataset.id, caseId);
+      const full = await api.getDatasetCase(datasetId, caseId);
+      if (state.dataset?.id !== datasetId) return;
       detail = { ...detail, ...full };
-    } catch {
-      /* fall back to the row data */
+    } catch (error) {
+      toast(`完整案例加载失败，请重试：${error.message}`, { type: 'error' });
+      return;
     }
-    const drawer = openDrawer({
+    let drawerDirty = false;
+    let drawer;
+    const requestClose = async () => {
+      if (drawerDirty) {
+        const ok = await confirmDialog({
+          title: '放弃未保存修改？',
+          message: '当前案例 JSON 有未保存的修改，关闭后会丢失。',
+          confirmText: '放弃修改',
+          danger: true,
+        });
+        if (!ok) return false;
+      }
+      return true;
+    };
+    drawer = openDrawer({
       title: `案例 ${caseId}`,
       subtitle: `${splitLabel(detail.split)} · ${detail.group_id || '无分组'} · ${truncate(detail.query || '', 80)}`,
       size: 'lg',
+      onBeforeClose: requestClose,
+      onClose: () => {
+        activeDrawer = null;
+        drawerDirty = false;
+        ctx.setDirty(null);
+      },
       body: h('div'),
-      footer: h('div.btn-row', null, button({ label: '关闭', variant: 'secondary', onClick: () => drawer.close() })),
+      footer: h('div.btn-row', null, button({ label: '关闭', variant: 'secondary', onClick: () => drawer.close('footer') })),
     });
-    drawer.setBody(buildCaseDetail(detail, drawer));
+    activeDrawer = drawer;
+    drawer.setBody(buildCaseDetail(detail, drawer, (dirty) => {
+      drawerDirty = dirty;
+      ctx.setDirty(dirty ? '案例 JSON 有未保存修改，关闭或离开页面会提示。' : null);
+    }));
   }
 
-  function buildCaseDetail(detail, drawer) {
+  function buildCaseDetail(detail, drawer, setDrawerDirty = () => {}) {
     const host = h('div.case-detail');
     let mode = 'form';
     let jsonText = JSON.stringify(
@@ -406,6 +440,7 @@ export default async function datasetView(container, ctx) {
     const jsonView = h('div');
     const errorHost = h('div');
     const editable = state.dataset?.status === 'draft';
+    mode = editable ? 'json' : 'form';
 
     function renderFormView() {
       const expected = detail.expected || {};
@@ -553,6 +588,7 @@ export default async function datasetView(container, ctx) {
         value: jsonText,
         oninput: (event) => {
           jsonText = event.target.value;
+          setDrawerDirty(true);
         },
       });
       mount(
@@ -610,13 +646,14 @@ export default async function datasetView(container, ctx) {
     const modeToggle = h(
       'div.form-json-toggle',
       { role: 'group', 'aria-label': '表单或 JSON 视图' },
-      h('button.is-active', { type: 'button', dataset: { mode: 'form' }, onclick: () => setMode('form') }, '表单'),
-      h('button', { type: 'button', dataset: { mode: 'json' }, onclick: () => setMode('json') }, 'JSON')
+      h(`button${mode === 'form' ? '.is-active' : ''}`, { type: 'button', dataset: { mode: 'form' }, onclick: () => setMode('form') }, '表单'),
+      h(`button${mode === 'json' ? '.is-active' : ''}`, { type: 'button', dataset: { mode: 'json' }, onclick: () => setMode('json') }, 'JSON')
     );
 
     renderFormView();
     renderJsonView();
-    jsonView.hidden = true;
+    formView.hidden = mode !== 'form';
+    jsonView.hidden = mode !== 'json';
 
     const saveButton = editable
       ? button({
@@ -631,15 +668,43 @@ export default async function datasetView(container, ctx) {
               return;
             }
             try {
-              await request('PUT', `/datasets/${encodeURIComponent(state.dataset.id)}/cases/${encodeURIComponent(detail.case_id)}`, {
-                body: { case: parsed },
+              const result = await api.updateDatasetCase(state.dataset.id, detail.case_id, {
+                case: parsed,
+                expectedHash: state.dataset.hash,
               });
-              detail = { ...detail, ...parsed };
+              detail = { ...detail, ...(result.case || parsed) };
+              if (result.dataset) {
+                state.dataset = { ...state.dataset, ...result.dataset };
+                state.coverage = result.dataset.coverage || state.coverage;
+                renderVersionBar();
+                renderSummary();
+              }
+              jsonText = JSON.stringify({
+                case_id: detail.case_id,
+                query: detail.query,
+                context: detail.context || {},
+                expected: detail.expected || {},
+                fixtures: detail.fixtures || [],
+                split: detail.split,
+                group_id: detail.group_id,
+                tags: detail.tags || [],
+              }, null, 2);
+              setDrawerDirty(false);
               renderFormView();
+              renderJsonView();
               toast('案例已保存', { type: 'success' });
               loadCases();
             } catch (error) {
-              mount(errorHost, inlineError(error.message));
+              const detailErrors = Array.isArray(error.details)
+                ? error.details
+                : Array.isArray(error.details?.errors) ? error.details.errors : [];
+              const fieldText = detailErrors
+                .map((item) => item && `${item.field_path || item.field || '字段'}：${item.message || item.error || '不合法'}`)
+                .filter(Boolean)
+                .join('；');
+              mount(errorHost, inlineError(error.status === 409 || error.code === 'conflict'
+                ? '数据集已被其他操作更新，请重新加载后再保存。'
+                : [error.message, fieldText].filter(Boolean).join('：')));
             }
           },
         })
@@ -1019,20 +1084,40 @@ export default async function datasetView(container, ctx) {
     renderImportStep1(modal, {});
   }
 
+  async function createEditDraft() {
+    if (!state.dataset || state.dataset.status !== 'published') return;
+    try {
+      const draft = await api.createDatasetDraft(state.dataset.id);
+      state.datasets = [draft, ...state.datasets.filter((item) => item.id !== draft.id)];
+      state.dataset = draft;
+      state.coverage = draft.coverage || null;
+      renderVersionBar();
+      renderSummary();
+      await loadCases();
+      toast('编辑草稿已创建，当前版本指针未改变', { type: 'success' });
+    } catch (error) {
+      toast(`创建编辑草稿失败：${error.message}`, { type: 'error' });
+    }
+  }
+
   async function publishDataset() {
     const ok = await confirmDialog({
       title: '发布数据集版本',
-      message: '发布后数据不可原地修改，并会成为项目当前数据集。修正标签需要重新导入新版本并重跑基线。',
+      message: '发布后数据不可原地修改，并会成为项目当前数据集。发布新版本后需要重跑基线评测。',
       confirmText: '发布并设为当前',
     });
     if (!ok) return;
     try {
-      await api.publishDataset(state.dataset.id);
+      await api.publishDataset(state.dataset.id, {
+        expectedHash: state.dataset.hash,
+        expectedCurrentVersion: project.current_dataset_id,
+        setCurrent: true,
+      });
       toast('数据集已设为当前版本', { type: 'success' });
       await load(state.dataset.id);
       await ctx.refreshShell();
     } catch (error) {
-      toast(`发布失败：${error.message}`, { type: 'error' });
+      toast(`发布失败：${error.status === 409 || error.code === 'conflict' ? '版本已变化，请刷新后重试。' : error.message}`, { type: 'error' });
     }
   }
 
@@ -1125,6 +1210,8 @@ export default async function datasetView(container, ctx) {
     state.error = null;
     renderVersionBar();
     try {
+      const freshProject = await api.getProject(project.id);
+      project.current_dataset_id = freshProject.current_dataset_id;
       const payload = await api.listDatasets(project.id);
       state.datasets = asItems(payload).sort((a, b) => (b.version_seq || 0) - (a.version_seq || 0));
       let target = preferredId ? state.datasets.find((item) => item.id === preferredId) : null;
@@ -1161,5 +1248,9 @@ export default async function datasetView(container, ctx) {
 
   renderFilters();
   await load();
-  return () => {};
+  return () => {
+    if (activeDrawer) activeDrawer.forceClose();
+    activeDrawer = null;
+    ctx.setDirty(null);
+  };
 }

@@ -603,6 +603,92 @@ def create_dataset(project_id: str, payload: Mapping[str, Any]) -> dict[str, Any
     return dataset
 
 
+def create_dataset_draft(dataset_id: str) -> dict[str, Any]:
+    draft = persistence.clone_dataset(dataset_id)
+    persistence.append_audit(draft["project_id"], "dataset.draft_create",
+                             {"dataset_id": draft["id"], "parent_id": dataset_id})
+    return draft
+
+
+def update_dataset_case(dataset_id: str, case: Mapping[str, Any], expected_hash: str,
+                        case_id: str | None = None) -> dict[str, Any]:
+    dataset = persistence.get_dataset(dataset_id)
+    if dataset["status"] != "draft":
+        raise ConflictError("已发布数据集不可编辑", code="dataset_read_only")
+    if not isinstance(case, Mapping):
+        raise ValidationError("case 必须为 JSON 对象", field_path="case")
+    if not isinstance(expected_hash, str) or not expected_hash:
+        raise ValidationError("保存需要 expected_hash", field_path="expected_hash")
+    if case_id is not None and str(case.get("case_id") or "") != str(case_id):
+        raise ValidationError("case_id 不允许改名", field_path="case.case_id")
+    split = case.get("split")
+    if split not in ("optimize", "validation", "final_test"):
+        raise ValidationError("split 不合法", field_path="case.split")
+    current = persistence.get_case(dataset_id, str(case.get("case_id") or ""))
+    project = persistence.get_project(dataset["project_id"])
+    manifest = {}
+    tools = []
+    if project.get("current_skill_version_id"):
+        manifest = persistence.get_skill_version(project["current_skill_version_id"]).get("manifest") or {}
+    if project.get("current_environment_id"):
+        tools = persistence.get_environment(project["current_environment_id"]).get("tool_schema") or []
+    from . import dataset as dataset_module
+    report = dataset_module.validate_and_prepare([dict(case)], manifest=manifest,
+                                                  tool_schema=tools,
+                                                  split_config={"optimize": 1, "validation": 0, "final_test": 0})
+    if report.get("errors"):
+        raise ValidationError("案例校验未通过", code="dataset_invalid", details=report["errors"])
+    canonical = (report.get("cases") or [dict(case)])[0]
+    all_rows = persistence.all_cases(dataset_id)
+    for row in all_rows:
+        if canonical.get("group_id") and row.get("group_id") == canonical.get("group_id") and row.get("case_id") != canonical.get("case_id") \
+                and row.get("split") != canonical.get("split"):
+            raise ValidationError("同 group 不能跨 split", code="group_split_conflict",
+                                  field_path="case.split")
+    revised = [canonical if row["case_id"] == canonical["case_id"] else row for row in all_rows]
+    full_report = preflight_dataset(dataset["project_id"], {
+        "cases": revised, "split_config": dataset.get("split_config") or {}})
+    result = persistence.update_case_cas(dataset_id, canonical, expected_hash,
+                                         {"errors": full_report.get("errors") or [],
+                                          "warnings": full_report.get("warnings") or [],
+                                          "stats": full_report.get("stats") or {}})
+    persistence.append_audit(dataset["project_id"], "dataset.case_update",
+                             {"dataset_id": dataset_id, "case_id": canonical["case_id"]})
+    return result
+
+
+def publish_dataset_version(dataset_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    dataset = persistence.get_dataset(dataset_id)
+    if dataset["status"] != "draft":
+        if payload.get("expected_hash") is not None:
+            raise ConflictError("数据集已经发布，请刷新版本状态", code="dataset_conflict")
+        return persistence.publish_dataset(dataset_id, set_current=bool(payload.get("set_current", True)))
+    if not isinstance(payload.get("expected_hash"), str) or not payload["expected_hash"] \
+            or "expected_current_version" not in payload:
+        raise ValidationError("发布需要 expected_hash 与 expected_current_version")
+    cases = persistence.all_cases(dataset_id)
+    groups: dict[str, str] = {}
+    for row in cases:
+        group = row.get("group_id")
+        if group:
+            previous = groups.setdefault(str(group), str(row.get("split")))
+            if previous != str(row.get("split")):
+                raise ValidationError("同 group 不能跨 split", code="group_split_conflict")
+    report = preflight_dataset(dataset["project_id"], {"cases": cases,
+        "split_config": dataset.get("split_config") or {"optimize": .7, "validation": .2, "final_test": .1}})
+    if report.get("errors"):
+        raise ValidationError("数据集校验未通过", code="dataset_invalid", details=report["errors"])
+    result = persistence.publish_dataset_cas(dataset_id, payload["expected_hash"],
+                                           payload["expected_current_version"],
+                                           bool(payload.get("set_current", True)),
+                                           import_report={"errors": [],
+                                                          "warnings": report.get("warnings") or [],
+                                                          "stats": report.get("stats") or {}})
+    persistence.append_audit(dataset["project_id"], "dataset.publish",
+                             {"dataset_id": dataset_id, "parent_id": dataset.get("parent_id")})
+    return result
+
+
 def activate_dataset(dataset_id: str,
                      expected_current_version: str | None = None) -> dict[str, Any]:
     dataset = persistence.get_dataset(dataset_id)
@@ -722,6 +808,8 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
                               details={"missing": missing})
     env = persistence.get_environment(environment_id)
     dataset = persistence.get_dataset(dataset_id)
+    if dataset.get("status") != "published":
+        raise ConflictError("数据集草稿尚未发布，不能用于运行", code="version_not_published")
     splits = dataset.get("split_counts") or {}
     cases = persistence.all_cases(dataset_id)
     split_names = {case.get("split") or "optimize" for case in cases}

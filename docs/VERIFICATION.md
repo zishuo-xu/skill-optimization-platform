@@ -1,5 +1,11 @@
 # 验收执行记录（A01–A20 + 界面联调）
 
+## 数据集在线修订验收
+
+- 全量 pytest：395 passed，1 个已有弃用提示；新增 9 项数据修订回归。
+- API 和真实隔离浏览器验证草稿编辑/保存/重载/发布、连续两轮发布、未保存关闭保护，以及历史数据不变、基线失效与并发冲突回滚。
+- 记录见 [DATASET_EDITING.md](DATASET_EDITING.md)。
+
 ## 真实连接测试验收
 
 - 全量 pytest：386 passed，1 个已有弃用提示；新增 22 项 probe 与集成回归。
@@ -40,7 +46,7 @@
 
 ```bash
 bash scripts/setup.sh
-.venv/bin/python -m pytest -q          # 386 passed
+.venv/bin/python -m pytest -q          # 395 passed
 ```
 
 用例按需求编号组织在 `tests/`：

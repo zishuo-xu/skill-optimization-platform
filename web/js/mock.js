@@ -2182,6 +2182,36 @@ async function fetchImpl({ method, path, query = {}, body }) {
     });
   }
 
+  match = path.match(/^\/datasets\/([^/]+)\/draft$/);
+  if (match && method === 'POST') {
+    const source = findDataset(decodeURIComponent(match[1]));
+    if (source.status !== 'published') throw new ApiError('只能从已发布数据集创建编辑草稿', { code: 'dataset_not_published', status: 409 });
+    const project = projects.find((item) => item.id === source.project_id);
+    const versionSeq = Math.max(...datasets.filter((item) => item.project_id === project.id).map((item) => item.version_seq), 0) + 1;
+    const draft = { ...clone(source), id: `ds_${Date.now()}`, parent_id: source.id, version_seq: versionSeq, status: 'draft', hash: `sha256:mock-draft-${Date.now()}`, published_at: null };
+    datasets.unshift(draft);
+    datasetCasesByVersion.set(draft.id, clone(datasetCasesByVersion.get(source.id) || []));
+    const cases = datasetCasesByVersion.get(draft.id) || [];
+    return ok({ ...clone(draft), split_counts: countBy(cases, 'split'), coverage: coverageFor(cases) }, 201);
+  }
+
+  match = path.match(/^\/datasets\/([^/]+)\/cases\/([^/]+)$/);
+  if (match && method === 'PUT') {
+    const dataset = findDataset(decodeURIComponent(match[1]));
+    if (dataset.status !== 'draft') throw new ApiError('已发布数据集不可编辑', { code: 'dataset_read_only', status: 409 });
+    if (body?.expected_hash && body.expected_hash !== dataset.hash) throw new ApiError('数据集版本已变化', { code: 'conflict', status: 409 });
+    const caseId = decodeURIComponent(match[2]);
+    const nextCase = clone(body?.case || {});
+    if (nextCase.case_id !== caseId) throw new ApiError('case_id 不允许改名', { code: 'validation_error', status: 422, field_path: 'case.case_id' });
+    const cases = datasetCasesByVersion.get(dataset.id) || [];
+    const index = cases.findIndex((item) => item.case_id === caseId);
+    if (index < 0) return notFound('案例不存在');
+    cases[index] = nextCase;
+    dataset.hash = `sha256:mock-edit-${Date.now()}`;
+    dataset.case_count = cases.length;
+    return ok({ dataset: { ...clone(dataset), split_counts: countBy(cases, 'split'), coverage: coverageFor(cases) }, case: clone(nextCase) });
+  }
+
   match = path.match(/^\/datasets\/([^/]+)\/publish$/);
   if (match && method === 'POST') {
     const dataset = findDataset(decodeURIComponent(match[1]));

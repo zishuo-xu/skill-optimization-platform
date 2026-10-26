@@ -319,8 +319,22 @@ export const api = {
       },
     });
   },
-  publishDataset(datasetId) {
-    return request('POST', `/datasets/${encodeURIComponent(datasetId)}/publish`, { body: {} });
+  createDatasetDraft(datasetId) {
+    return request('POST', `/datasets/${encodeURIComponent(datasetId)}/draft`, { body: {} });
+  },
+  updateDatasetCase(datasetId, caseId, { case: caseValue, expectedHash } = {}) {
+    return request('PUT', `/datasets/${encodeURIComponent(datasetId)}/cases/${encodeURIComponent(caseId)}`, {
+      body: { case: caseValue, expected_hash: expectedHash },
+    });
+  },
+  publishDataset(datasetId, { expectedHash, expectedCurrentVersion, setCurrent = true } = {}) {
+    return request('POST', `/datasets/${encodeURIComponent(datasetId)}/publish`, {
+      body: {
+        expected_hash: expectedHash,
+        expected_current_version: expectedCurrentVersion,
+        set_current: setCurrent,
+      },
+    });
   },
   listDatasetCases(datasetId, { split, search, tag, status, limit = 200, offset = 0 } = {}) {
     return request('GET', `/datasets/${encodeURIComponent(datasetId)}/cases`, {

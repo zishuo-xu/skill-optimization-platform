@@ -230,7 +230,7 @@ function handleOverlayKeydown(event) {
 
 document.addEventListener('keydown', handleOverlayKeydown);
 
-function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, footer = null, dismissible = true, onClose, initialFocus = null }) {
+function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, footer = null, dismissible = true, onClose, onBeforeClose = null, initialFocus = null }) {
   const root = document.getElementById('overlay-root');
   const layer = h(`div.overlay.overlay--${variant}`, { role: 'presentation' });
   const panel = h(
@@ -264,9 +264,25 @@ function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, 
   const previousActive = document.activeElement;
   const id = ++overlayCounter;
   let closed = false;
+  let closing = false;
 
-  function close(reason = 'programmatic') {
-    if (closed) return;
+  async function close(reason = 'programmatic', { force = false } = {}) {
+    if (closed || (closing && !force)) return false;
+    if (!force && onBeforeClose) {
+      closing = true;
+      try {
+        const allowed = await onBeforeClose(reason);
+        if (allowed === false) {
+          closing = false;
+          return false;
+        }
+      } catch {
+        closing = false;
+        return false;
+      }
+      closing = false;
+    }
+    if (closed) return false;
     closed = true;
     const index = overlayStack.findIndex((entry) => entry.id === id);
     if (index >= 0) overlayStack.splice(index, 1);
@@ -287,6 +303,7 @@ function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, 
     } catch {
       /* listener errors are non-fatal */
     }
+    return true;
   }
 
   if (dismissible) {
@@ -304,6 +321,13 @@ function createOverlay({ variant = 'modal', title, subtitle, size = 'md', body, 
 
   return {
     close,
+    forceClose: () => {
+      const index = overlayStack.findIndex((entry) => entry.id === id);
+      if (index >= 0) {
+        for (const child of overlayStack.slice(index + 1).reverse()) child.close('force', { force: true });
+      }
+      return close('force', { force: true });
+    },
     layer,
     panel,
     body: panel.querySelector(`.${variant}__body`),

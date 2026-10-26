@@ -481,6 +481,74 @@ def publish_dataset(dataset_id: str, set_current: bool = True) -> dict[str, Any]
     return get_dataset(dataset_id)
 
 
+def publish_dataset_cas(dataset_id: str, expected_hash: str,
+                        expected_current_version: str | None, set_current: bool = True,
+                        *, import_report: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    ds = get_dataset(dataset_id)
+    with transaction() as conn:
+        cursor = conn.execute(
+            "UPDATE datasets SET status='published', published_at=?, import_report_json=? "
+            "WHERE id=? AND status='draft' AND hash=?",
+            (now_iso(), _dumps(import_report if import_report is not None else ds.get("import_report") or {}),
+             dataset_id, expected_hash))
+        if cursor.rowcount != 1:
+            raise ConflictError("数据集草稿已变更，请刷新后重试", code="dataset_conflict")
+        if set_current:
+            pointer = conn.execute(
+                "UPDATE projects SET current_dataset_id=?, updated_at=? WHERE id=? AND current_dataset_id IS ?",
+                (dataset_id, now_iso(), ds["project_id"], expected_current_version))
+            if pointer.rowcount != 1:
+                raise ConflictError("项目当前数据集已变更", code="conflict")
+    return get_dataset(dataset_id)
+
+
+def clone_dataset(dataset_id: str, *, status: str = "draft") -> dict[str, Any]:
+    source = get_dataset(dataset_id)
+    if source["status"] != "published":
+        raise ConflictError("只能从已发布数据集创建编辑草稿", code="dataset_not_published")
+    cases = [_case_payload(row) for row in all_cases(dataset_id)]
+    return create_dataset(source["project_id"], cases,
+                          source.get("split_config") or {},
+                          source_name=source.get("source_name", ""),
+                          import_report=source.get("import_report") or {},
+                          parent_id=dataset_id, status=status, set_current=False)
+
+
+def _case_payload(case: Mapping[str, Any]) -> dict[str, Any]:
+    payload = {key: case.get(key) for key in
+               ("case_id", "query", "context", "expected", "fixtures", "split", "group_id", "tags", "validation")}
+    payload["validation"] = case.get("validation") or {}
+    return payload
+
+
+def update_case_cas(dataset_id: str, case: Mapping[str, Any], expected_hash: str,
+                    import_report: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    ds = get_dataset(dataset_id)
+    if ds["status"] != "draft":
+        raise ConflictError("只有草稿数据集可以编辑", code="dataset_read_only")
+    case_id = str(case.get("case_id") or "")
+    if not case_id or not get_case(dataset_id, case_id):
+        raise NotFoundError(f"案例不存在: {case_id}", code="not_found")
+    old_cases = all_cases(dataset_id)
+    payload = [_case_payload(row) for row in old_cases]
+    for index, row in enumerate(payload):
+        if row["case_id"] == case_id:
+            payload[index] = _case_payload(case)
+            break
+    new_hash = hashing.hash_json(payload)
+    with transaction() as conn:
+        cursor = conn.execute("UPDATE datasets SET hash = ?, import_report_json = ? WHERE id = ? AND status = 'draft' AND hash = ?",
+                              (new_hash, _dumps(import_report or {}), dataset_id, expected_hash))
+        if cursor.rowcount != 1:
+            raise ConflictError("数据集已被其他编辑修改，请刷新后重试", code="dataset_conflict")
+        conn.execute("UPDATE cases SET query = ?, context_json = ?, expected_json = ?, fixtures_json = ?, split = ?, group_id = ?, tags_json = ?, validation_json = ? WHERE dataset_id = ? AND case_id = ?",
+                     (case["query"], _dumps(case.get("context") or {}), _dumps(case.get("expected") or {}),
+                      _dumps(case.get("fixtures") or []), case.get("split") or "optimize",
+                      case.get("group_id") or "", _dumps(case.get("tags") or []),
+                      _dumps(case.get("validation") or {}), dataset_id, case_id))
+    return {"dataset": get_dataset(dataset_id), "case": get_case(dataset_id, case_id)}
+
+
 def _case_row(row: dict[str, Any]) -> dict[str, Any]:
     row["expected"] = row.get("expected") or {}
     row["fixtures"] = row.get("fixtures") or []

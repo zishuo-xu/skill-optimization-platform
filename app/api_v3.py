@@ -399,6 +399,11 @@ async def get_dataset(request: Request) -> Response:
     return ok(services.dataset_detail(request.path_params["dataset_id"]))
 
 
+async def create_dataset_draft(request: Request) -> Response:
+    dataset = services.create_dataset_draft(request.path_params["dataset_id"])
+    return ok(services.dataset_detail(dataset["id"]), status_code=201)
+
+
 async def dataset_cases(request: Request) -> Response:
     dataset_id = request.path_params["dataset_id"]
     limit, offset = _limit(request, default=50)
@@ -428,14 +433,22 @@ async def dataset_case(request: Request) -> Response:
                                    request.path_params["case_id"]))
 
 
+async def update_dataset_case(request: Request) -> Response:
+    body = await json_body(request)
+    result = services.update_dataset_case(
+        request.path_params["dataset_id"], body.get("case") or {},
+        body.get("expected_hash"), request.path_params["case_id"])
+    return ok({"dataset": services.dataset_detail(result["dataset"]["id"]),
+               "case": result["case"]})
+
+
 async def dataset_coverage(request: Request) -> Response:
     return ok(services.dataset_detail(request.path_params["dataset_id"])["coverage"])
 
 
 async def publish_dataset(request: Request) -> Response:
     body = await json_body(request)
-    dataset = persistence.publish_dataset(request.path_params["dataset_id"],
-                                          set_current=body.get("set_current", True))
+    dataset = services.publish_dataset_version(request.path_params["dataset_id"], body)
     return ok(services.dataset_detail(dataset["id"]))
 
 
@@ -764,9 +777,12 @@ def build_routes() -> list[Route]:
         Route(f"{p}/projects/{{project_id}}/debug-cases", debug_case, methods=["POST"]),
         Route(f"{p}/datasets/preflight", preflight_dataset, methods=["POST"]),
         Route(f"{p}/datasets/{{dataset_id}}", get_dataset, methods=["GET"]),
+        Route(f"{p}/datasets/{{dataset_id}}/draft", create_dataset_draft, methods=["POST"]),
         Route(f"{p}/datasets/{{dataset_id}}/cases", dataset_cases, methods=["GET"]),
         Route(f"{p}/datasets/{{dataset_id}}/cases/{{case_id}}", dataset_case,
               methods=["GET"]),
+        Route(f"{p}/datasets/{{dataset_id}}/cases/{{case_id}}", update_dataset_case,
+              methods=["PUT"]),
         Route(f"{p}/datasets/{{dataset_id}}/coverage", dataset_coverage, methods=["GET"]),
         Route(f"{p}/datasets/{{dataset_id}}/publish", publish_dataset, methods=["POST"]),
         Route(f"{p}/datasets/{{dataset_id}}/activate", activate_dataset,

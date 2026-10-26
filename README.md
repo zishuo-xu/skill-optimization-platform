@@ -356,6 +356,8 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 ---
 
+数据集导入后可“创建编辑草稿”，在线修改案例 JSON，再校验并发布新版本；旧版本与历史运行保持原样。见 [数据集在线修订](docs/DATASET_EDITING.md)。
+
 ## 9. 接口与数据
 
 REST + SSE，前缀 `/api/v3`，完整列表与载荷见 [`docs/CONTRACTS.md`](docs/CONTRACTS.md)。
