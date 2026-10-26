@@ -100,8 +100,6 @@ function defaults() {
       idle_timeout_s: 60,
       total_timeout_s: 180,
       heartbeat_interval_s: 20,
-      python_entry: '',
-      python_version: '3.12',
     },
     optimizer_config: {
       provider: 'heuristic',
@@ -342,7 +340,6 @@ export default async function environmentView(container, ctx) {
     if (provider === 'demo_scripted') {
       modelConfig.model = form.model_config.model || 'demo-scripted-v1';
       removeModelFields(['base_url', 'url', 'ws_url', 'api_key_ref', 'request_template', 'stream_parser',
-        'python_entry', 'python_version',
         'connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s',
         'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s', 'max_size', 'max_retries',
         'retry_backoff_s', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas', 'headers']);
@@ -354,7 +351,7 @@ export default async function environmentView(container, ctx) {
       modelConfig.headers = modelHeaders;
       delete modelConfig.stream_parser;
       delete modelConfig.heartbeat_s;
-      removeModelFields(['base_url', 'url', 'python_entry', 'python_version']);
+      removeModelFields(['base_url', 'url']);
       for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
         'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
         const value = num(form.model_config[key], null);
@@ -362,16 +359,6 @@ export default async function environmentView(container, ctx) {
       }
       if (!modelConfig.ws_url) errors['model_config.ws_url'] = 'WebSocket 地址不能为空';
       if (!modelConfig.model) errors['model_config.model'] = '模型标识不能为空';
-    } else if (provider === 'flow') {
-      modelConfig.python_entry = String(form.model_config.python_entry || '').trim();
-      modelConfig.python_version = String(form.model_config.python_version || '').trim();
-      modelConfig.model = String(form.model_config.model || '').trim();
-      modelConfig.api_key_ref = credentialForSubmit(form.model_config.api_key_ref);
-      if (!modelConfig.python_entry) errors['model_config.python_entry'] = 'Python 入口不能为空';
-      removeModelFields(['base_url', 'url', 'ws_url', 'request_template', 'stream_parser',
-        'connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s',
-        'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s', 'max_size', 'max_retries',
-        'retry_backoff_s', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas', 'headers']);
     } else {
       modelConfig.base_url = String(form.model_config.base_url || '').trim();
       modelConfig.url = String(form.model_config.url || '').trim();
@@ -381,7 +368,7 @@ export default async function environmentView(container, ctx) {
       modelConfig.headers = modelHeaders;
       if (!modelConfig.base_url && !modelConfig.url) errors['model_config.base_url'] = '基础地址或完整请求地址至少填写一个';
       if (!modelConfig.model) errors['model_config.model'] = '模型标识不能为空';
-      removeModelFields(['ws_url', 'stream_parser', 'python_entry', 'python_version', 'connect_timeout_s', 'first_packet_timeout_s',
+      removeModelFields(['ws_url', 'stream_parser', 'connect_timeout_s', 'first_packet_timeout_s',
         'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s',
         'max_size', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas']);
     }
@@ -401,8 +388,6 @@ export default async function environmentView(container, ctx) {
       optimizerConfig.headers = optimizerHeaders;
       delete optimizerConfig.base_url;
       delete optimizerConfig.url;
-      delete optimizerConfig.python_entry;
-      delete optimizerConfig.python_version;
       delete optimizerConfig.stream_parser;
       delete optimizerConfig.heartbeat_s;
       for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
@@ -420,19 +405,12 @@ export default async function environmentView(container, ctx) {
       optimizerConfig.request_template = optimizerRequestTemplate;
       optimizerConfig.headers = optimizerHeaders;
       delete optimizerConfig.ws_url;
-      delete optimizerConfig.python_entry;
-      delete optimizerConfig.python_version;
       delete optimizerConfig.connect_timeout_s;
       delete optimizerConfig.first_packet_timeout_s;
       delete optimizerConfig.idle_timeout_s;
       delete optimizerConfig.total_timeout_s;
       delete optimizerConfig.heartbeat_interval_s;
       delete optimizerConfig.heartbeat_s;
-      if (optProvider !== 'openai_http') {
-        delete optimizerConfig.url;
-        delete optimizerConfig.request_template;
-        delete optimizerConfig.headers;
-      }
       if (!optimizerConfig.model) errors['optimizer_config.model'] = '优化模型标识不能为空';
       if (!optimizerConfig.base_url && !optimizerConfig.url) errors['optimizer_config.base_url'] = '基础地址或完整请求地址至少填写一个';
     } else if (form.optimizer_config.model) {
@@ -440,8 +418,6 @@ export default async function environmentView(container, ctx) {
       delete optimizerConfig.base_url;
       delete optimizerConfig.ws_url;
       delete optimizerConfig.url;
-      delete optimizerConfig.python_entry;
-      delete optimizerConfig.python_version;
       delete optimizerConfig.api_key_ref;
       delete optimizerConfig.request_template;
       delete optimizerConfig.headers;
@@ -629,21 +605,23 @@ export default async function environmentView(container, ctx) {
   }
 
   /* ---------------- 配置展示 ---------------- */
+  // Selectable connection methods. The offline demo model is kept only for the
+  // bundled sample projects and is shown read-only, never offered as a choice.
   const BUSINESS_PROVIDERS = [
-    { value: 'openai_http', label: 'HTTP API / 企业网关' },
+    { value: 'openai_http', label: '标准 API' },
     { value: 'enterprise_ws', label: 'WebSocket 网关' },
-    { value: 'flow', label: 'Python 流程' },
-    { value: 'demo_scripted', label: '演示模型（离线）' },
   ];
+  const LEGACY_PROVIDER_LABELS = {
+    demo_scripted: '演示模型（离线）',
+  };
   const OPTIMIZER_PROVIDERS = [
-    { value: 'heuristic', label: '冻结启发式（不调用模型）' },
-    { value: 'openai_http', label: 'HTTP API / 企业网关' },
+    { value: 'heuristic', label: '规则修复（不调用模型）' },
+    { value: 'openai_http', label: '标准 API' },
     { value: 'enterprise_ws', label: 'WebSocket 网关' },
-    { value: 'flow', label: 'Python 流程' },
   ];
 
   function providerLabel(provider) {
-    return (BUSINESS_PROVIDERS.find((item) => item.value === provider) || {}).label || provider || '未设置';
+    return (BUSINESS_PROVIDERS.find((item) => item.value === provider) || {}).label || LEGACY_PROVIDER_LABELS[provider] || provider || '未设置';
   }
 
   function optimizerLabel(provider) {
@@ -684,6 +662,8 @@ export default async function environmentView(container, ctx) {
                 await createDraftWithProvider(option, provider);
                 return;
               }
+              // The demo model id means nothing to a real endpoint; start blank.
+              if (provider === 'demo_scripted') state.form.model_config.model = '';
               state.form.model_config.provider = option.value;
               markDirty();
               renderForm();
@@ -723,8 +703,8 @@ export default async function environmentView(container, ctx) {
         }),
         callout({
           tone: 'info',
-          title: '离线确定性模型',
-          body: 'demo_scripted 是规则模拟器，仅用于示例与自动化测试。真实业务请切换为标准 API、企业网关或 Python 流程；切换只影响草稿，保存并发布后生效。',
+          title: '示例项目使用离线演示模型',
+          body: '离线演示模型是规则模拟器，仅用于示例与自动化测试，不能再新选。接入真实业务请在上方选择标准 API 或 WebSocket 网关；切换只影响草稿，保存并发布后生效。',
         })
       );
     }
@@ -766,28 +746,6 @@ export default async function environmentView(container, ctx) {
               mono: true,
               hint: '显式 Authorization 优先；未显式设置时 api_key_ref 默认生成 Bearer。',
             })
-          )
-        )
-      );
-    }
-    if (provider === 'flow') {
-      return h(
-        'div.stack',
-        null,
-        h(
-          'div.form-grid',
-          null,
-          inputFor('model_config.python_entry', { label: 'Python 入口', hint: '形如 module.function，平台按受信版本调用 run_case。' }),
-          inputFor('model_config.python_version', { label: 'Python 版本' }),
-          inputFor('model_config.timeout_s', { label: '案例超时（秒）', type: 'number' })
-        ),
-        advancedSettings(
-          '高级：可选标识与凭据',
-          h(
-            'div.form-grid',
-            null,
-            inputFor('model_config.model', { label: '模型标识（可选）' }),
-            inputFor('model_config.api_key_ref', { label: '鉴权引用（可选）' })
           )
         )
       );
@@ -867,17 +825,27 @@ export default async function environmentView(container, ctx) {
   }
 
   function testHint(target, provider) {
-    if (provider === 'heuristic' || provider === 'demo_scripted') {
-      return '离线检查，不发送网络请求。';
-    }
-    if (target === 'business' && provider === 'flow') {
-      return 'Python 流程不支持单独连接探测，请使用 HTTP 或 WebSocket 接入。';
-    }
     return '单次模型测试，最多 64 个输出 Token；不运行 Skill 或业务工具，可能产生少量调用费用。';
   }
 
+  function isOffline(provider) {
+    return provider === 'heuristic' || provider === 'demo_scripted';
+  }
+
+  /** Probe input, hint and result; offline modes send nothing, so show nothing. */
+  function testBlock(target, provider) {
+    if (isOffline(provider)) return null;
+    return h(
+      'div.stack.stack--sm',
+      null,
+      testInputView(target, provider),
+      h('p.form-field__hint', { text: testHint(target, provider) }),
+      testResultView(target)
+    );
+  }
+
   function testInputView(target, provider) {
-    const offline = provider === 'heuristic' || provider === 'demo_scripted';
+    const offline = isOffline(provider);
     return h(
       'div.form-field.test-input-field',
       null,
@@ -913,12 +881,6 @@ export default async function environmentView(container, ctx) {
         { label: '模型标识', value: config.model || '—', mono: true },
         { label: '流解析器', value: config.stream_parser || 'sse' },
         { label: '总超时', value: secondsText(config.total_timeout_s || 180) }
-      );
-    } else if (provider === 'flow') {
-      items.push(
-        { label: 'Python 入口', value: config.python_entry || '—', mono: true },
-        { label: 'Python 版本', value: config.python_version || '—' },
-        { label: '案例超时', value: secondsText(config.timeout_s || 120) }
       );
     } else {
       items.push(
@@ -1018,15 +980,15 @@ export default async function environmentView(container, ctx) {
         ? h('p.form-field__hint', { text: '当前版本已发布，配置只读；点击任一接入方式会提示创建草稿后切换。' })
         : null,
       editable ? modelFields(provider) : modelFacts(),
-      testInputView('business', provider),
-      h('p.form-field__hint', { text: testHint('business', provider) }),
-      testResultView('business')
+      testBlock('business', provider)
     );
     return sectionCard({
       title: '业务模型',
       description: `${providerLabel(provider)} · ${config.model || '未设置模型'}`,
       actions: [
-        button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--business', onClick: () => testConnection('business'), disabled: state.testLoading.business }),
+        isOffline(provider)
+          ? null
+          : button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--business', onClick: () => testConnection('business'), disabled: state.testLoading.business }),
         provider === 'demo_scripted' ? chip('离线演示', 'info') : null,
       ].filter(Boolean),
       body,
@@ -1069,7 +1031,7 @@ export default async function environmentView(container, ctx) {
             ? callout({
                 tone: 'info',
                 title: '不调用优化模型',
-                body: '运行时记录 optimizer_not_configured，并按固定规则尝试修复分发关键词、澄清条件、参数映射或缺失字段。候选仍须通过静态检查和配对验证。',
+                body: '按固定规则尝试修复分发关键词、澄清条件、参数映射或缺失字段，运行记录中显示为「规则修复模式」。候选仍须通过静态检查和配对验证。',
               })
             : provider === 'enterprise_ws'
             ? h(
@@ -1148,24 +1110,22 @@ export default async function environmentView(container, ctx) {
               inputFor('optimizer_config.max_tokens', { label: '最大输出 Token', type: 'number' })
             )
           ),
-          testInputView('optimizer', provider),
-          h('p.form-field__hint', { text: testHint('optimizer', provider) }),
-          testResultView('optimizer')
+          testBlock('optimizer', provider)
         )
       : h(
           'div.stack',
           null,
           optimizerFacts(),
-          testInputView('optimizer', provider),
-          h('p.form-field__hint', { text: testHint('optimizer', provider) }),
-          testResultView('optimizer')
+          testBlock('optimizer', provider)
         );
     return sectionCard({
       title: '优化模型',
       description: `${optimizerLabel(provider)}${provider === 'heuristic' ? '' : ` · ${config.model || '未设置模型'}`}`,
-      actions: [
-        button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--optimizer', onClick: () => testConnection('optimizer'), disabled: state.testLoading.optimizer }),
-      ],
+      actions: isOffline(provider)
+        ? []
+        : [
+            button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--optimizer', onClick: () => testConnection('optimizer'), disabled: state.testLoading.optimizer }),
+          ],
       collapsible: true,
       open: provider !== 'heuristic' || Boolean(state.testResult.optimizer) || state.testLoading.optimizer || Boolean(state.fieldErrors['optimizer_config.model']),
       body,
@@ -1404,7 +1364,7 @@ export default async function environmentView(container, ctx) {
         label: '优化器',
         value: optimizerLabel(optimizer.provider || 'heuristic'),
         hint: (optimizer.provider || 'heuristic') === 'heuristic'
-          ? '冻结启发式回退'
+          ? '按固定规则生成候选'
           : (optimizer.model || '未设置模型'),
       },
       {
@@ -1599,7 +1559,7 @@ export default async function environmentView(container, ctx) {
       message:
         `当前执行环境版本已发布，内容只读，接入方式不能原地修改。` +
         `将基于当前版本创建草稿，并把接入方式切换为「${option.label}」` +
-        `（当前为 ${currentProvider || '未设置'}）；草稿保存并发布后才生效。`,
+        `（当前为 ${providerLabel(currentProvider)}）；草稿保存并发布后才生效。`,
       confirmText: '创建草稿并切换',
     });
     if (!ok) return;
@@ -1611,6 +1571,7 @@ export default async function environmentView(container, ctx) {
         ...(payload.model_config || {}),
         provider: option.value,
       };
+      if (currentProvider === 'demo_scripted') payload.model_config.model = '';
       const draft = await api.createEnvironment(project.id, payload);
       await load(draft.id);
       toast(`已创建草稿并切换为「${option.label}」，保存草稿后生效`, {
@@ -1662,9 +1623,6 @@ export default async function environmentView(container, ctx) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是 JSON 对象`);
       return value;
     };
-    if (provider === 'flow' && target === 'business') {
-      throw new Error('Python 流程不支持单独连接探测');
-    }
     if (provider !== 'heuristic' && provider !== 'demo_scripted') {
       config.api_key_ref = credentialForSubmit(config.api_key_ref);
       config.request_template = parseObject(templatePath, target === 'optimizer' ? '优化器请求模板' : '请求模板');
@@ -1696,7 +1654,7 @@ export default async function environmentView(container, ctx) {
           target,
           provider,
           model: target === 'optimizer' ? state.form.optimizer_config.model : state.form.model_config.model,
-          message: provider === 'heuristic' ? '冻结启发式无需网络探测。' : '演示模型为离线模拟，无需网络探测。',
+          message: provider === 'heuristic' ? '规则修复不调用模型，无需网络探测。' : '演示模型为离线模拟，无需网络探测。',
         };
       } else {
         const body = {

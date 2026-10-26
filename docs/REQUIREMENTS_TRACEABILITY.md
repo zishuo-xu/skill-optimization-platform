@@ -36,7 +36,7 @@
 | §34 可靠性与运行边界（持久化、租约心跳、去重、重试、取消、隔离、脱敏） | `app/worker.py`、`app/persistence.py`、`app/execution.py`、`app/adapters/*` | A08、A10、A19、A20 |
 | §35 首期验收 A01–A10 | `tests/test_a01…a10` | 见下表 |
 | §36 交付与里程碑（可运行前后端、示例项目、测试命令） | 本仓库、`scripts/`、README | 全量测试 |
-| §37–§40 网关/Python 接入（两种粒度、run_case 契约、WebSocket 事件聚合） | `app/adapters/{enterprise_ws,openai_http,flow,stream_events,text_parse}.py`、`app/execution.py` | A11–A13 |
+| §37–§40 网关/Python 接入（两种粒度、run_case 契约、WebSocket 事件聚合） | `app/adapters/{enterprise_ws,openai_http,stream_events,text_parse}.py`、`app/execution.py`；流程级粒度已按决定移除，见差异说明 8 | A11–A13 |
 | §41 纯文本与原生调用（result_source、能力声明、A 未评估） | `app/adapters/text_parse.py`、`app/execution.py`、`app/evaluation.py` | A13 |
 | §42 界面与运行配置（网关地址/超时/心跳/状态文案） | `web/js/views/environment.js`、`app/adapters/enterprise_ws.py` | 界面联调、A12 |
 | §43 补充验收 A11–A14 | `tests/test_a11…a14` | 见下表 |
@@ -75,14 +75,14 @@
 | A19 | `tests/test_a19_cancel_restart.py` | 通过 |
 | A20 | `tests/test_a20_security.py` | 通过 |
 
-最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **395 passed**，1 个已有 Starlette/httpx 弃用提示。
+最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **405 passed**，1 个已有 Starlette/httpx 弃用提示。
 覆盖修图语流扩展、最小界面改版、HTTP 网关、模型输出查看、自定义输入连接测试与数据集在线修订。
 各批次原始结果见 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 3. 实现口径与差异说明
 
 1. **演示模型**：示例环境使用 `demo_scripted`（确定性规则模拟器），用于离线演示与自动化测试；
-   它不是真实模型，成绩不代表真实效果。真实接入通过 `openai_http` / `enterprise_ws` / `flow`，
+   它不是真实模型，成绩不代表真实效果。真实接入通过 `openai_http` / `enterprise_ws`，
    不同适配器成绩不可混用（§41/§42）。真实企业网关联调需要实际地址与凭据，仓库内用本地假
    WS 服务验证协议与事件聚合。
 2. **进程重启续跑**：需求 §51 提到“自动续跑不属于本次增量范围”；本实现启动时会回收过期
@@ -98,6 +98,10 @@
    分布式任务队列（README §13、DEPLOYMENT §7）。
 7. **模型增量事件**：适配器支持增量事件（`emit_deltas` 可选），流水线默认只持久化关键事件与
    聚合结果，避免日志膨胀；运行记录仍满足 §44–§50 的定位与详情要求。
+8. **接入方式收敛（2026-10-26）**：按产品决定，执行环境只提供「标准 API」与「WebSocket 网关」两种
+   模型接入（优化模型另可选规则修复）。§37 中的流程级 Python 接入（`flow` / `run_case`）已从前后端
+   移除，与需求原文的“两种粒度”存在差异；`provider: flow` 返回 422。A13「仅分发能力时 A 未评估」
+   由纯文本路由适配器用例覆盖，不依赖流程级接入。离线演示模型保留给示例项目与自动化测试，界面不再提供选择。
 8. **多候选/多轮迭代/优化器自我改进/多人权限/真实生产工具执行**：按 §2「后续扩展」范围未实现。
 9. **A 评分的参数子树扩展**：在需求 §15 的完整工具参数比较之外，增加可选的
    `tool_calls[].arguments_path`（简化写法 `tool.args`），仅当数据集显式声明时生效；

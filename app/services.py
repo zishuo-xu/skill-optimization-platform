@@ -38,7 +38,10 @@ def normalize_model_config(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValidationError("model_config 必须是对象", field_path="model_config")
     provider = raw.get("provider")
-    if provider not in ("demo_scripted", "openai_http", "enterprise_ws", "flow", "heuristic"):
+    if provider in ("flow", "python_flow", "python"):
+        raise ValidationError("Python 流程接入已移除，请改用标准 API 或 WebSocket 网关",
+                              field_path="model_config.provider")
+    if provider not in ("demo_scripted", "openai_http", "enterprise_ws", "heuristic"):
         raise ValidationError(
             f"不支持的模型提供方: {provider!r}", field_path="model_config.provider")
     normalized = dict(raw)
@@ -439,16 +442,6 @@ def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "capabilities": {"routing": True, "tool_arguments": True,
                                  "native_tools": True, "usage": True,
                                  "streaming": True}}
-    if provider == "flow":
-        entry = model_config.get("python_entry")
-        if not entry:
-            return {"ok": False, "provider": provider,
-                    "message": "流程级适配缺少 python_entry"}
-        return {"ok": True, "provider": provider,
-                "message": "流程级适配已配置；需补齐 tool_arguments 才能按双指标接受候选",
-                "capabilities": {"routing": True, "tool_arguments": False,
-                                 "native_tools": False, "usage": False,
-                                 "streaming": False}}
     return {"ok": False, "provider": provider, "message": "未知 provider"}
 
 

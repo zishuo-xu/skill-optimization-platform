@@ -4,7 +4,7 @@
 
 ## 配置
 
-业务模型和优化模型分别保存配置，两者可以使用不同服务。网页的“HTTP API / 企业网关”选项对应 `provider: openai_http`。
+业务模型和优化模型分别保存配置，两者可以使用不同服务。网页的「标准 API」选项对应 `provider: openai_http`；企业 HTTP 网关的完整 URL、请求模板和 Headers 在该选项的「高级」里配置。
 
 标准服务示例（所有凭据均为占位，不可直接用于生产）：
 
@@ -93,7 +93,7 @@
 
 内网修改适配器实现后，应发布新的执行环境版本并重新运行基线，避免复用旧实现的评测缓存。
 
-保持 `ModelAdapter.invoke(messages, config, tools, emit=...)` 返回统一结构：`content`、`tool_calls`（解析后的 name/arguments）、`finish_reason`、`usage`、`model`。Python 接入代码在这层封装即可，不应把“Python 流程级 run_case”混用于单次模型请求。
+保持 `ModelAdapter.invoke(messages, config, tools, emit=...)` 返回统一结构：`content`、`tool_calls`（解析后的 name/arguments）、`finish_reason`、`usage`、`model`。Python 接入代码在这层封装即可（平台已不提供流程级 `run_case` 接入）。
 
 同步 HTTP 的取消在收到数据、退避等检查点生效；阻塞中的连接/读等待受 transport timeout 限制，不承诺即时中止。运行/案例 deadline 收紧后续请求和流式检查，不能把它当成独立进程级硬终止。若内网要求严格即时取消，需要在适配器内引入可取消的异步传输或独立进程。
 

@@ -178,7 +178,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 2026-10-26：402 passed
+.venv/bin/python -m pytest -q        # 2026-10-26：405 passed
 ```
 
 ### 文档导航
@@ -237,13 +237,13 @@ your-skill.zip
 | --- | --- |
 | 项目 | 列表/新建/归档/概览/版本记录；配置完整性与主按钮随状态变化 |
 | Skill 包 | ZIP 或文件夹 JSON 导入、SKILL.md + manifest 校验、21 子技能映射、缺失入口/重复 ID/失效引用/编码错误/路径穿越/绝对路径/符号链接检查、草稿编辑、发布不可变版本、导出还原 |
-| 执行环境 | 业务 Prompt 模板、业务/优化模型独立配置（标准 API / 企业 HTTP 或 WebSocket 网关 / Python 流程）、工具协议、上下文加载、运行参数、预算；配置发布后只读，修改创建草稿；业务/优化模型支持自定义输入连接测试 |
+| 执行环境 | 业务 Prompt 模板、业务/优化模型独立配置（标准 API / WebSocket 网关；优化模型另可选规则修复）、工具协议、上下文加载、运行参数、预算；配置发布后只读，修改创建草稿；业务/优化模型支持自定义输入连接测试 |
 | 数据集 | JSONL/JSON 导入预检、稳定 case_id、按 group_id 固定种子划分、覆盖统计、重复 query 警告；已发布版本只读，可复制草稿在线修订案例并发布新版本；导出同结构 |
 | 评测 | 确定性评分器 R/A/J 独立计分、集合/有序路线、`ordered_exact`/`unordered` 调用、严格 JSON 深度比较、Schema 先校验、clarify/no_action、诊断分类与字段路径 |
 | 单轮优化 | 预检 → 基线评测（兼容缓存复用）→ 错误分析（仅优化集）→ 单候选生成 → 静态检查 → 复测 + 3 次配对验证 → 冻结规则判定；候选不覆盖当前版本 |
 | 版本与应用 | 父版本/来源运行/指标/文件差异；应用、冲突校验、回滚（指针切回历史版本）、ZIP 导出与报告 JSON/CSV |
 | 实时运行记录 | 事件持久化 + SSE 回放/续接、问题摘要与定位、筛选、展开模型正文/工具参数、按需加载大内容、断线重连、终态历史回放；旧记录明确区分案例结果与逐次回复 |
-| Python/网关接入 | OpenAI 兼容 HTTP、企业网关 WebSocket（SSE 式事件聚合、分片工具参数、尾部 usage、重试/中断语义）、用户 Python 流程级 `run_case`、纯文本路由解析与 `result_source` 标注 |
+| 模型接入 | 标准 API（OpenAI 兼容 HTTP，可扩展企业 HTTP 网关的完整 URL/Body/Headers）、WebSocket 网关（SSE 式事件聚合、分片工具参数、尾部 usage、重试/中断语义）、纯文本路由解析与 `result_source` 标注 |
 
 首期明确不做：多候选搜索、多轮自动迭代、优化器自我改进、多人权限、真实生产工具执行侧效应。
 
@@ -259,7 +259,7 @@ Starlette API（app/api_v3.py）
 SQLite 元数据 + 数据目录（不可变包、trace artifacts、导出）
         │
 Worker 线程（租约 + 心跳）── app/single_round.py
-        ├── 执行器 app/execution.py ← 模型适配层 app/adapters/*（demo_scripted / openai_http / enterprise_ws / flow）
+        ├── 执行器 app/execution.py ← 模型适配层 app/adapters/*（demo_scripted / openai_http / enterprise_ws）
         ├── 评分器 app/evaluation.py（纯函数）
         ├── 工具模拟 app/fixtures.py / obs_tools.py
         ├── 优化器 app/optimizer.py + 补丁静态检查 app/patch.py
@@ -346,16 +346,21 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 在「执行环境」中选择业务模型适配器并发布新环境版本：
 
-- `openai_http`：标准 Chat Completions HTTP；`base_url`、模型标识、超时/重试。
-- `enterprise_ws`：企业网关 WebSocket。保留 `api_key`/`user`/`extra_body` 等字段原样发送，
+界面只提供两种接入方式：
+
+- 「标准 API」（`openai_http`）：标准 Chat Completions HTTP；`base_url`、模型标识、超时/重试。
+  企业 HTTP 网关也走这一项，在「高级」里配置完整请求地址、请求模板和 Headers。
+- 「WebSocket 网关」（`enterprise_ws`）：企业网关 WebSocket。保留 `api_key`/`user`/`extra_body` 等字段原样发送，
   不自动改写 `Authorization`；WS 帧还原为 SSE 式事件，支持跨帧拆分/单帧多事件、
   content 与 tool_calls（按 choice/tool index）聚合、尾部 usage、`[DONE]`；
   连接/首包/空闲/总超时与心跳可配；中断标记 `stream_interrupted` 且不跨连接拼接。
-- `flow`：用户已有 Python 流程负责分发与执行，平台调用 `run_case` 接收规范化结果；
-  必须返回真实观测到的路线与工具参数，仅能分发时 A 显示“未评估”。
-- 优化模型在「优化模型」中单独配置；未配置时按 §49 记录原因并使用启发式回退。
+- 优化模型在「优化模型」中单独配置，可选「规则修复（不调用模型）」、标准 API 或 WebSocket 网关；
+  规则修复按 §49 先记录原因再生成候选，运行记录中显示为「规则修复模式」。
+- 「演示模型（离线）」`demo_scripted` 只用于示例项目和自动化测试，界面不再提供选择；
+  已使用它的环境只读显示，可切换为上面两种方式。
+- Python 流程接入（`flow`）已移除；提交 `provider: flow` 的环境或连接测试会返回 422。
 
-适配器必须固定在环境版本中（代码入口、依赖锁定、Python 版本、请求模板、流解析器、
+适配器必须固定在环境版本中（请求模板、流解析器、
 输出解析器哈希），运行中不可修改。供应商无法固定快照时，报告中标注可复现性限制。
 
 ---
@@ -435,7 +440,7 @@ app/
   acceptance.py      accept-v1 冻结规则
   persistence.py     SQLite 仓储（版本/运行/结果/事件/审计）
   worker.py          租约 + 心跳后台执行器
-  adapters/          demo_scripted / openai_http / enterprise_ws / flow / 流事件
+  adapters/          demo_scripted / openai_http / enterprise_ws / 流事件
   obs_tools.py       select_skill / read_skill / finish 协议
   samples/           示例 Skill 包、工具协议、Prompt、数据集、环境
   seed.py            演示项目初始化

@@ -8,12 +8,11 @@ from typing import Any, Mapping
 from ..errors import AppError
 from .base import ModelAdapter
 from .enterprise_ws import EnterpriseWSAdapter
-from .flow import FlowAdapter
 from .openai_http import OpenAIHTTPAdapter
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ADAPTER_PROVIDERS", "build_adapter", "provider_name"]
+__all__ = ["ADAPTER_PROVIDERS", "REMOVED_PROVIDERS", "build_adapter", "provider_name"]
 
 #: Canonical provider names (contract) plus accepted aliases.
 ADAPTER_PROVIDERS = {
@@ -25,10 +24,11 @@ ADAPTER_PROVIDERS = {
     "enterprise_ws": "enterprise_ws",
     "enterprise_gateway": "enterprise_ws",
     "ws": "enterprise_ws",
-    "flow": "flow",
-    "python_flow": "flow",
-    "python": "flow",
 }
+
+#: Providers that were supported earlier and have been removed on purpose.
+REMOVED_PROVIDERS = {"flow", "python_flow", "python"}
+REMOVED_PROVIDER_MESSAGE = "Python 流程接入已移除，请改用标准 API 或 WebSocket 网关"
 
 
 def provider_name(model_config: Mapping[str, Any] | None) -> str:
@@ -52,6 +52,9 @@ def build_adapter(model_config: Mapping[str, Any] | None) -> ModelAdapter:
     if not raw_provider:
         raise AppError("模型配置缺少 provider", code="config_error",
                        status_code=422, field_path="model_config.provider")
+    if raw_provider in REMOVED_PROVIDERS:
+        raise AppError(REMOVED_PROVIDER_MESSAGE, code="unknown_provider",
+                       status_code=422, field_path="model_config.provider")
     canonical = ADAPTER_PROVIDERS.get(raw_provider)
     if canonical is None:
         raise AppError(
@@ -67,8 +70,6 @@ def build_adapter(model_config: Mapping[str, Any] | None) -> ModelAdapter:
         return OpenAIHTTPAdapter(model_config)
     if canonical == "enterprise_ws":
         return EnterpriseWSAdapter(model_config)
-    if canonical == "flow":
-        return FlowAdapter(model_config)
     raise AppError(f"未知的模型 provider: {raw_provider}", code="unknown_provider",
                    status_code=422, field_path="model_config.provider")
 

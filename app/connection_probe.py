@@ -34,10 +34,6 @@ def probe_connection(model_config: Mapping[str, Any], *, target: str = "business
         base.update(performed=False, ok=True,
                     message="演示/启发式适配器不执行真实网络探测")
         return base
-    if provider == "flow":
-        base.update(performed=False, message="Python flow 不执行整套业务流程探测",
-                    error_code="probe_unsupported")
-        return base
     url = cfg.get("ws_url") if provider == "enterprise_ws" else (cfg.get("url") or cfg.get("endpoint") or cfg.get("base_url"))
     parsed = urlparse(str(url)) if url else None
     allowed = ("ws", "wss") if provider == "enterprise_ws" else ("http", "https")

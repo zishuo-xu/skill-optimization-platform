@@ -8,7 +8,7 @@
 - 一次请求，无自动重试；短回复 Token 上限，约 20 秒请求超时设置。同步传输的阻塞取消仍遵循底层 timeout，不承诺独立进程级硬终止。
 - 使用 environment_id + target（business / optimizer）从服务端读取已有凭据；未保存草稿覆盖值按同 provider、同路径继承密钥。浏览器不接收旧凭据原值。
 - 已发布版本也能测试，不要求先创建草稿。
-- heuristic/demo 显示无需网络/离线检查，不假称真实连接成功；Python flow 不调用整套业务流程做连接探测。
+- 规则修复（heuristic）与离线演示模型不发网络请求，界面不显示测试输入与「测试连接」按钮；Python 流程接入已移除，提交 `provider: flow` 返回 422。
 - 检查接入配置保留为本地校验能力；POST /environments/test-connection 升级为真实探测，target 默认 business；mode=check 可请求旧的配置检查。
 - payload.input 为可选字符串；空白使用默认测试语句，非空原文（包括换行和连续空格）直接发给所选模型；最多 16000 字符，超长返回字段错误，不静默截断。测试输入不写环境、不要求创建草稿。
 - 真实探测在 threadpool 运行，避免阻塞 Web 事件循环。

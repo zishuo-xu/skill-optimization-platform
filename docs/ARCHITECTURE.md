@@ -35,7 +35,6 @@ flowchart LR
   M -->|demo_scripted| D[确定性演示模型]
   M -->|openai_http| H[标准 API]
   M -->|enterprise_ws| G[企业网关 WebSocket]
-  M -->|flow| F[用户 Python 流程]
   P --> E[确定性评分器]
   P --> O[优化器 + 补丁静态检查]
   P --> R[接受规则 accept-v1]
@@ -55,7 +54,7 @@ flowchart LR
 | `app/services.py` | 应用服务：项目详情/概览、版本导入发布、数据集预检、运行创建/视图、应用候选、报告 |
 | `app/single_round.py` | 单轮流水线：预检、基线、错误分析、候选生成、静态检查、复测、决策；取消与预算 |
 | `app/execution.py` | 单案例执行循环：固定消息构造、内部工具、业务工具 + fixture、步数/超时/取消 |
-| `app/adapters/*` | `ModelAdapter` 接口与 demo/HTTP/WS/flow 适配器、WS 分帧与事件聚合、文本协议解析 |
+| `app/adapters/*` | `ModelAdapter` 接口与 demo/HTTP/WS 适配器、WS 分帧与事件聚合、文本协议解析 |
 | `app/obs_tools.py` | `select_skill` / `read_skill` / `finish` 协议与路由事件 |
 | `app/evaluation.py` | `score-v1` 确定性评分：R/A/J、诊断分类、指标聚合 |
 | `app/dataset.py` | JSONL/JSON 导入、校验、稳定 ID、分 group 划分、覆盖统计 |

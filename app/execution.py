@@ -426,7 +426,6 @@ class _CaseRunner:
         self.deadline = self.started + float(self.limits.get("case_timeout_s") or 120)
         self._call_seen: set[str] = set()
         self._current_call_id: str | None = None
-        self._flow_result: dict[str, Any] | None = None
 
     # -- event helpers ----------------------------------------------------- #
     def _emit(self, event_type: str, *, payload: Mapping[str, Any] | None = None,
@@ -562,8 +561,6 @@ class _CaseRunner:
                 loader_config=self.request.get("loader_config") or {},
                 limits=self.limits,
                 text_protocol=self.tool_protocol != "native")
-            if getattr(self.adapter, "is_flow", False):
-                return self._run_flow()
             return self._run_model_loop()
         except _Failure as failure:
             return self._failure_result(failure)
@@ -892,48 +889,6 @@ class _CaseRunner:
         results.append({"index": index, "tool": name, "arguments": dict(arguments),
                         "response": response})
 
-    # -- flow-level --------------------------------------------------------- #
-    def _run_flow(self) -> dict[str, Any]:
-        if not hasattr(self.adapter, "invoke_case"):
-            raise _Failure("platform_error", "流程级适配器缺少 invoke_case")
-        self._check_cancel()
-        try:
-            raw_result = self.adapter.invoke_case(  # type: ignore[attr-defined]
-                self.request, emit=self.sink, cancel_check=self._cancel_requested)
-        except AdapterError as exc:
-            if exc.code == "cancelled":
-                raise _Failure("cancelled", exc.message) from exc
-            raise _Failure(exc.code, exc.message, details=exc.details) from exc
-        self._check_timeout()
-        if not isinstance(raw_result, Mapping):
-            raise _Failure("protocol_error", "流程级适配器返回值必须是对象")
-        self._flow_result = dict(raw_result)
-        self.capabilities = normalize_capabilities(
-            raw_result.get("capabilities") or self.capabilities)
-        self.result_source = "runtime_event"
-        self.usage_parts.append(normalize_usage(raw_result.get("usage")))
-        flow_reason = raw_result.get("finish_reason")
-        if isinstance(flow_reason, str) and flow_reason:
-            self.finish_reason = flow_reason
-        self.tool_calls = [{"name": call["name"], "arguments": dict(call["arguments"])}
-                           for call in raw_result.get("tool_calls") or []
-                           if isinstance(call, Mapping) and call.get("name")]
-        error = raw_result.get("error")
-        if isinstance(error, Mapping) and error.get("code"):
-            code = str(error.get("code"))
-            code = code if code in event_types.CASE_ERROR_CODES else "platform_error"
-            raise _Failure(code, str(error.get("message") or "流程执行失败"),
-                           details=error.get("details"))
-        action = raw_result.get("action")
-        if action not in ("tool_call", "clarify", "no_action"):
-            raise _Failure("protocol_error", f"流程结果的 action 非法: {action!r}")
-        return self._success(
-            action=action,
-            selected_skills=[str(item) for item in raw_result.get("selected_skills") or []],
-            tool_calls=self.tool_calls,
-            missing_fields=[str(item) for item in raw_result.get("missing_fields") or []],
-            raw_output=str(raw_result.get("raw_output") or ""))
-
     # -- results ------------------------------------------------------------ #
     def _route_events(self) -> list[dict[str, Any]]:
         route_events: list[dict[str, Any]] = []
@@ -951,9 +906,7 @@ class _CaseRunner:
             })
         if route_events:
             return route_events
-        fallback = (self._flow_result or {}).get("route_events") \
-            if self._flow_result else self.obs.route_events
-        for index, entry in enumerate(fallback or []):
+        for index, entry in enumerate(self.obs.route_events or []):
             if not isinstance(entry, Mapping) or not entry.get("skill_id"):
                 continue
             seq = entry.get("seq")

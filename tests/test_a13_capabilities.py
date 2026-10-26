@@ -4,8 +4,8 @@ Covers adapter registry, capability reporting (``routing``/``tool_arguments``/
 ``native_tools``/``usage``/``streaming``), routing-only text adapters whose tool
 argument metric must be *not evaluated*, frozen text protocol parse failures,
 internal tool path safety / finish consistency, fixture simulation, execution
-limits (model calls / steps / timeout / cancellation), truncation classification
-and flow-level (runtime_event) adapters.
+limits (model calls / steps / timeout / cancellation) and truncation
+classification.
 
 No external network is used.
 """
@@ -27,7 +27,6 @@ from app.adapters.base import (
     normalize_capabilities,
 )
 from app.adapters.enterprise_ws import EnterpriseWSAdapter
-from app.adapters.flow import FlowAdapter
 from app.adapters.openai_http import OpenAIHTTPAdapter, _error_from_status
 from app.adapters.registry import build_adapter
 from app.adapters.text_parse import TextParseError, parse_routing, parse_tool_calls
@@ -182,7 +181,6 @@ def test_registry_builds_every_provider():
     assert isinstance(build_adapter({"provider": "openai_http"}), OpenAIHTTPAdapter)
     assert isinstance(build_adapter({"provider": "enterprise_ws"}),
                       EnterpriseWSAdapter)
-    assert isinstance(build_adapter({"provider": "flow"}), FlowAdapter)
     demo = build_adapter({"provider": "demo_scripted"})
     assert getattr(demo, "name", "") == "demo_scripted"
     # documented aliases resolve to the canonical adapters
@@ -553,100 +551,6 @@ def test_expected_and_answer_never_reach_adapter(package):
     assert ANSWER_SENTINEL not in serialized
     assert '"expected"' not in serialized
     assert adapter.calls[0]["config"].get("request_template") == {"user": "tester"}
-
-
-# --------------------------------------------------------------------------- #
-# flow-level adapters (runtime_event)
-# --------------------------------------------------------------------------- #
-def test_flow_adapter_returns_runtime_event_result_without_expected(package):
-    root, manifest = package
-    captured: list[dict] = []
-
-    def flow_runner(request):
-        captured.append(request)
-        return {
-            "selected_skills": ["task_query"],
-            "route_events": [{"skill_id": "task_query", "seq": 1}],
-            "action": "tool_call",
-            "tool_calls": [{"name": "list_tasks", "arguments": {
-                "project_id": "P123", "status": "in_progress"}}],
-            "missing_fields": [],
-            "finish_reason": "stop",
-            "usage": {"input_tokens": 9, "output_tokens": 3},
-            "result_source": "runtime_event",
-            "events": [
-                {"type": "skill_selected", "level": "info",
-                 "payload": {"skill_id": "task_query", "source": "runtime"}},
-                {"type": "tool_call_started", "level": "info",
-                 "payload": {"tool": "list_tasks"}},
-            ],
-            "raw_output": "已查询",
-        }
-
-    adapter = FlowAdapter({"provider": "flow", "run_case": flow_runner})
-    result = run_case(make_request(root, manifest), adapter)
-    assert result["error"] is None, result["error"]
-    assert result["result_source"] == "runtime_event"
-    assert result["selected_skills"] == ["task_query"]
-    assert result["tool_calls"] == [{"name": "list_tasks", "arguments": {
-        "project_id": "P123", "status": "in_progress"}}]
-    assert result["usage"] == {"input_tokens": 9, "output_tokens": 3,
-                               "total_tokens": 12}
-    assert "skill_selected" in [event["type"] for event in result["events"]]
-    assert captured, "flow runner was not invoked"
-    flow_request = captured[0]
-    assert "expected" not in flow_request
-    assert ANSWER_SENTINEL not in json.dumps(flow_request, ensure_ascii=False)
-    assert flow_request["skill_snapshot_path"] == str(root)
-    assert flow_request["case_id"] == "case_013"
-
-
-def test_flow_adapter_invalid_protocol_is_capability_error(package):
-    root, manifest = package
-
-    def bad_runner(request):
-        return {"selected_skills": [], "action": "explode", "tool_calls": []}
-
-    adapter = FlowAdapter({"provider": "flow", "run_case": bad_runner})
-    result = run_case(make_request(root, manifest), adapter)
-    assert result["error"]["code"] == "protocol_error"
-    assert result["error_kind"] == "capability"
-
-
-def test_flow_adapter_crash_is_infrastructure_error(package):
-    root, manifest = package
-
-    def crashing_runner(request):
-        raise RuntimeError("user flow bug")
-
-    adapter = FlowAdapter({"provider": "flow", "run_case": crashing_runner})
-    result = run_case(make_request(root, manifest), adapter)
-    assert result["error"]["code"] == "platform_error"
-    assert result["error_kind"] == "infrastructure"
-
-
-def test_flow_adapter_can_declare_routing_only_capability(package):
-    root, manifest = package
-
-    def routing_flow(request):
-        return {"selected_skills": ["task_query"], "action": "no_action",
-                "tool_calls": [], "result_source": "runtime_event",
-                "events": [{"type": "skill_selected",
-                            "payload": {"skill_id": "task_query"}}]}
-
-    adapter = FlowAdapter({"provider": "flow", "run_case": routing_flow,
-                           "capabilities": {"tool_arguments": False}})
-    result = run_case(make_request(root, manifest), adapter)
-    assert result["capabilities"]["tool_arguments"] is False
-    assert result["tool_calls"] == []
-
-    from app.evaluation import score_case
-
-    score = score_case({"action": "tool_call", "routes": [["task_query"]],
-                        "tool_calls": [{"name": "list_tasks", "arguments": {}}]},
-                       result, TOOL_SCHEMA, None)
-    assert score["routing"]["evaluable"] is True
-    assert score["tool_args"]["evaluable"] is False
 
 
 # --------------------------------------------------------------------------- #

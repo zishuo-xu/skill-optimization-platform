@@ -1,7 +1,7 @@
 """Unified model adapter interface and shared helpers.
 
 Every model transport (demo scripted, OpenAI compatible HTTP, enterprise
-WebSocket gateway, user supplied Python flow) implements :class:`ModelAdapter`
+WebSocket gateway) implements :class:`ModelAdapter`
 so ``app.execution.run_case`` can drive the same Agent loop independently of the
 transport.
 
@@ -455,8 +455,6 @@ class ModelAdapter:
     """Unified model transport interface (contract §2.6)."""
 
     name: str = "base"
-    #: Flow-level adapters expose the whole case runner instead of one call.
-    is_flow: bool = False
     capabilities: dict[str, bool] = dict(DEFAULT_CAPABILITIES)
 
     def __init__(self, model_config: Mapping[str, Any] | None = None):
@@ -487,21 +485,9 @@ class ModelAdapter:
         return f"<{type(self).__name__} name={self.name!r} model={self.model_name!r}>"
 
 
-class FlowAdapterBase(ModelAdapter):
-    """Marker base class for flow-level adapters (§37)."""
-
-    is_flow = True
-    name = "flow"
-
-    def invoke_case(self, case_request: Mapping[str, Any], *, emit: Callable[..., Any] | None = None,
-                    cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
-        """Run the whole user flow for one case and return an observed result."""
-        raise NotImplementedError
-
-
 __all__ = [
     "CAPABILITY_KEYS", "DEFAULT_CAPABILITIES", "EVENT_FIELDS", "MAX_RETRIES",
-    "RETRYABLE_ERROR_CODES", "AdapterError", "FlowAdapterBase", "ModelAdapter",
+    "RETRYABLE_ERROR_CODES", "AdapterError", "ModelAdapter",
     "call_emit", "collect_events", "default_capabilities", "emit_event",
     "json_dumps", "make_event", "mask_headers", "normalize_capabilities",
     "normalize_tool_definitions", "normalize_usage", "now_iso",
