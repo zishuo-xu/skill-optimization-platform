@@ -6,6 +6,7 @@ import threading
 from typing import Any, Mapping
 
 from . import config, event_types, persistence
+from .model_output import response_json
 
 
 class EventEmitter:
@@ -82,6 +83,26 @@ class EventEmitter:
              attempt: int | None = None, call_id: str | None = None,
              **_extra: Any) -> dict[str, Any]:
         actual_stage = stage or self.stage
+        safe_payload = dict(payload or {})
+        if event_type in (event_types.MODEL_CALL_FINISHED,
+                          event_types.OPTIMIZER_CALL_FINISHED) and "response" in safe_payload:
+            try:
+                encoded = response_json(safe_payload["response"])
+                if len(encoded) > 8192 and self.run_id:
+                    artifact = persistence.save_artifact(
+                        self.run_id, "model_response", encoded,
+                        summary=str(safe_payload.get("response_summary") or ""))
+                    safe_payload.pop("response", None)
+                    safe_payload["artifacts"] = list(safe_payload.get("artifacts") or []) + [{
+                        "id": artifact["id"], "kind": "model_response",
+                        "size": artifact.get("size", len(encoded)),
+                        "summary": artifact.get("summary", ""),
+                    }]
+            except Exception:
+                response = safe_payload.get("response")
+                preview = response.get("content", "") if isinstance(response, Mapping) else ""
+                safe_payload["response"] = {"content": str(preview)[:500]}
+                safe_payload["response_note"] = "详细模型输出保存失败，已保留安全预览"
         if level not in event_types.LEVELS:
             level = "info"
         with self._lock:
@@ -89,7 +110,7 @@ class EventEmitter:
                 self.run_id, event_type, stage=actual_stage, case_id=case_id,
                 split=split, variant=variant, repeat_index=repeat_index,
                 attempt=attempt, call_id=call_id, level=level,
-                payload=dict(payload or {}))
+                payload=safe_payload)
         return event
 
     def issue(self, event_type: str, *, error_code: str, title: str, message: str,

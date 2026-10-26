@@ -394,6 +394,15 @@ function buildCtx(route) {
       refreshSidebar();
       renderTopbar();
     },
+    updateRunState: (run) => {
+      const currentRoute = parseHash(location.hash);
+      if (currentRoute.name !== 'run' || currentRoute.rid !== run.id || state.run?.id !== run.id) return;
+      state.run = run;
+      state.recentRuns = state.recentRuns.map(item => item.id === run.id ? { ...item, ...run } : item);
+      refreshSidebar();
+      renderTopbar();
+      setDocumentTitle(route);
+    },
     setDirty,
     isMock: isMockMode(),
   };

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import event_types
+from .model_output import capture_model_response, response_summary
 from .adapters import text_parse
 from .adapters.base import (
     AdapterError,
@@ -432,7 +433,7 @@ class _CaseRunner:
               level: str = "info", call_id: str | None = None,
               attempt: int | None = None) -> dict[str, Any]:
         return emit_event(
-            self.sink, event_type, level=level, payload=payload,
+            self.sink, event_type, level=level, payload=dict(payload or {}),
             run_id=self.run_id or None, case_id=self.case_id or None,
             stage=self.stage, split=self.split, variant=self.variant,
             repeat_index=self.repeat_index,
@@ -480,13 +481,16 @@ class _CaseRunner:
                          "tool_count": len(self.tools_for_call())})
         if status == "ok" and event_types.MODEL_CALL_FINISHED not in self._call_seen:
             invoked = invoked or {}
+            captured = capture_model_response(invoked, self.model_config)
             self._emit(
                 event_types.MODEL_CALL_FINISHED, call_id=call_id,
                 payload={"provider": getattr(self.adapter, "name", "unknown"),
                          "synthetic": True,
                          "finish_reason": invoked.get("finish_reason"),
                          "usage": invoked.get("usage"),
-                         "tool_call_count": len(invoked.get("tool_calls") or [])})
+                         "tool_call_count": len(invoked.get("tool_calls") or []),
+                         "response": captured,
+                         "response_summary": response_summary(captured)})
         if status == "error" and event_types.MODEL_CALL_FAILED not in self._call_seen:
             error = error or AdapterError("模型调用失败")
             self._emit(
@@ -542,6 +546,9 @@ class _CaseRunner:
             template.update(self.request_template)
             config["request_template"] = template
         config["cancel_check"] = self._cancel_requested
+        config["call_id"] = self._current_call_id
+        config["deadline_monotonic"] = min(
+            self.deadline, float(config.get("deadline_monotonic") or self.deadline))
         config.setdefault("provider", getattr(self.adapter, "name", "unknown"))
         return config
 

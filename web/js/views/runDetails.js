@@ -169,11 +169,62 @@ export default async function runDetailsView(container, ctx) {
     const snapshot = run.snapshot || {};
     const skillVersion = snapshot.skill_version || null;
     const projectId = run.project_id;
+    const candidateVersion = candidateVersionId();
+    const snapshotHash = snapshot.fingerprint || snapshot.fingerprints?.skill || null;
 
     const elapsedSpan = h('span', { text: active() ? formatElapsed(run.started_at || run.created_at) : formatDuration(run.cost?.duration_ms) });
     const activitySpan = h('span', { text: run.stage_progress?.last_activity_at ? relativeTime(run.stage_progress.last_activity_at) : '—' });
     const activeCases = (run.stage_progress?.current_case_ids || []).length;
     liveRefs = { elapsedSpan, activitySpan };
+
+    const technicalDetails = h(
+      'details.run-header__details',
+      null,
+      h('summary', { text: '查看运行详情、版本与导出' }),
+      h(
+        'div.run-header__details-body',
+        null,
+        h(
+          'div.run-header__meta',
+          null,
+          h(
+            'span.meta-item',
+            null,
+            icon('skill', { size: 13 }),
+            h('span', { text: '父版本 ' }),
+            skillVersion ? h('a.mono', { href: `#/projects/${encodeURIComponent(projectId)}/skill` }, skillVersion.label || skillVersion.id || shortenId(baselineVersionId(), 14)) : h('span.mono', { text: shortenId(baselineVersionId(), 14) })
+          ),
+          run.parent_run_id
+            ? h('span.meta-item', null, icon('versions', { size: 13 }), h('a', { href: `#/runs/${encodeURIComponent(run.parent_run_id)}` }, `父运行 ${shortenId(run.parent_run_id, 14)}`))
+            : null,
+          candidateVersion ? h('span.meta-item', null, icon('versions', { size: 13 }), h('span', { text: '候选版本 ' }), h('span.mono', { text: candidateVersion })) : null,
+          snapshot.environment ? h('span.meta-item', null, icon('environment', { size: 13 }), h('span', { text: `环境 v${snapshot.environment.version_seq || '—'}` })) : null,
+          snapshot.dataset ? h('span.meta-item', null, icon('dataset', { size: 13 }), h('span', { text: `数据集 v${snapshot.dataset.version_seq || '—'}` })) : null,
+          h('span.meta-item', null, icon('clock', { size: 13 }), h('span', { text: `开始 ${formatDateTime(run.started_at || run.created_at)}` })),
+          run.finished_at ? h('span.meta-item', null, icon('check', { size: 13 }), h('span', { text: `结束 ${formatDateTime(run.finished_at)}` })) : null,
+          run.rules_version ? h('span.meta-item', null, h('span.xsmall.muted', { text: `规则 ${run.rules_version}` })) : null,
+          snapshotHash ? h('span.meta-item', null, h('span', { text: '快照哈希 ' }), h('span.mono', { text: shortenId(snapshotHash, 18) }), copyButtonFor(snapshotHash)) : null
+        ),
+        h(
+          'div.btn-row',
+          { style: { marginTop: '8px' } },
+          button({
+            label: '报告 JSON',
+            variant: 'ghost',
+            size: 'sm',
+            iconName: 'download',
+            onClick: () => download(api.downloadReportUrl(run.id, 'json'), `${run.id}-report.json`),
+          }),
+          button({
+            label: '报告 CSV',
+            variant: 'ghost',
+            size: 'sm',
+            iconName: 'download',
+            onClick: () => download(api.downloadReportUrl(run.id, 'csv'), `${run.id}-report.csv`),
+          })
+        )
+      )
+    );
 
     mount(
       headerHost,
@@ -195,55 +246,20 @@ export default async function runDetailsView(container, ctx) {
               run.decision ? statusBadge(run.decision, 'decision') : null,
               chip(modeMeta.label, 'neutral'),
               isTerminalStatus(run.status) ? null : chip('运行中不可修改配置', 'warning')
-            ),
-            h(
-              'div.run-header__meta',
-              null,
-              h(
-                'span.meta-item',
-                null,
-                icon('skill', { size: 13 }),
-                h('span', { text: '父版本 ' }),
-                skillVersion ? h('a.mono', { href: `#/projects/${encodeURIComponent(projectId)}/skill` }, skillVersion.label || skillVersion.id || shortenId(baselineVersionId(), 14)) : h('span.mono', { text: shortenId(baselineVersionId(), 14) })
-              ),
-              run.parent_run_id
-                ? h('span.meta-item', null, icon('versions', { size: 13 }), h('a', { href: `#/runs/${encodeURIComponent(run.parent_run_id)}` }, `父运行 ${shortenId(run.parent_run_id, 14)}`))
-                : null,
-              snapshot.environment ? h('span.meta-item', null, icon('environment', { size: 13 }), h('span', { text: `环境 v${snapshot.environment.version_seq || '—'}` })) : null,
-              snapshot.dataset ? h('span.meta-item', null, icon('dataset', { size: 13 }), h('span', { text: `数据集 v${snapshot.dataset.version_seq || '—'}` })) : null,
-              h('span.meta-item', null, icon('clock', { size: 13 }), h('span', { text: `开始 ${formatDateTime(run.started_at || run.created_at)}` })),
-              run.finished_at ? h('span.meta-item', null, icon('check', { size: 13 }), h('span', { text: `结束 ${formatDateTime(run.finished_at)}` })) : null,
-              run.rules_version ? h('span.meta-item', null, h('span.xsmall.muted', { text: `规则 ${run.rules_version}` })) : null
             )
           ),
           h(
             'div.run-header__actions',
             null,
             button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => refreshRun({ forceTab: true }) }),
-            h(
-              'div.btn-row',
-              { style: { gap: '6px' } },
-              button({
-                label: '报告 JSON',
-                variant: 'ghost',
-                size: 'sm',
-                iconName: 'download',
-                onClick: () => download(api.downloadReportUrl(run.id, 'json'), `${run.id}-report.json`),
-              }),
-              button({
-                label: '报告 CSV',
-                variant: 'ghost',
-                size: 'sm',
-                iconName: 'download',
-                onClick: () => download(api.downloadReportUrl(run.id, 'csv'), `${run.id}-report.csv`),
-              })
-            ),
             active()
               ? button({ label: run.status === 'cancel_requested' ? '正在取消…' : '取消运行', variant: 'danger', size: 'sm', iconName: 'cancel', disabled: run.status === 'cancel_requested' || state.busyCancel, onClick: cancelRun })
-              : null
+              : null,
+            technicalDetails
           )
         ),
-        h(
+        active()
+          ? h(
           'div.stage-progress',
           null,
           h(
@@ -284,7 +300,8 @@ export default async function runDetailsView(container, ctx) {
             { style: { marginTop: '6px' } },
             run.stage_progress?.message || (active() ? '进度按当前阶段统计，不混合其它阶段的案例总数。后台运行不依赖页面保持打开。' : '运行已结束，结果与过程记录可随时回看。')
           )
-        )
+          )
+          : null
       )
     );
   }
@@ -460,19 +477,96 @@ export default async function runDetailsView(container, ctx) {
     );
   }
 
+  function validationSummary() {
+    const metrics = state.run.metrics || {};
+    const validation = metrics.validation;
+    if (!validation || !validation.baseline || !validation.candidate) return null;
+    const validationItems = state.cases.items.filter((item) => item.split === 'validation' && (item.repeat_index || 1) === 1);
+    const validationTransitions = { fixed: 0, regressed: 0 };
+    for (const item of validationItems) {
+      if (item.changeType === 'fixed') validationTransitions.fixed += 1;
+      else if (item.changeType === 'regressed') validationTransitions.regressed += 1;
+    }
+    const snapshot = state.run.snapshot || {};
+    const repeats = validation.repeats ?? state.run.acceptance?.validation_repeats ?? snapshot.validation_repeats ?? snapshot.base_repeats ?? '—';
+    const validationPlanned = validation.baseline?.execution?.planned ?? validation.candidate?.execution?.planned;
+    const independentCases = validation.independent_cases
+      ?? validation.case_count
+      ?? (validationPlanned && Number(repeats) > 0 ? Math.ceil(validationPlanned / Number(repeats)) : null)
+      ?? (validationItems.length || null);
+    const baselineJoint = validation.baseline?.joint?.value;
+    const candidateJoint = validation.candidate?.joint?.value;
+    const jointDelta = validation.delta?.joint;
+    return sectionCard({
+      title: '验证结果',
+      description: '联合通过率来自完整配对复测；案例变化取首轮，重复执行不等于新增案例。',
+      body: h(
+        'div.validation-summary',
+        null,
+        h(
+          'div.validation-summary__headline',
+          null,
+          h('strong', { text: baselineJoint === null || baselineJoint === undefined || candidateJoint === null || candidateJoint === undefined ? '验证集联合通过率未评估' : `验证集联合通过率 ${formatPercent(baselineJoint)} → ${formatPercent(candidateJoint)}（${formatDelta(jointDelta)}）` }),
+          validationTransitions.regressed
+            ? chip(`验证集首轮仍有 ${validationTransitions.regressed} 条回归`, 'warning', { iconName: 'alert' })
+            : null
+        ),
+        h(
+          'div.validation-summary__grid',
+          null,
+          h('div', null, h('span.xsmall.muted', { text: '新增通过（验证集首轮）' }), h('strong', { text: String(validationTransitions.fixed) })),
+          h('div', null, h('span.xsmall.muted', { text: '新增失败 / 回归（验证集首轮）' }), h('strong', { text: String(validationTransitions.regressed) })),
+          h('div', null, h('span.xsmall.muted', { text: '独立案例' }), h('strong', { text: independentCases ? formatNumber(independentCases) : '—' })),
+          h('div', null, h('span.xsmall.muted', { text: '重复次数' }), h('strong', { text: formatNumber(repeats) }))
+        ),
+        h('p.xsmall.muted', { text: validation.complete === false ? '验证尚未完整，当前结果可能继续变化。' : '验证集计数取首轮案例；重复执行用于检查稳定性。' })
+      ),
+    });
+  }
+
+  function candidateRationaleSection() {
+    const candidate = state.run.candidate || {};
+    const diagnosis = candidate.diagnosis || {};
+    const hypotheses = candidate.hypotheses || [];
+    const expectedEffect = candidate.expected_effect || state.diff.expectedEffect || '';
+    const why = diagnosis.summary || diagnosis.reason || (typeof diagnosis === 'string' ? diagnosis : '');
+    const scope = candidate.changed_files?.length ? `修改范围：${candidate.changed_files.join('、')}` : '';
+    const hypothesisText = hypotheses
+      .slice(0, 3)
+      .map((item) => (typeof item === 'string' ? item : item.summary || item.text || ''))
+      .filter(Boolean);
+    if (!why && !scope && !expectedEffect && !hypothesisText.length) return null;
+    return sectionCard({
+      title: '为什么改',
+      description: '候选诊断、修改范围与预期效果的简短摘要。',
+      body: h(
+        'div.stack',
+        null,
+        why ? h('p.small', { text: why }) : null,
+        scope ? h('p.small.muted', { text: scope }) : null,
+        hypothesisText.length ? h('ul.small', { style: { margin: 0, paddingLeft: '1.1em' } }, ...hypothesisText.map((text) => h('li', { text }))) : null,
+        expectedEffect ? h('p.small', null, h('span.muted', { text: '预期效果：' }), expectedEffect) : null
+      ),
+    });
+  }
+
   function conclusionSection() {
     const run = state.run;
     const terminal = isTerminalStatus(run.status);
     const decision = run.decision;
+    const transitions = computeTransitions();
     const candVersion = candidateVersionId();
     const applied = Boolean(
       candVersion &&
         ((run.current_skill_version_id && run.current_skill_version_id === candVersion) ||
           (!run.current_skill_version_id && state.project?.current_skill_version_id === candVersion))
     );
-    const canApply = run.can_apply !== false && !applied;
+    const appliedAt = run.acceptance?.applied_at || run.decision_record?.applied_at;
+    const appliedElsewhere = Boolean(appliedAt && candVersion && !applied);
+    const applicability = run.applicability || {};
+    const isCurrent = applicability.current !== false && !(applicability.stale_reasons || []).length;
+    const canApply = run.can_apply !== false && isCurrent && !applied;
     const changedFiles = run.candidate?.changed_files || [];
-    const parentVersion = run.snapshot?.skill_version?.label || baselineVersionId();
 
     if (!terminal) {
       return sectionCard({
@@ -486,6 +580,26 @@ export default async function runDetailsView(container, ctx) {
       });
     }
 
+    const decisionErrorCode = run.decision_record?.rationale?.error_code || run.acceptance?.error_code;
+    if (decisionErrorCode === 'no_failures' || (run.mode === 'baseline' && run.status === 'completed' && !candVersion)) {
+      return sectionCard({
+        title: '结论与下一步',
+        actions: [chip(run.mode === 'baseline' ? '基线已完成' : '当前测试未发现可改进问题', 'neutral', { iconName: 'info' })],
+        body: h(
+          'div.decision-block',
+          null,
+          h('div.decision-headline', null, h('h3', { text: run.mode === 'baseline' ? '基线结果已记录' : '当前测试未发现可改进问题' })),
+          h('p.decision-reason', { text: run.decision_reason || '当前测试范围内没有足够的失败证据生成候选修改。平台运行本身已完成。' }),
+          h(
+            'div.btn-row.btn-row--start',
+            { style: { marginTop: '14px' } },
+            button({ label: '返回项目概览', variant: 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+            button({ label: '查看运行记录', variant: 'ghost', iconName: 'run', onClick: () => switchTab('log') })
+          )
+        ),
+      });
+    }
+
     if (decision === 'accept') {
       return sectionCard({
         title: '结论与应用',
@@ -496,25 +610,19 @@ export default async function runDetailsView(container, ctx) {
           h(
             'div.decision-headline',
             null,
-            h('h3', { text: applied ? '评测达标，候选已应用' : '评测达标，待应用' }),
-            applied ? chip('已应用', 'success', { iconName: 'check' }) : chip('待人工确认', 'warning', { iconName: 'clock' })
+            h('h3', { text: applied ? '评测达标，候选已应用' : appliedElsewhere ? '候选曾应用，当前已切换版本' : '评测有改善' })
           ),
-          h('p.decision-reason', { text: run.decision_reason || run.decision_record?.rationale?.reason || run.acceptance?.reason || '候选满足接受规则，等待人工应用。' }),
-          kvList(
-            [
-              { label: '父版本', value: parentVersion || '—', mono: true },
-              { label: '变更文件数', value: `${changedFiles.length} 个${changedFiles.length ? `（${changedFiles.join('、')}）` : ''}` },
-              { label: '候选版本', value: candVersion || '—', mono: true },
-              { label: '应用后效果', value: '仅切换项目当前版本指针，不修改外部生产目录；旧版本保留可回滚。' },
-            ],
-            { compact: true }
-          ),
+          h('p.decision-reason', { text: `${run.decision_reason || run.decision_record?.rationale?.reason || run.acceptance?.reason || '候选满足接受规则，等待人工应用。'}${transitions.regressed ? ` 当前仍有 ${transitions.regressed} 条回归；相对改善不代表所有案例通过。` : ' 相对改善不代表所有案例通过。'}` }),
           h(
             'div.btn-row.btn-row--start',
             { style: { marginTop: '14px' } },
-            canApply && candVersion
-              ? button({ label: state.applyBusy ? '正在应用…' : '应用候选', variant: 'primary', iconName: 'check', disabled: state.applyBusy, onClick: applyCandidate })
+            candVersion && !applied
+              ? button({ label: canApply ? (state.applyBusy ? '正在应用…' : '应用候选') : '需重新评测后应用', variant: canApply ? 'primary' : 'secondary', iconName: canApply ? 'check' : 'lock', disabled: state.applyBusy || !canApply, onClick: applyCandidate })
               : null,
+            !isCurrent && !applied ? h('span.small.muted', { text: applicability.message || '当前评测条件已变化，需要重新评测。' }) : null,
+            applied ? button({ label: '继续下一轮', variant: 'primary', iconName: 'play', onClick: continueNextRound }) : null,
+            applied ? button({ label: '恢复应用前版本', variant: 'danger', iconName: 'refresh', onClick: restoreAppliedVersion }) : null,
+            appliedElsewhere ? h('span.small.muted', { text: '当前版本已变化，不能从本轮候选重复恢复。' }) : null,
             candVersion
               ? button({
                   label: '导出候选包',
@@ -524,7 +632,14 @@ export default async function runDetailsView(container, ctx) {
                 })
               : null,
             button({ label: '查看变更文件', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') })
-          )
+          ),
+          kvList(
+            [
+              { label: '修改范围', value: `${changedFiles.length} 个文件` },
+            ],
+            { compact: true }
+          ),
+          h('p.small.muted', { style: { marginTop: '8px' }, text: '应用后仅切换项目当前版本指针；旧版本保留，可从版本记录恢复。' })
         ),
       });
     }
@@ -603,7 +718,7 @@ export default async function runDetailsView(container, ctx) {
           h(
             'div.btn-row.btn-row--start',
             { style: { marginTop: '14px' } },
-            button({ label: '新建验证运行', variant: 'primary', iconName: 'play', onClick: createVerificationRun }),
+            button({ label: '返回概览重新验证', variant: 'primary', iconName: 'play', onClick: createVerificationRun }),
             button({ label: '查看运行记录', variant: 'secondary', iconName: 'run', onClick: () => switchTab('log') })
           )
         ),
@@ -699,10 +814,12 @@ export default async function runDetailsView(container, ctx) {
     const temporary = Boolean(metrics.temporary) || !isTerminalStatus(run.status);
     const transitions = computeTransitions();
     const hasCaseData = state.cases.loaded && state.cases.items.length > 0;
-    const isBaselineMode = run.mode === 'baseline';
+    const isBaselineMode = run.mode === 'baseline' || !candidateVersionId();
 
-    mount(
-      resultHost,
+    const metricDetails = h(
+      'details.result-details',
+      null,
+      h('summary', { text: '查看完整指标、接受规则与成本明细' }),
       h(
         'div.stack',
         null,
@@ -713,104 +830,55 @@ export default async function runDetailsView(container, ctx) {
             title: '指标对比',
             description: temporary ? '运行尚未结束，候选指标为临时值。' : '基线、候选与差值的最终结果。',
             actions: temporary ? [chip('临时值', 'warning', { iconName: 'clock' })] : [],
-            body: h(
-              'div',
-              null,
-              metricsTable(metrics, temporary),
-              coverageHint()
-            ),
+            body: h('div', null, metricsTable(metrics, temporary), coverageHint()),
           }),
-          sectionCard({
-            title: '接受规则',
-            description: '阈值在运行前冻结，不能为当前候选临时调低。',
-            body: ruleList(),
-          })
+          sectionCard({ title: '接受规则', description: '阈值在运行前冻结，不能为当前候选临时调低。', body: ruleList() })
         ),
-        h(
-          'div.overview-grid',
-          null,
-          sectionCard({
-            title: isBaselineMode ? '基线案例结果' : '案例变化',
-            description: isBaselineMode ? '本次只运行了基线，可直接筛选失败案例查看具体参数差异。' : '新增通过与新增失败反映候选的实际影响。',
-            actions: hasCaseData
-              ? [
-                  failedCaseCount()
-                    ? button({
-                        label: `只看失败案例（${failedCaseCount()}）`,
-                        variant: 'primary',
-                        size: 'sm',
-                        iconName: 'alert',
-                        onClick: () => {
-                          state.cases.onlyFailed = true;
-                          switchTab('cases');
-                        },
-                      })
-                    : null,
-                  button({ label: '查看全部案例', variant: 'ghost', size: 'sm', onClick: () => switchTab('cases') }),
-                ].filter(Boolean)
-              : [],
-            body: !hasCaseData
-              ? h('p.muted.small', { text: state.cases.loading ? '正在统计案例结果…' : '暂时没有可统计的案例结果。' })
-              : isBaselineMode
-                ? h(
-                    'div.case-transition',
-                    null,
-                    h(
-                      'div.transition-card transition-card--good',
-                      null,
-                      h('div.transition-card__label', { text: '基线通过' }),
-                      h('div.transition-card__value', { text: String(baselineCounts().passed) }),
-                      h('div.xsmall.muted', { text: '实际结果与数据集预期一致' })
-                    ),
-                    h(
-                      'div.transition-card transition-card--bad',
-                      null,
-                      h('div.transition-card__label', { text: '基线失败' }),
-                      h('div.transition-card__value', { text: String(baselineCounts().failed) }),
-                      h('div.xsmall.muted', { text: '点击上方按钮查看失败字段' })
-                    ),
-                    h(
-                      'div.transition-card',
-                      null,
-                      h('div.transition-card__label', { text: '未执行/无结果' }),
-                      h('div.transition-card__value', { text: String(Math.max(0, state.cases.items.length - baselineCounts().passed - baselineCounts().failed)) }),
-                      h('div.xsmall.muted', { text: '案例尚未返回结果' })
-                    )
-                  )
-                : h(
-                    'div.case-transition',
-                    null,
-                    h(
-                      `div.transition-card${transitions.fixed ? ' transition-card--good' : ''}`,
-                      null,
-                      h('div.transition-card__label', { text: '新增通过' }),
-                      h('div.transition-card__value', { text: String(transitions.fixed) }),
-                      h('div.xsmall.muted', { text: '基线失败 → 候选通过' })
-                    ),
-                    h(
-                      `div.transition-card${transitions.regressed ? ' transition-card--bad' : ''}`,
-                      null,
-                      h('div.transition-card__label', { text: '新增失败（回归）' }),
-                      h('div.transition-card__value', { text: String(transitions.regressed) }),
-                      h('div.xsmall.muted', { text: '基线通过 → 候选失败' })
-                    ),
-                    h(
-                      'div.transition-card',
-                      null,
-                      h('div.transition-card__label', { text: '仍然失败' }),
-                      h('div.transition-card__value', { text: String(transitions.unchangedFail) }),
-                      h('div.xsmall.muted', { text: '基线失败 → 候选仍失败' })
-                    )
-                  ),
-          }),
-          sectionCard({
-            title: '执行与成本',
-            description: '计划数、完成数、有效数、基础设施错误、耗时与 Token。',
-            body: executionStats(),
-          })
-        ),
-        conclusionSection()
+        sectionCard({ title: '执行与成本', description: '计划数、完成数、有效数、基础设施错误、耗时与 Token。', body: executionStats() })
       )
+    );
+    const caseSection = sectionCard({
+      title: isBaselineMode ? '当前版本案例结果' : '案例变化',
+      description: isBaselineMode ? '本次只运行了基线，可直接筛选失败案例查看具体参数差异。' : '新增通过与新增失败反映候选的实际影响；案例列表包含优化集与验证集首轮结果。',
+      actions: hasCaseData
+        ? [
+            failedCaseCount()
+              ? button({
+                  label: `查看失败记录（含基线 ${failedCaseCount()}）`,
+                  variant: 'primary',
+                  size: 'sm',
+                  iconName: 'alert',
+                  onClick: () => {
+                    state.cases.onlyFailed = true;
+                    switchTab('cases');
+                  },
+                })
+              : null,
+            button({ label: '查看全部案例', variant: 'ghost', size: 'sm', onClick: () => switchTab('cases') }),
+          ].filter(Boolean)
+        : [],
+      body: !hasCaseData
+        ? h('p.muted.small', { text: state.cases.loading ? '正在统计案例结果…' : '暂时没有可统计的案例结果。' })
+        : isBaselineMode
+          ? h(
+              'div.case-transition',
+              null,
+              h('div.transition-card transition-card--good', null, h('div.transition-card__label', { text: '基线通过' }), h('div.transition-card__value', { text: String(baselineCounts().passed) }), h('div.xsmall.muted', { text: '实际结果与数据集预期一致' })),
+              h('div.transition-card transition-card--bad', null, h('div.transition-card__label', { text: '基线失败' }), h('div.transition-card__value', { text: String(baselineCounts().failed) }), h('div.xsmall.muted', { text: '点击上方按钮查看失败字段' })),
+              h('div.transition-card', null, h('div.transition-card__label', { text: '未执行/无结果' }), h('div.transition-card__value', { text: String(Math.max(0, state.cases.items.length - baselineCounts().passed - baselineCounts().failed)) }), h('div.xsmall.muted', { text: '案例尚未返回结果' }))
+            )
+          : h(
+              'div.case-transition',
+              null,
+              h(`div.transition-card${transitions.fixed ? ' transition-card--good' : ''}`, null, h('div.transition-card__label', { text: '新增通过' }), h('div.transition-card__value', { text: String(transitions.fixed) }), h('div.xsmall.muted', { text: '基线失败 → 候选通过' })),
+              h(`div.transition-card${transitions.regressed ? ' transition-card--bad' : ''}`, null, h('div.transition-card__label', { text: '新增失败（回归）' }), h('div.transition-card__value', { text: String(transitions.regressed) }), h('div.xsmall.muted', { text: '基线通过 → 候选失败' })),
+              h('div.transition-card', null, h('div.transition-card__label', { text: '仍然失败' }), h('div.transition-card__value', { text: String(transitions.unchangedFail) }), h('div.xsmall.muted', { text: '基线失败 → 候选仍失败' }))
+            ),
+    });
+    const rationale = candidateRationaleSection();
+    mount(
+      resultHost,
+      h('div.stack', null, conclusionSection(), validationSummary(), rationale, caseSection, metricDetails)
     );
   }
 
@@ -818,6 +886,10 @@ export default async function runDetailsView(container, ctx) {
     if (state.applyBusy) return;
     const candVersion = candidateVersionId();
     if (!candVersion) return;
+    if (state.run.can_apply === false || state.run.applicability?.current === false) {
+      toast(state.run.applicability?.message || '当前评测条件已变化，需要重新评测后才能应用。', { type: 'warning' });
+      return;
+    }
     let currentVersion = state.run.current_skill_version_id || state.project?.current_skill_version_id || null;
     try {
       const fresh = await api.getProject(state.run.project_id);
@@ -902,26 +974,54 @@ export default async function runDetailsView(container, ctx) {
   }
 
   async function createVerificationRun() {
+    continueNextRound();
+  }
+
+  function continueNextRound() {
+    ctx.navigate(`#/projects/${encodeURIComponent(state.run.project_id)}/overview`);
+    toast('已返回项目概览，请确认配置后再启动下一轮；不会自动发起模型调用。', { type: 'info' });
+  }
+
+  async function restoreAppliedVersion() {
+    const previousVersion = baselineVersionId();
+    const candidateVersion = candidateVersionId();
+    if (!previousVersion || !candidateVersion) return;
+    let currentVersion = state.project?.current_skill_version_id || state.run.current_skill_version_id || null;
+    try {
+      const fresh = await api.getProject(state.run.project_id);
+      state.project = fresh;
+      currentVersion = fresh.current_skill_version_id || null;
+    } catch (error) {
+      toast(`无法确认项目当前版本：${error.message}`, { type: 'error' });
+      return;
+    }
+    if (currentVersion !== candidateVersion) {
+      showConflict({
+        message: '项目当前版本已不是本轮已采用候选，不能静默恢复。',
+        details: { current_version: currentVersion, expected_current_version: candidateVersion },
+      });
+      return;
+    }
     const ok = await confirmDialog({
-      title: '新建验证运行',
-      message: '将基于当前配置与兼容基线重新执行一轮单轮优化，用于补齐验证证据。会产生新的模型调用费用。',
-      confirmText: '新建并启动',
+      title: '恢复应用前版本',
+      message: '将把项目当前版本恢复为本轮应用前的版本。恢复前会再次校验当前版本仍是本轮候选；不会删除版本内容。',
+      details: kvList([
+        { label: '应用前版本', value: previousVersion, mono: true },
+        { label: '当前候选版本', value: candidateVersion, mono: true },
+      ], { compact: true }),
+      confirmText: '确认恢复',
+      danger: true,
     });
     if (!ok) return;
     try {
-      const project = await api.getProject(state.run.project_id).catch(() => state.project);
-      const response = await api.createRun({
-        project_id: state.run.project_id,
-        mode: 'optimize',
-        parent_run_id: state.run.id,
-        expected_current_version: project?.current_skill_version_id,
-        reuse_baseline: true,
-      });
-      const runId = response?.run_id || response?.id;
-      toast('验证运行已创建', { type: 'success' });
-      if (runId) ctx.navigate(`#/runs/${encodeURIComponent(runId)}`);
+      const restored = await api.activateSkillVersion(previousVersion, candidateVersion);
+      if (state.project) state.project.current_skill_version_id = restored?.project?.current_skill_version_id || previousVersion;
+      toast('已恢复应用前版本', { type: 'success' });
+      await refreshRun({ forceTab: true });
+      if (ctx.refreshShell) await ctx.refreshShell();
     } catch (error) {
-      toast(`创建运行失败：${error.message}`, { type: 'error' });
+      if (error.status === 409 || error.code === 'conflict' || error.code === 'version_conflict') showConflict(error);
+      else toast(`恢复失败：${error.message}`, { type: 'error' });
     }
   }
 
@@ -1766,6 +1866,8 @@ export default async function runDetailsView(container, ctx) {
     try {
       const run = await api.getRun(state.run.id);
       state.run = run;
+      if (typeof ctx.updateRunState === 'function') ctx.updateRunState(run);
+      else if (previousStatus !== run.status && typeof ctx.refreshShell === 'function') await ctx.refreshShell();
       renderHeader();
       if (state.log) state.log.updateRun(run);
       const becameTerminal = !isTerminalStatus(previousStatus) && isTerminalStatus(run.status);
@@ -1776,8 +1878,10 @@ export default async function runDetailsView(container, ctx) {
         else if (state.activeTab === 'cases') loadCases({ force: true });
         else if (state.activeTab === 'diff') loadDiff({ force: true });
         renderTabs();
-      } else if (forceTab && !isTerminalStatus(run.status)) {
-        if (state.activeTab === 'cases') loadCases({ force: true });
+      } else if (forceTab) {
+        if (state.activeTab === 'result') loadResult();
+        else if (state.activeTab === 'cases') loadCases({ force: true });
+        else if (state.activeTab === 'diff') loadDiff({ force: true });
       }
       if (active()) startPolling();
     } catch (error) {

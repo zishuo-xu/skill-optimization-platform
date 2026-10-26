@@ -811,7 +811,7 @@ export default async function datasetView(container, ctx) {
     const coverage = preflight.coverage || stats.coverage || {};
     const splitCounts = stats.splits || coverage.split_counts || {};
     const invalid = Number(stats.invalid || errors.length || 0);
-    const excludeInput = h('input', { type: 'checkbox', checked: true });
+    const excludeInput = h('input', { type: 'checkbox', checked: false });
     const errorHost = h('div');
     let busy = false;
 

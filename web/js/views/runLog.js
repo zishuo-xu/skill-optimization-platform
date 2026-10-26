@@ -127,6 +127,7 @@ function eventSummary(event) {
   if (event.type === 'model_call_finished') {
     if (p.finish_reason) bits.push(p.finish_reason);
     if (p.duration_ms) bits.push(`${p.duration_ms} ms`);
+    appendResponseSummary(bits, p.response_summary);
   }
   if (event.type === 'optimizer_input_built') {
     bits.push(`失败 ${p.failure_count ?? '?'} 条 · 提供 ${p.provided_failures ?? p.failure_count ?? '?'} 条`);
@@ -139,6 +140,7 @@ function eventSummary(event) {
   if (event.type === 'optimizer_call_finished') {
     if (p.finish_reason) bits.push(p.finish_reason);
     if (p.usage?.output_tokens) bits.push(`输出 ${p.usage.output_tokens} tok`);
+    appendResponseSummary(bits, p.response_summary);
   }
   if (event.type === 'optimizer_output_parsed') {
     if (p.summary) bits.push(p.summary);
@@ -178,6 +180,23 @@ function eventSummary(event) {
   return bits.filter(Boolean).join(' · ');
 }
 
+function appendResponseSummary(bits, summary) {
+  if (typeof summary === 'string' && summary) {
+    bits.push(`输出：${truncate(summary, 70)}`);
+    return;
+  }
+  if (!summary || typeof summary !== 'object') return;
+  const names = Array.isArray(summary.tool_names) ? summary.tool_names.filter(Boolean) : [];
+  if (names.length) bits.push(`工具：${names.join('、')}`);
+  if (summary.has_text === false && names.length) bits.push('结构化工具输出');
+  const preview = summary.text_preview || summary.content_preview;
+  if (preview) bits.push(`文本：${truncate(String(preview), 70)}`);
+}
+
+function isModelOutputEvent(event) {
+  return event?.type === 'model_call_finished' || event?.type === 'optimizer_call_finished';
+}
+
 function contextBits(event) {
   const bits = [];
   if (event.case_id) bits.push({ key: 'case', text: event.case_id, mono: true });
@@ -211,6 +230,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     expanded: new Set(),
     rowNodes: new Map(),
     artifacts: new Map(),
+    modelOutputs: new Map(),
     follow: true,
     newCount: 0,
     connection: 'connecting',
@@ -251,6 +271,38 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
 
   function isTerminal() {
     return TERMINAL_STATUSES.has(currentRun?.status);
+  }
+
+  function heuristicConfigured() {
+    const environment = currentRun?.snapshot?.environment || currentRun?.environment || {};
+    return environment?.optimizer_config?.provider === 'heuristic';
+  }
+
+  function normalizeExpectedHeuristicIssue(issue) {
+    if (!issue || issue.errorCode !== 'optimizer_not_configured' || !heuristicConfigured()) return issue;
+    return {
+      ...issue,
+      level: 'warning',
+      title: '使用冻结启发式回退',
+      message: issue.message || '未配置优化模型，本轮按固定规则尝试生成候选。',
+      impact: issue.impact || '不会调用优化模型；候选仍需通过静态检查与配对验证。',
+    };
+  }
+
+  function normalizeExpectedHeuristicEvent(event) {
+    if (!event || !heuristicConfigured() || event.payload?.issue?.error_code !== 'optimizer_not_configured') return event;
+    return {
+      ...event,
+      level: 'warning',
+      payload: {
+        ...event.payload,
+        issue: {
+          ...event.payload.issue,
+          title: '使用冻结启发式回退',
+          message: event.payload.issue.message || '未配置优化模型，本轮按固定规则尝试生成候选。',
+        },
+      },
+    };
   }
 
   function computePendingCalls() {
@@ -826,6 +878,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
           'div.log-row__title',
           null,
           titleNode,
+          isModelOutputEvent(event) ? chip('查看输出', 'info') : null,
           pendingCall ? chip('等待模型响应', 'info', { iconName: 'clock' }) : null,
           event.level === 'warning' ? chip('警告', 'warning') : null,
           event.level === 'error' ? chip('错误', 'danger') : null,
@@ -916,6 +969,10 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     const responseArtifacts = artifacts.filter((artifact) => /response|raw|output/i.test(artifact.kind || artifact.id || ''));
     const otherArtifacts = artifacts.filter((artifact) => !requestArtifacts.includes(artifact) && !responseArtifacts.includes(artifact));
 
+    if (isModelOutputEvent(event)) {
+      appendSection(detail, buildModelOutputSection(event));
+    }
+
     // request / messages
     const requestData = payload.request ?? payload.messages ?? payload.prompt;
     if (requestData !== undefined || requestArtifacts.length) {
@@ -935,14 +992,15 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     }
 
     // raw response
-    const responseData =
-      payload.response ??
-      payload.raw_output ??
-      payload.raw ??
-      payload.output ??
-      payload.raw_preview ??
-      (payload.content && event.type !== 'model_delta' ? payload.content : undefined);
-    if (responseData !== undefined || responseArtifacts.length) {
+    const responseData = isModelOutputEvent(event)
+      ? undefined
+      : payload.response ??
+        payload.raw_output ??
+        payload.raw ??
+        payload.output ??
+        payload.raw_preview ??
+        (payload.content && event.type !== 'model_delta' ? payload.content : undefined);
+    if (!isModelOutputEvent(event) && (responseData !== undefined || responseArtifacts.length)) {
       appendSection(
         detail,
         buildSection(
@@ -1001,6 +1059,9 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
       'issue', 'artifacts', 'request', 'messages', 'prompt', 'response', 'raw_output',
       'raw', 'output', 'raw_preview', 'score', 'scores', 'diagnostics', 'content', 'title', 'message',
     ];
+    if (isModelOutputEvent(event)) {
+      excludedKeys.push('response_summary', 'tool_calls', 'finish_reason', 'usage', 'model', 'optimizer_output_preview', 'output_preview', 'preview_truncated');
+    }
     const summaryEntries = Object.entries(payload).filter(([key]) => {
       if (excludedKeys.includes(key)) return false;
       const value = payload[key];
@@ -1042,7 +1103,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
             : null,
           payload.error ? jsonViewer(payload.error, { label: '错误对象', redact: true, maxHeight: '240px' }) : null,
           payload.stack ? codeBlock(payload.stack, { label: '堆栈（仅展开时可见）', maxHeight: '240px' }) : null,
-          jsonViewer(redactValue(payload), { label: '完整事件载荷（脱敏）', redact: false, maxHeight: '320px' }),
+          jsonViewer(redactValue(technicalPayload(event)), { label: '完整事件载荷（脱敏）', redact: false, maxHeight: '320px' }),
           otherArtifacts.length ? h('div', null, ...otherArtifacts.map((artifact) => artifactViewer(artifact))) : null
         ),
         false
@@ -1088,6 +1149,105 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     return detail;
   }
 
+  function technicalPayload(event) {
+    const payload = { ...(event.payload || {}) };
+    if (isModelOutputEvent(event)) {
+      for (const key of ['response', 'raw_output', 'raw', 'output', 'content', 'tool_calls',
+        'raw_preview', 'output_preview', 'finish_reason', 'usage', 'model', 'response_summary', 'optimizer_output_preview', 'preview_truncated']) {
+        delete payload[key];
+      }
+    }
+    return payload;
+  }
+
+  function buildModelOutputSection(event) {
+    const host = h('div.stack');
+    const cacheKey = String(event.seq);
+    const cached = state.modelOutputs.get(cacheKey);
+    const preview = event.payload?.optimizer_output_preview || event.payload?.output_preview;
+    const renderResult = (result) => {
+      const response = result?.response;
+      const blocks = [];
+      if (result?.message && result.source !== 'legacy_case_result') {
+        blocks.push(callout({
+          tone: result.source === 'unavailable' ? 'warning' : 'info',
+          title: result.source === 'legacy_case_result' ? '来源说明' : '输出来源',
+          body: result.message,
+        }));
+      }
+      if (result?.source === 'legacy_case_result') {
+        blocks.push(callout({
+          tone: 'info',
+          title: '历史案例级结果',
+          body: result.message || '此历史记录没有逐次原始回复；以下结果来自案例保存数据，不代表本次单独模型回复。',
+        }));
+        if (Array.isArray(result.case_results)) {
+          for (const item of result.case_results) {
+            blocks.push(h('div.log-detail__legacy-output', null,
+              h('div.log-detail__issue-title', { text: `${item.phase || '案例结果'}${item.variant ? ` · ${item.variant}` : ''}${item.repeat_index ? ` · 重复 #${item.repeat_index}` : ''}` }),
+              item.selected_skills ? h('div', { text: `技能：${item.selected_skills.join?.('、') || item.selected_skills}` }) : null,
+              item.action ? h('div', { text: `动作：${item.action}` }) : null,
+              item.tool_calls ? jsonViewer(item.tool_calls, { label: '工具调用', open: true, redact: true, maxHeight: '220px' }) : null,
+              item.raw_output ? renderModelContent(item.raw_output, { maxHeight: '240px' }) : null,
+              item.missing_fields ? h('div', { text: `缺失字段：${item.missing_fields.join?.('、') || item.missing_fields}` }) : null
+            ));
+          }
+        }
+        return blocks;
+      }
+      if (!response) {
+        blocks.push(h('div.log-detail__text', { text: result?.message || '未保存逐次模型输出。' }));
+        return blocks;
+      }
+      const content = response.content;
+      const toolCalls = Array.isArray(response.tool_calls) ? response.tool_calls : [];
+      if (content) blocks.push(h('div.stack.stack--sm', null, h('div.log-detail__issue-title', { text: '正文' }), renderModelContent(content, { maxHeight: '320px' })));
+      else if (toolCalls.length) blocks.push(h('div.log-detail__text', { text: '正文为空；结构化工具调用就是本次模型输出。' }));
+      else blocks.push(h('div.log-detail__text', { text: '模型返回为空，未保存可展示的正文或工具调用。' }));
+      if (toolCalls.length) blocks.push(jsonViewer(toolCalls, { label: '工具名称与 JSON 参数', open: true, redact: true, maxHeight: '320px' }));
+      const meta = { finish_reason: response.finish_reason, usage: response.usage, model: response.model };
+      if (Object.values(meta).some((value) => value !== undefined && value !== null)) blocks.push(jsonViewer(meta, { label: '输出元数据', redact: true, maxHeight: '220px' }));
+      return blocks;
+    };
+    if (cached?.status === 'done') {
+      mount(host, ...renderResult(cached.data));
+    } else if (cached?.status === 'loading') {
+      mount(host, loadingState('正在加载模型输出…', { compact: true }));
+    } else if (cached?.status === 'error') {
+      mount(host, h('div.stack.stack--sm', null,
+        inlineError(`加载失败：${cached.error}`),
+        button({ label: '重试', variant: 'ghost', size: 'sm', onClick: () => loadModelOutput(event, host, renderResult) })
+      ));
+    } else if (preview) {
+      mount(host,
+        callout({ tone: 'info', title: event.payload?.preview_truncated ? '历史摘要（可能截断）' : '历史摘要', body: String(preview) }),
+        button({ label: '查看完整模型输出', variant: 'secondary', size: 'sm', iconName: 'eye', onClick: () => loadModelOutput(event, host, renderResult) })
+      );
+    } else {
+      mount(host, h('div.stack', null,
+        h('div.log-detail__text', { text: '模型输出按需加载；历史记录若未捕获则无法恢复逐次原始回复。' }),
+        button({ label: '查看模型输出', variant: 'secondary', size: 'sm', iconName: 'eye', onClick: () => loadModelOutput(event, host, renderResult) })
+      ));
+    }
+    return buildSection('模型输出', host, true);
+  }
+
+  async function loadModelOutput(event, host, renderResult) {
+    const key = String(event.seq);
+    state.modelOutputs.set(key, { status: 'loading' });
+    mount(host, loadingState('正在加载模型输出…', { compact: true }));
+    try {
+      const data = await api.getModelOutput(currentRun.id, event.seq);
+      state.modelOutputs.set(key, { status: 'done', data });
+      mount(host, ...renderResult(data));
+    } catch (error) {
+      state.modelOutputs.set(key, { status: 'error', error: error.message });
+      mount(host, inlineError(`加载失败：${error.message}`));
+      const retry = button({ label: '重试', variant: 'ghost', size: 'sm', onClick: () => loadModelOutput(event, host, renderResult) });
+      host.appendChild(retry);
+    }
+  }
+
   function appendSection(host, section) {
     if (section) host.appendChild(section);
   }
@@ -1107,6 +1267,14 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     if (value === undefined) return '（缺失）';
     if (typeof value === 'string') return JSON.stringify(value);
     return safeJsonStringify(value, 0);
+  }
+
+  function renderModelContent(value, { maxHeight = '320px' } = {}) {
+    if (typeof value === 'string') {
+      return codeBlock(value, { maxHeight, wrap: true,
+        label: `文本内容（共 ${value.length} 字符，完整）` });
+    }
+    return jsonViewer(value, { label: '正文', open: true, redact: true, maxHeight });
   }
 
   function renderLooseContent(value, { maxHeight = '280px' } = {}) {
@@ -1228,7 +1396,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     let added = 0;
     const addedEvents = [];
     for (const raw of items) {
-      const event = normalizeEvent(raw);
+      const event = normalizeExpectedHeuristicEvent(normalizeEvent(raw));
       if (!event) continue;
       if (mergeEvent(event)) {
         added += 1;
@@ -1236,6 +1404,10 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
       }
     }
     if (added) {
+      // A live event is authoritative evidence that the history endpoint was
+      // merely empty or behind. Do not keep showing the initial-history empty
+      // state, including when the history request resolves after SSE.
+      state.historyMissing = false;
       computePendingCalls();
       if (notify) onRunActivity && onRunActivity(addedEvents[addedEvents.length - 1], addedEvents);
       appendNewEvents(addedEvents);
@@ -1285,11 +1457,11 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   async function loadIssues() {
     try {
       const payload = await api.getRunIssues(currentRun.id);
-      const items = asItems(payload).map(normalizeIssue).filter(Boolean);
+      const items = asItems(payload).map(normalizeIssue).filter(Boolean).map(normalizeExpectedHeuristicIssue);
       state.issues = items;
       state.issueCounts = {
-        error: payload?.counts?.error ?? items.filter((issue) => issue.level === 'error').length,
-        warning: payload?.counts?.warning ?? items.filter((issue) => issue.level === 'warning').length,
+        error: heuristicConfigured() ? items.filter((issue) => issue.level === 'error').length : (payload?.counts?.error ?? items.filter((issue) => issue.level === 'error').length),
+        warning: heuristicConfigured() ? items.filter((issue) => issue.level === 'warning').length : (payload?.counts?.warning ?? items.filter((issue) => issue.level === 'warning').length),
       };
       state.issuesLoaded = true;
       renderIssues();
@@ -1303,7 +1475,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   function deriveIssuesFromEvents() {
     const items = sortedEvents()
       .filter((event) => ['warning', 'error'].includes(event.level) && event.payload?.issue)
-      .map((event) => normalizeIssue({ seq: event.seq, level: event.level, type: event.type, stage: event.stage, case_id: event.case_id, ...event.payload.issue }));
+      .map((event) => normalizeExpectedHeuristicIssue(normalizeIssue({ seq: event.seq, level: event.level, type: event.type, stage: event.stage, case_id: event.case_id, ...event.payload.issue })));
     state.issues = items.filter(Boolean);
     state.issueCounts = {
       error: state.issues.filter((issue) => issue.level === 'error').length,
@@ -1336,9 +1508,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
         if (items.length < HISTORY_PAGE_SIZE) break;
       }
       state.historyTotal = total;
-      if (loaded === 0) {
-        state.historyMissing = true;
-      }
+      state.historyMissing = loaded === 0 && state.events.size === 0;
       if (total !== null && total > state.events.size) {
         state.truncatedRange = { loaded: state.events.size, remaining: total - state.events.size };
       } else {

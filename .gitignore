@@ -8,3 +8,7 @@ __pycache__/
 .playwright-mcp-*.png
 *.log
 .run/
+
+# Local browser verification and generated artifacts
+.playwright-cli/
+output/

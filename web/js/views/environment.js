@@ -1,4 +1,4 @@
-/** 执行环境：业务 Prompt（默认折叠）、业务/优化模型、工具与预算折叠、测试连接、发布后只读。 */
+/** 执行环境：业务 Prompt（默认折叠）、业务/优化模型、工具与预算折叠、检查接入配置、发布后只读。 */
 
 import { api } from '../api_v3.js';
 import { h, mount, icon } from '../dom.js';
@@ -67,12 +67,24 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function publicCredential(value) {
+  if (value && typeof value === 'object' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.env || '')) return `env:${value.env}`;
+  const text = String(value || '').trim();
+  return /^\{?env:[A-Za-z_][A-Za-z0-9_]*\}?$/.test(text) ? text : '';
+}
+
+function credentialForSubmit(value) {
+  const text = String(value || '').trim();
+  return text === '***' ? '' : text;
+}
+
 function defaults() {
   return {
     prompt: DEFAULT_PROMPT,
     model_config: {
       provider: 'openai_http',
       base_url: '',
+      url: '',
       model: '',
       api_key_ref: '',
       temperature: 0,
@@ -81,20 +93,30 @@ function defaults() {
       stream: true,
       ws_url: '',
       request_template: {},
+      headers: {},
       stream_parser: 'sse',
       connect_timeout_s: 10,
       first_packet_timeout_s: 30,
       idle_timeout_s: 60,
       total_timeout_s: 180,
-      heartbeat_s: 20,
+      heartbeat_interval_s: 20,
       python_entry: '',
       python_version: '3.12',
     },
     optimizer_config: {
       provider: 'heuristic',
       base_url: '',
+      url: '',
+      ws_url: '',
       model: 'frozen-heuristic-v1',
       api_key_ref: '',
+      request_template: {},
+      headers: {},
+      connect_timeout_s: 10,
+      first_packet_timeout_s: 30,
+      idle_timeout_s: 60,
+      total_timeout_s: 180,
+      heartbeat_interval_s: 20,
       temperature: 0,
       max_tokens: 4096,
     },
@@ -127,11 +149,24 @@ function toForm(env) {
     return {
       ...base,
       request_template_text: '{}',
+      optimizer_request_template_text: '{}',
+      model_headers_text: '{}',
+      optimizer_headers_text: '{}',
       tool_schema_text: '[\n  {\n    "name": "list_tasks",\n    "description": "查询任务列表",\n    "parameters": {"type": "object", "properties": {}}\n  }\n]',
     };
   }
   const modelConfig = { ...base.model_config, ...(env.model_config || {}) };
   const optimizerConfig = { ...base.optimizer_config, ...(env.optimizer_config || {}) };
+  if (env.model_config?.heartbeat_interval_s == null && env.model_config?.heartbeat_s != null) {
+    modelConfig.heartbeat_interval_s = env.model_config.heartbeat_s;
+  }
+  if (env.optimizer_config?.heartbeat_interval_s == null && env.optimizer_config?.heartbeat_s != null) {
+    optimizerConfig.heartbeat_interval_s = env.optimizer_config.heartbeat_s;
+  }
+  // Literal credentials are masked by the public API. Keep those inputs empty
+  // so saving can request server-side inheritance instead of persisting ***.
+  modelConfig.api_key_ref = publicCredential(modelConfig.api_key_ref);
+  optimizerConfig.api_key_ref = publicCredential(optimizerConfig.api_key_ref);
   const runConfig = env.run_config || {};
   const budgetConfig = env.budget_config || {};
   const acceptanceConfig = env.acceptance_config || {};
@@ -173,6 +208,12 @@ function toForm(env) {
     },
     request_template_text: JSON.stringify(
       (env.model_config && env.model_config.request_template) || {}, null, 2),
+    optimizer_request_template_text: JSON.stringify(
+      (env.optimizer_config && env.optimizer_config.request_template) || {}, null, 2),
+    model_headers_text: JSON.stringify(
+      (env.model_config && env.model_config.headers) || {}, null, 2),
+    optimizer_headers_text: JSON.stringify(
+      (env.optimizer_config && env.optimizer_config.headers) || {}, null, 2),
     tool_schema_text: JSON.stringify(env.tool_schema || [], null, 2),
     reproducibility_note: env.reproducibility_note || '',
   };
@@ -194,6 +235,7 @@ export default async function environmentView(container, ctx) {
     testLoading: false,
     promptPreview: false,
     promptOpen: false,
+    credentialStatus: { model_config: {}, optimizer_config: {} },
   };
 
   const versionHost = h('div');
@@ -236,13 +278,39 @@ export default async function environmentView(container, ctx) {
       return Number.isFinite(parsed) ? parsed : fallback;
     };
     let requestTemplate = {};
+    let optimizerRequestTemplate = {};
+    let modelHeaders = {};
+    let optimizerHeaders = {};
     let toolSchema = [];
     try {
       requestTemplate = form.request_template_text?.trim() ? JSON.parse(form.request_template_text) : {};
-      if (typeof requestTemplate !== 'object' || Array.isArray(requestTemplate)) throw new Error('必须是 JSON 对象');
+      if (!requestTemplate || typeof requestTemplate !== 'object' || Array.isArray(requestTemplate)) throw new Error('必须是 JSON 对象');
     } catch (error) {
       errors.request_template_text = `请求模板不是合法 JSON：${error.message}`;
       requestTemplate = {};
+    }
+    try {
+      optimizerRequestTemplate = form.optimizer_request_template_text?.trim()
+        ? JSON.parse(form.optimizer_request_template_text) : {};
+      if (!optimizerRequestTemplate || typeof optimizerRequestTemplate !== 'object' || Array.isArray(optimizerRequestTemplate)) {
+        throw new Error('必须是 JSON 对象');
+      }
+    } catch (error) {
+      errors.optimizer_request_template_text = `优化器请求模板不是合法 JSON：${error.message}`;
+      optimizerRequestTemplate = {};
+    }
+    for (const [textPath, errorPath, label] of [
+      ['model_headers_text', 'model_headers_text', '自定义 Headers'],
+      ['optimizer_headers_text', 'optimizer_headers_text', '优化器自定义 Headers'],
+    ]) {
+      try {
+        const value = form[textPath]?.trim() ? JSON.parse(form[textPath]) : {};
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('必须是 JSON 对象');
+        if (textPath === 'model_headers_text') modelHeaders = value;
+        else optimizerHeaders = value;
+      } catch (error) {
+        errors[errorPath] = `${label}不是合法 JSON：${error.message}`;
+      }
     }
     try {
       toolSchema = form.tool_schema_text?.trim() ? JSON.parse(form.tool_schema_text) : [];
@@ -254,22 +322,32 @@ export default async function environmentView(container, ctx) {
 
     const provider = form.model_config.provider;
     const modelConfig = {
+      ...(form.model_config || {}),
       provider,
       temperature: num(form.model_config.temperature, 0),
       max_tokens: num(form.model_config.max_tokens, null),
       timeout_s: num(form.model_config.timeout_s, 120),
       stream: Boolean(form.model_config.stream),
     };
+    const removeModelFields = (fields) => fields.forEach((field) => delete modelConfig[field]);
     if (provider === 'demo_scripted') {
       modelConfig.model = form.model_config.model || 'demo-scripted-v1';
+      removeModelFields(['base_url', 'url', 'ws_url', 'api_key_ref', 'request_template', 'stream_parser',
+        'python_entry', 'python_version',
+        'connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s',
+        'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s', 'max_size', 'max_retries',
+        'retry_backoff_s', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas', 'headers']);
     } else if (provider === 'enterprise_ws') {
       modelConfig.ws_url = String(form.model_config.ws_url || '').trim();
       modelConfig.model = String(form.model_config.model || '').trim();
-      modelConfig.api_key_ref = String(form.model_config.api_key_ref || '').trim();
+      modelConfig.api_key_ref = credentialForSubmit(form.model_config.api_key_ref);
       modelConfig.request_template = requestTemplate;
-      modelConfig.stream_parser = form.model_config.stream_parser || 'sse';
+      modelConfig.headers = modelHeaders;
+      delete modelConfig.stream_parser;
+      delete modelConfig.heartbeat_s;
+      removeModelFields(['base_url', 'url', 'python_entry', 'python_version']);
       for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
-        'idle_timeout_s', 'total_timeout_s', 'heartbeat_s']) {
+        'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
         const value = num(form.model_config[key], null);
         if (value !== null) modelConfig[key] = value;
       }
@@ -279,30 +357,91 @@ export default async function environmentView(container, ctx) {
       modelConfig.python_entry = String(form.model_config.python_entry || '').trim();
       modelConfig.python_version = String(form.model_config.python_version || '').trim();
       modelConfig.model = String(form.model_config.model || '').trim();
-      modelConfig.api_key_ref = String(form.model_config.api_key_ref || '').trim();
+      modelConfig.api_key_ref = credentialForSubmit(form.model_config.api_key_ref);
       if (!modelConfig.python_entry) errors['model_config.python_entry'] = 'Python 入口不能为空';
+      removeModelFields(['base_url', 'url', 'ws_url', 'request_template', 'stream_parser',
+        'connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s',
+        'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s', 'max_size', 'max_retries',
+        'retry_backoff_s', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas', 'headers']);
     } else {
       modelConfig.base_url = String(form.model_config.base_url || '').trim();
+      modelConfig.url = String(form.model_config.url || '').trim();
       modelConfig.model = String(form.model_config.model || '').trim();
-      modelConfig.api_key_ref = String(form.model_config.api_key_ref || '').trim();
-      if (!modelConfig.base_url) errors['model_config.base_url'] = 'API 地址不能为空';
+      modelConfig.api_key_ref = credentialForSubmit(form.model_config.api_key_ref);
+      modelConfig.request_template = requestTemplate;
+      modelConfig.headers = modelHeaders;
+      if (!modelConfig.base_url && !modelConfig.url) errors['model_config.base_url'] = '基础地址或完整请求地址至少填写一个';
       if (!modelConfig.model) errors['model_config.model'] = '模型标识不能为空';
+      removeModelFields(['ws_url', 'stream_parser', 'python_entry', 'python_version', 'connect_timeout_s', 'first_packet_timeout_s',
+        'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s',
+        'max_size', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas']);
     }
 
     const optProvider = form.optimizer_config.provider || 'heuristic';
     const optimizerConfig = {
+      ...(form.optimizer_config || {}),
       provider: optProvider,
       temperature: num(form.optimizer_config.temperature, 0),
       max_tokens: num(form.optimizer_config.max_tokens, 4096),
     };
-    if (optProvider !== 'heuristic') {
+    if (optProvider === 'enterprise_ws') {
+      optimizerConfig.ws_url = String(form.optimizer_config.ws_url || '').trim();
+      optimizerConfig.model = String(form.optimizer_config.model || '').trim();
+      optimizerConfig.api_key_ref = credentialForSubmit(form.optimizer_config.api_key_ref);
+      optimizerConfig.request_template = optimizerRequestTemplate;
+      optimizerConfig.headers = optimizerHeaders;
+      delete optimizerConfig.base_url;
+      delete optimizerConfig.url;
+      delete optimizerConfig.python_entry;
+      delete optimizerConfig.python_version;
+      delete optimizerConfig.stream_parser;
+      delete optimizerConfig.heartbeat_s;
+      for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
+        'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
+        const value = num(form.optimizer_config[key], null);
+        if (value !== null) optimizerConfig[key] = value;
+      }
+      if (!optimizerConfig.ws_url) errors['optimizer_config.ws_url'] = '优化器 WebSocket 地址不能为空';
+      if (!optimizerConfig.model) errors['optimizer_config.model'] = '优化模型标识不能为空';
+    } else if (optProvider !== 'heuristic') {
       optimizerConfig.model = String(form.optimizer_config.model || '').trim();
       optimizerConfig.base_url = String(form.optimizer_config.base_url || '').trim();
-      optimizerConfig.api_key_ref = String(form.optimizer_config.api_key_ref || '').trim();
+      optimizerConfig.url = String(form.optimizer_config.url || '').trim();
+      optimizerConfig.api_key_ref = credentialForSubmit(form.optimizer_config.api_key_ref);
+      optimizerConfig.request_template = optimizerRequestTemplate;
+      optimizerConfig.headers = optimizerHeaders;
+      delete optimizerConfig.ws_url;
+      delete optimizerConfig.python_entry;
+      delete optimizerConfig.python_version;
+      delete optimizerConfig.connect_timeout_s;
+      delete optimizerConfig.first_packet_timeout_s;
+      delete optimizerConfig.idle_timeout_s;
+      delete optimizerConfig.total_timeout_s;
+      delete optimizerConfig.heartbeat_interval_s;
+      delete optimizerConfig.heartbeat_s;
+      if (optProvider !== 'openai_http') {
+        delete optimizerConfig.url;
+        delete optimizerConfig.request_template;
+        delete optimizerConfig.headers;
+      }
       if (!optimizerConfig.model) errors['optimizer_config.model'] = '优化模型标识不能为空';
-      if (!optimizerConfig.base_url) errors['optimizer_config.base_url'] = '优化模型 API 地址不能为空';
+      if (!optimizerConfig.base_url && !optimizerConfig.url) errors['optimizer_config.base_url'] = '基础地址或完整请求地址至少填写一个';
     } else if (form.optimizer_config.model) {
       optimizerConfig.model = String(form.optimizer_config.model).trim();
+      delete optimizerConfig.base_url;
+      delete optimizerConfig.ws_url;
+      delete optimizerConfig.url;
+      delete optimizerConfig.python_entry;
+      delete optimizerConfig.python_version;
+      delete optimizerConfig.api_key_ref;
+      delete optimizerConfig.request_template;
+      delete optimizerConfig.headers;
+      delete optimizerConfig.connect_timeout_s;
+      delete optimizerConfig.first_packet_timeout_s;
+      delete optimizerConfig.idle_timeout_s;
+      delete optimizerConfig.total_timeout_s;
+      delete optimizerConfig.heartbeat_interval_s;
+      delete optimizerConfig.heartbeat_s;
     }
 
     if (!form.prompt || !String(form.prompt).trim()) errors.prompt = '业务系统 Prompt 不能为空';
@@ -359,6 +498,10 @@ export default async function environmentView(container, ctx) {
   function inputFor(path, { label, hint = '', type = 'text', placeholder = '', mono = false, rows = 0, options = null, disabled = false } = {}) {
     const value = getPath(state.form, path);
     const editable = EDITABLE() && !disabled;
+    const credential = path.endsWith('.api_key_ref');
+    const credentialGroup = path.startsWith('optimizer_config.') ? 'optimizer_config' : 'model_config';
+    const credentialConfigured = Boolean(state.credentialStatus?.[credentialGroup]?.api_key_ref)
+      && state.form[credentialGroup]?.provider === state.env?.[credentialGroup]?.provider;
     const error = state.fieldErrors[path] || state.fieldErrors[path.replace('model_config.', '')] || '';
     let control;
     if (options) {
@@ -406,10 +549,10 @@ export default async function environmentView(container, ctx) {
       return h('div.form-field', null, h('span.form-field__label', { text: label }), control);
     } else {
       control = h('input.input', {
-        type,
-        placeholder,
+        type: credential ? 'password' : type,
+        placeholder: credential && credentialConfigured ? '已配置，留空表示沿用' : placeholder,
         disabled: !editable,
-        value: value ?? '',
+        value: credential ? credentialForSubmit(value) : (value ?? ''),
         class: mono ? 'mono' : '',
         oninput: (event) => {
           const next = type === 'number' ? event.target.value : event.target.value;
@@ -418,7 +561,14 @@ export default async function environmentView(container, ctx) {
         },
       });
     }
-    return formField({ label, hint, error, control: control });
+    return formField({
+      label,
+      hint: credential && credentialConfigured
+        ? `${hint ? `${hint} ` : ''}已有凭据，留空表示沿用；不会回填原值。`
+        : hint,
+      error,
+      control,
+    });
   }
 
   function renderVersionBar() {
@@ -439,7 +589,7 @@ export default async function environmentView(container, ctx) {
         onchange: (event) => selectVersion(event.target.value),
       },
       ...state.versions.map((item) =>
-        h('option', { value: item.id, selected: env && item.id === env.id }, `v${item.version_seq} · ${item.status === 'draft' ? '草稿' : '已发布'} · ${item.id}`)
+        h('option', { value: item.id, selected: env && item.id === env.id }, `v${item.version_seq} · ${item.status === 'draft' ? '草稿' : '已发布'}`)
       )
     );
     mount(
@@ -451,7 +601,6 @@ export default async function environmentView(container, ctx) {
         state.versions.length ? select : h('span.muted.small', { text: '尚无版本' }),
         env ? statusBadge(env.status, 'version') : null,
         env && env.id === project.current_environment_id ? chip('当前版本', 'accent') : null,
-        env ? h('span.mono.xsmall.muted', { text: env.hash || '' }) : null,
         env ? h('span.xsmall.muted', { text: `创建于 ${formatDateTime(env.created_at)}` }) : null,
         h('span.version-bar__spacer'),
         env && env.status === 'published' && env.id !== project.current_environment_id
@@ -472,15 +621,15 @@ export default async function environmentView(container, ctx) {
 
   /* ---------------- 配置展示 ---------------- */
   const BUSINESS_PROVIDERS = [
-    { value: 'openai_http', label: '标准 API' },
-    { value: 'enterprise_ws', label: '企业网关 WebSocket' },
+    { value: 'openai_http', label: 'HTTP API / 企业网关' },
+    { value: 'enterprise_ws', label: 'WebSocket 网关' },
     { value: 'flow', label: 'Python 流程' },
     { value: 'demo_scripted', label: '演示模型（离线）' },
   ];
   const OPTIMIZER_PROVIDERS = [
     { value: 'heuristic', label: '冻结启发式（不调用模型）' },
-    { value: 'openai_http', label: '标准 API' },
-    { value: 'enterprise_ws', label: '企业网关 WebSocket' },
+    { value: 'openai_http', label: 'HTTP API / 企业网关' },
+    { value: 'enterprise_ws', label: 'WebSocket 网关' },
     { value: 'flow', label: 'Python 流程' },
   ];
 
@@ -579,30 +728,34 @@ export default async function environmentView(container, ctx) {
           null,
           inputFor('model_config.ws_url', { label: 'WebSocket 地址', hint: 'ws:// 或 wss://，按网关约定握手与鉴权。' }),
           inputFor('model_config.model', { label: '模型标识', hint: '保留供应商返回的实际模型标识以便复现。' }),
-          inputFor('model_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用，不进入 Prompt / 日志 / 导出。' })
+          inputFor('model_config.api_key_ref', { label: '鉴权引用（可选）', hint: '仅当请求模板未显式提供 api_key 时解析并放入请求体；不会生成 Authorization。' })
         ),
         advancedSettings(
           '高级：流解析与超时',
           h(
             'div.form-grid',
             null,
-            inputFor('model_config.stream_parser', {
-              label: '流解析器',
-              options: [
-                { value: 'sse', label: 'SSE 式流（默认）' },
-                { value: 'json_lines', label: 'JSON Lines' },
-              ],
+            callout({
+              tone: 'info',
+              title: '流解析',
+              body: '适配器自动兼容 SSE 与逐帧 JSON；无需选择解析器。',
             }),
             inputFor('model_config.connect_timeout_s', { label: '连接超时（秒）', type: 'number' }),
             inputFor('model_config.first_packet_timeout_s', { label: '首包超时（秒）', type: 'number' }),
             inputFor('model_config.idle_timeout_s', { label: '空闲超时（秒）', type: 'number' }),
             inputFor('model_config.total_timeout_s', { label: '总超时（秒）', type: 'number' }),
-            inputFor('model_config.heartbeat_s', { label: '心跳间隔（秒）', type: 'number' }),
+            inputFor('model_config.heartbeat_interval_s', { label: '心跳间隔（秒）', type: 'number' }),
             inputFor('request_template_text', {
               label: '请求模板（JSON）',
               rows: 6,
               mono: true,
               hint: '保留 api_key、user 等网关字段，不自动改写为 Authorization。',
+            }),
+            inputFor('model_headers_text', {
+              label: '自定义 Headers（JSON）',
+              rows: 4,
+              mono: true,
+              hint: '显式 Authorization 优先；未显式设置时 api_key_ref 默认生成 Bearer。',
             })
           )
         )
@@ -636,9 +789,10 @@ export default async function environmentView(container, ctx) {
       h(
         'div.form-grid',
         null,
-        inputFor('model_config.base_url', { label: 'API 地址', hint: 'OpenAI 兼容的 Chat Completions 入口。' }),
+        inputFor('model_config.base_url', { label: '基础 API 地址', hint: '常见为 https://host/v1；完整路径请填下方完整请求地址。' }),
+        inputFor('model_config.url', { label: '完整请求地址（可选）', hint: '网关自定义路径；填写后不会自动补 /chat/completions。' }),
         inputFor('model_config.model', { label: '模型标识' }),
-        inputFor('model_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用，不写入日志或导出文件。' })
+        inputFor('model_config.api_key_ref', { label: '鉴权引用（可选）', hint: '不设置显式 Authorization 时，默认生成 Bearer Header；请求体 api_key 由模板独立控制。' })
       ),
       advancedSettings(
         '高级：采样与超时',
@@ -648,7 +802,15 @@ export default async function environmentView(container, ctx) {
           inputFor('model_config.temperature', { label: '温度', type: 'number', hint: '评测建议固定为 0。' }),
           inputFor('model_config.max_tokens', { label: '最大输出 Token', type: 'number' }),
           inputFor('model_config.timeout_s', { label: '超时（秒）', type: 'number' }),
-          h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle())
+          h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle()),
+          inputFor('request_template_text', {
+            label: '请求模板（JSON)', rows: 6, mono: true,
+            hint: '可配置 api_key、user、extra_body 等企业字段；显式 api_key 优先。',
+          }),
+          inputFor('model_headers_text', {
+            label: '自定义 Headers（JSON）', rows: 4, mono: true,
+            hint: '显式 Authorization 优先；否则 api_key_ref 默认生成 Bearer。',
+          })
         )
       )
     );
@@ -656,7 +818,7 @@ export default async function environmentView(container, ctx) {
 
   function testResultView() {
     if (state.testLoading) {
-      return h('div.test-result', null, h('span.spinner.spinner--sm'), h('span', { text: '正在测试连接…' }));
+      return h('div.test-result', null, h('span.spinner.spinner--sm'), h('span', { text: '正在检查配置…' }));
     }
     const result = state.testResult;
     if (!result) return null;
@@ -710,9 +872,9 @@ export default async function environmentView(container, ctx) {
       );
     } else {
       items.push(
-        { label: 'API 地址', value: config.base_url || '—', mono: true },
+        { label: '请求地址', value: config.url || config.base_url || '—', mono: true },
         { label: '模型标识', value: config.model || '—', mono: true },
-        { label: '鉴权引用', value: config.api_key_ref || '—', mono: true }
+        { label: '鉴权引用', value: publicCredential(config.api_key_ref) || (state.credentialStatus?.model_config?.api_key_ref ? '已配置' : '—'), mono: true }
       );
     }
     return factsList(items);
@@ -778,8 +940,7 @@ export default async function environmentView(container, ctx) {
             }),
           ]
         : [chip('只读', 'neutral')],
-      collapsible: true,
-      open: state.promptOpen || Boolean(state.fieldErrors.prompt),
+      collapsible: false,
       body: h(
         'div.stack',
         null,
@@ -814,7 +975,7 @@ export default async function environmentView(container, ctx) {
       description: `${providerLabel(provider)} · ${config.model || '未设置模型'}`,
       actions: [
         editable
-          ? button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', onClick: testConnection, disabled: state.testLoading })
+          ? button({ label: '检查接入配置', variant: 'secondary', size: 'sm', iconName: 'link', onClick: testConnection, disabled: state.testLoading })
           : null,
         provider === 'demo_scripted' ? chip('离线演示', 'info') : null,
       ].filter(Boolean),
@@ -826,10 +987,16 @@ export default async function environmentView(container, ctx) {
     const config = state.form.optimizer_config || {};
     const provider = config.provider || 'heuristic';
     const items = [{ label: '接入方式', value: optimizerLabel(provider) }];
-    if (provider !== 'heuristic') {
+    if (provider === 'enterprise_ws') {
+      items.push(
+        { label: 'WebSocket 地址', value: config.ws_url || '—', mono: true },
+        { label: '模型标识', value: config.model || '—', mono: true },
+        { label: '请求模板', value: config.request_template && Object.keys(config.request_template).length ? '已配置' : '未设置' }
+      );
+    } else if (provider !== 'heuristic') {
       items.push(
         { label: '模型标识', value: config.model || '—', mono: true },
-        { label: 'API 地址', value: config.base_url || '—', mono: true }
+        { label: '请求地址', value: config.url || config.base_url || '—', mono: true }
       );
     }
     return factsList(items);
@@ -852,14 +1019,75 @@ export default async function environmentView(container, ctx) {
             ? callout({
                 tone: 'info',
                 title: '不调用优化模型',
-                body: '运行时记录 optimizer_not_configured，并在冻结协议内使用启发式回退生成补丁。',
+                body: '运行时记录 optimizer_not_configured，并按固定规则尝试修复分发关键词、澄清条件、参数映射或缺失字段。候选仍须通过静态检查和配对验证。',
               })
-            : h(
-                'div.form-grid',
+            : provider === 'enterprise_ws'
+            ? h(
+                'div.stack',
                 null,
-                inputFor('optimizer_config.base_url', { label: 'API 地址' }),
-                inputFor('optimizer_config.model', { label: '优化模型标识' }),
-                inputFor('optimizer_config.api_key_ref', { label: '鉴权引用', hint: '服务端密钥引用。' })
+                h(
+                  'div.form-grid',
+                  null,
+                  inputFor('optimizer_config.ws_url', { label: 'WebSocket 地址' }),
+                  inputFor('optimizer_config.model', { label: '优化模型标识' }),
+                  inputFor('optimizer_config.api_key_ref', { label: '鉴权引用（可选）', hint: '仅当请求模板未显式提供 api_key 时放入请求体；不会生成 Authorization。' })
+                ),
+                advancedSettings(
+                  '高级：请求模板、超时与心跳',
+                  h(
+                    'div.stack',
+                    null,
+                    inputFor('optimizer_request_template_text', {
+                      label: '优化器请求模板（JSON）',
+                      rows: 6,
+                      mono: true,
+                      hint: '与业务模型模板独立；保留网关字段，不自动改写鉴权。',
+                    }),
+                    h(
+                      'div.form-grid',
+                      null,
+                      inputFor('optimizer_config.connect_timeout_s', { label: '连接超时（秒）', type: 'number' }),
+                      inputFor('optimizer_config.first_packet_timeout_s', { label: '首包超时（秒）', type: 'number' }),
+                      inputFor('optimizer_config.idle_timeout_s', { label: '空闲超时（秒）', type: 'number' }),
+                      inputFor('optimizer_config.total_timeout_s', { label: '总超时（秒）', type: 'number' }),
+                      inputFor('optimizer_config.heartbeat_interval_s', { label: '心跳间隔（秒）', type: 'number' })
+                    ),
+                    callout({
+                      tone: 'info',
+                      title: '流解析',
+                      body: '适配器自动兼容 SSE 与逐帧 JSON；无需选择解析器。',
+                    })
+                  )
+                )
+              )
+            : h(
+                'div.stack',
+                null,
+                h(
+                  'div.form-grid',
+                  null,
+                  inputFor('optimizer_config.base_url', { label: '基础 API 地址', hint: '常见为 https://host/v1；完整路径请填下方完整请求地址。' }),
+                  inputFor('optimizer_config.url', { label: '完整请求地址（可选）', hint: '填写后不会自动补 /chat/completions。' }),
+                  inputFor('optimizer_config.model', { label: '优化模型标识' }),
+                  inputFor('optimizer_config.api_key_ref', { label: '鉴权引用（可选）', hint: '不设置显式 Authorization 时，默认生成 Bearer Header；请求体 api_key 由模板独立控制。' })
+                ),
+                provider === 'openai_http'
+                  ? advancedSettings(
+                      '高级：请求模板与 Headers',
+                      h(
+                        'div.stack',
+                        null,
+                        inputFor('optimizer_request_template_text', {
+                          label: '优化器请求模板（JSON）', rows: 6, mono: true,
+                          hint: '可配置 api_key、user、extra_body 等企业字段；显式 api_key 优先。',
+                        }),
+                        inputFor('optimizer_headers_text', {
+                          label: '优化器自定义 Headers（JSON）', rows: 4, mono: true,
+                          hint: '显式 Authorization 优先；否则 api_key_ref 默认生成 Bearer。',
+                        })
+                      )
+                    )
+                  : null
               ),
           advancedSettings(
             '高级：采样参数',
@@ -1091,8 +1319,7 @@ export default async function environmentView(container, ctx) {
     return sectionCard({
       title: '接受条件',
       description: `accept-v1 · ${acceptance.validation_repeats ?? 3} 次配对验证 · 启动冻结`,
-      collapsible: true,
-      open: false,
+      collapsible: false,
       body,
     });
   }
@@ -1136,15 +1363,9 @@ export default async function environmentView(container, ctx) {
     return h(
       'div.env-snapshot',
       null,
-      ...items.map((item) =>
-        h(
-          'div.env-snapshot__item',
-          null,
-          h('div.env-snapshot__label', { text: item.label }),
-          h('div.env-snapshot__value', { text: item.value }),
-          item.hint ? h('div.env-snapshot__hint', { text: item.hint }) : null
-        )
-      )
+      h('span.env-snapshot__label', { text: '当前环境摘要' }),
+      h('span.env-snapshot__value', { text: `${items[0].value} · 优化器 ${items[1].value} · 预算 ${items[3].value}` }),
+      h('span.env-snapshot__hint', { text: '详细参数在下方配置区；启动运行时会再次展示冻结快照。' })
     );
   }
 
@@ -1199,9 +1420,9 @@ export default async function environmentView(container, ctx) {
         );
 
     const groups = [
-      ['业务接入', 'Agent 如何获得业务上下文并调用模型。', [promptSection(), businessModelSection()]],
-      ['执行与工具', '执行循环、工具协议与运行参数；启动运行后冻结。', [toolsSection(), loaderSection(), runParamsSection()]],
-      ['优化与验收', '候选生成配置与晋级判定；阈值在启动时冻结。', [optimizerSection(), budgetSection(), acceptanceSection()]],
+      ['业务接入', '先选择业务模型；Prompt 属于高级上下文设置。', [businessModelSection(), advancedSettings('高级：业务 Prompt', promptSection())]],
+      ['执行与工具', '工具协议、上下文加载和并发只在需要调整时展开。', [advancedSettings('高级：工具、上下文与并发', h('div.stack', null, toolsSection(), loaderSection(), runParamsSection()))]],
+      ['优化与验收', '优化模型与预算直接可见；验收规则按需查看。', [optimizerSection(), budgetSection(), advancedSettings('高级：接受条件', acceptanceSection())]],
     ];
     const children = [
       banner,
@@ -1223,7 +1444,7 @@ export default async function environmentView(container, ctx) {
 
   async function saveDraft(status = 'draft') {
     const { payload, errors } = serialize({ includeStatus: status });
-    if (state.env && !payload.parent_id) payload.parent_id = state.env.id;
+    if (!payload.parent_id) payload.parent_id = state.env?.id || project.current_environment_id || undefined;
     state.fieldErrors = { ...errors };
     if (Object.keys(errors).length) {
       renderForm();
@@ -1234,6 +1455,7 @@ export default async function environmentView(container, ctx) {
     try {
       const created = await api.createEnvironment(project.id, payload);
       state.env = created;
+      state.credentialStatus = created?.credential_status || state.credentialStatus;
       state.versions = [created, ...state.versions.filter((version) => version.id !== created.id)];
       state.form = toForm(created);
       state.dirty = false;
@@ -1370,7 +1592,10 @@ export default async function environmentView(container, ctx) {
     state.testResult = null;
     renderForm();
     try {
-      const result = await api.testConnection({ model_config: payload.model_config });
+      const result = await api.testConnection({
+        environment_id: state.env?.id || undefined,
+        model_config: payload.model_config,
+      });
       state.testResult = result;
     } catch (error) {
       state.testResult = { ok: false, message: error.message };
@@ -1394,6 +1619,7 @@ export default async function environmentView(container, ctx) {
     if (!env) return;
     ctx.setDirty(null);
     state.env = env;
+    state.credentialStatus = env.credential_status || { model_config: {}, optimizer_config: {} };
     state.dirty = false;
     state.fieldErrors = {};
     state.testResult = null;
@@ -1419,6 +1645,7 @@ export default async function environmentView(container, ctx) {
       if (target && !target.tool_schema) target = (await api.getEnvironment(target.id).catch(() => target)) || target;
       if (!target && detail) target = detail;
       state.env = target;
+      state.credentialStatus = target?.credential_status || { model_config: {}, optimizer_config: {} };
       state.form = toForm(target);
       state.dirty = false;
       state.fieldErrors = {};

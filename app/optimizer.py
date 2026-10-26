@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import event_types
 from . import patch as patch_module
+from .model_output import capture_model_response, response_summary
 
 OPTIMIZER_PROTOCOL_VERSION = "optimizer-v1"
 
@@ -1563,6 +1564,7 @@ def generate_candidate(context: Mapping[str, Any],
                          allow_fallback)
 
     output_preview, preview_truncated = _preview(raw_text)
+    captured = capture_model_response(response, config)
     _emit(emit, event_types.OPTIMIZER_CALL_FINISHED, {
         "model": model if isinstance(model, str) else None,
         "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
@@ -1570,6 +1572,8 @@ def generate_candidate(context: Mapping[str, Any],
         "content_chars": len(raw_text),
         "output_preview": output_preview,
         "preview_truncated": preview_truncated,
+        "response": captured,
+        "response_summary": response_summary(captured),
     }, call_id=call_id)
 
     if raw_obj is not None:

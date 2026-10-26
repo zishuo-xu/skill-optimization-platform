@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/zishuo-xu/skill-optimization-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/zishuo-xu/skill-optimization-platform/actions/workflows/ci.yml)
 
-面向产品、前端、后端、Agent 工程及测试人员：导入 Skill 包（主 Skill + 21 个子技能），
+面向产品、前端、后端、Agent 工程及测试人员：导入 Skill 包（主 Skill + 按需加载的子技能），
 固化执行环境与结构化测试集，先跑基线评测，再执行**一次点击一轮**的单轮优化：
 定位错误 → 生成一个局部补丁 → 同条件复测 → 按冻结规则判定 → 人工应用/回滚/导出。
 
@@ -57,6 +57,9 @@ bash scripts/setup.sh
 ./run.sh
 ```
 
+已有修图示例可使用 `.venv/bin/python -m app.seed --refresh-image` 更新为 12 类语流参数技能；
+它发布新版本并保留模型接入、预算和历史，不清空数据，也不发起模型调用。
+
 ### Skill 包格式
 
 支持 ZIP 导入（「Skill 包」页 →「导入 ZIP」）。ZIP 根目录必须包含主 Skill 文件，
@@ -107,7 +110,7 @@ your-skill.zip
 **推荐用下面的简化写法**，只写你关心的“选中哪个子技能 + 调什么工具/参数”：
 
 ```json
-{"query":"帮我修一修眼睛，让它更有神采","skill":"references/image-color-transfer-gallery.md","tool":{"functionName":"imageEditWorkflow","arguments":{"args":{"useOneWordFixPicture":"帮我修一修眼睛，让它更有神采"},"method":"imageOneWordFixPicture","request":{"query":"帮我修一修眼睛，让它更有神采"},"script":"scripts/ImageEditorAdaptor.ets"}},"mock":{"ok":true}}
+{"query":"帮我修一修眼睛，让它更有神采","skill":"references/image-one-word-fix.md","tool":{"functionName":"imageEditWorkflow","skillName":"gallery-image-editor","arguments":{"args":{"useOneWordFixPicture":"帮我修一修眼睛，让它更有神采"},"method":"imageOneWordFixPicture","request":{"query":"帮我修一修眼睛，让它更有神采"},"script":"scripts/ImageEditorAdaptor.ets"}},"mock":{"ok":true}}
 ```
 
 简化字段：
@@ -140,11 +143,12 @@ your-skill.zip
 - 不写 `fixtures` 时：默认按 `expected.tool_calls` 自动生成模拟返回；提供了 `mock`
   则生成**一条** `name: "*"` 的通配模拟返回，覆盖所有业务工具（错误分发也能继续产出路由诊断）；
   `mocks` 按工具配置的返回优先于通配返回。想故意测试缺模拟返回，请显式写 `"fixtures": []`。
-- 只关心工作流内部参数时（例如修图 Skill 的 `args`）：
+- 只关心工具内部参数子树时，可显式使用 `args`：
   ```json
   {"query":"把这张图调成蓝色","skill":"image_color_transfer","tool":{"name":"imageEditWorkflow","args":{"targetColor":"蓝色"}},"mock":{"ok":true}}
   ```
   平台会只比较实际调用的 `arguments.args`，外层 `method`/`script`/`request` 不参与 A 评分。
+  当前修图示例使用完整 `arguments`；同一工具承载多种 method 时应同时检查方法和包装，避免调用错方法仍通过。
 - 也可以写 `fixtures` 映射：`{"tool_name": {"whatever":"response"}}`，或传统数组。
 - 完整写法（`expected` + `fixtures` 数组）继续完全兼容，适合多路线、多工具、variants、严格比较规则等高级场景。
 
@@ -164,7 +168,7 @@ your-skill.zip
 - 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应修复或在导入时明确剔除
 
 仓库示例 `app/samples/dataset.jsonl`（45 条任务管理）与
-`app/samples/image_dataset.jsonl`（15 条渐进式修图）都使用上述简化写法，
+`app/samples/image_dataset.jsonl`（12 类语流修图，含澄清与多操作）都使用上述简化写法，
 可直接打开参考；导入后平台内部自动展开为完整的 `expected`/`fixtures`。
 
 打开页面左侧的「示例项目：任务管理」或「示例项目：修图」，进入「运行详情」查看基线与优化运行。
@@ -172,7 +176,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 233 passed
+.venv/bin/python -m pytest -q        # 306 passed
 ```
 
 ### 文档导航
@@ -204,20 +208,18 @@ your-skill.zip
 | 工具入参准确率 A | 63.33%（19/30） | **100%**（30/30） | 42.9%（9/21） | **100%** |
 | 联合通过率 J | 60.61%（20/33） | **100%**（33/33） | 37.5%（9/24） | **100%** |
 
-**示例项目：修图**（15 条：9 优化 / 4 验证 / 2 最终测试）：
-
-| 指标 | 基线（优化集） | 候选（优化集） |
-| --- | --- | --- |
-| 分发准确率 R | 50.00%（4/8） | **100%**（8/8） |
-| 工具入参准确率 A | 12.50%（1/8） | **100%**（8/8） |
-| 联合通过率 J | 11.11%（1/9） | **100%**（9/9） |
+**示例项目：修图**现为完整的语流路由示例：主 Skill 分发 12 类子技能，子技能定义参数。
+覆盖口语、否定改口、澄清及最多三步有序任务，工具期望值校验完整的 method/script/request/args。
+标准包不再故意缺参数或包含错误映射；基线已通过时不会伪造优化提升。
+离线模拟器、真实模型抽查与新增业务方法的真实 SDK 支持必须分别验证。
+具体结构见 [修图扩展设计](docs/IMAGE_SKILL_EXPANSION.md) 和 [示例说明](app/samples/README.md)。
 
 **查看失败案例**：运行详情 →「结果概览」会显示基线通过/失败数量与「只看失败案例（N）」；
 案例列表直接标出首个差异字段路径（如 `$.args.keepSubject`）；点开案例后，
 「数据集预期（评分依据）」和「实际结果（本次基线运行）」分别展示预期/实际 `args`，
 「参数差异」逐字段对照。截图见 [docs/DEMO.md](docs/DEMO.md#32-运行结果)。
 
-两个项目均按 `accept-v1` 逐项判定通过 → `decision=accept`（“评测达标，待应用”），
+产生有效改善且按 `accept-v1` 逐项判定通过的候选得到 `decision=accept`（“评测达标，待应用”），
 用户点击「应用候选」后当前版本指针更新；应用前校验项目当前版本仍等于本轮基线，
 不一致返回 `409`，不会自动覆盖。
 
@@ -333,6 +335,8 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 ---
 
 ## 8. 接入真实模型 / 企业网关
+
+优先使用标准 API；企业 HTTP 网关可配置完整请求 URL、Body 扩展字段和 Headers。内网专有协议适配与示例见 [HTTP 网关接入指南](docs/HTTP_GATEWAY_INTEGRATION.md)。
 
 在「执行环境」中选择业务模型适配器并发布新环境版本：
 

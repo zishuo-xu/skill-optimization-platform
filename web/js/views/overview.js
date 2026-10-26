@@ -32,13 +32,6 @@ import {
 } from '../format.js';
 import { DECISION_META, MODE_META, RULE_LABELS, STAGE_LABELS } from '../eventTypes.js';
 
-const IMPORT_STEPS = [
-  { key: 'skill_package', title: '导入 Skill 包', description: '上传包含 SKILL.md 与 manifest.json 的 ZIP，确认子技能映射。' },
-  { key: 'environment', title: '配置执行环境', description: '定稿业务 Prompt、模型接入与工具协议，发布为版本。' },
-  { key: 'dataset', title: '导入数据集', description: '上传 JSONL/JSON，校验案例并预览划分与覆盖。' },
-  { key: 'baseline', title: '运行基线评测', description: '在优化集上执行当前 Skill 包，得到 R、A 与 J 基线。' },
-];
-
 export default async function overviewView(container, ctx) {
   const { project } = ctx;
   let overview = null;
@@ -60,14 +53,8 @@ export default async function overviewView(container, ctx) {
       return h(
         'div.primary-action-block',
         null,
-        button({ label: '已有运行正在进行', variant: 'primary', disabled: true, iconName: 'play' }),
-        h(
-          'span.start-hint',
-          null,
-          '当前运行：',
-          h('a', { href: `#/runs/${encodeURIComponent(active.id)}` }, `${shortenId(active.id, 12)} · ${STAGE_LABELS[active.stage] || active.stage || ''}`),
-          '。运行中不能启动新运行，可先查看进度或取消。'
-        )
+        button({ label: '查看运行进度', variant: 'primary', iconName: 'play', href: `#/runs/${encodeURIComponent(active.id)}` }),
+        h('span.start-hint', { text: `${STAGE_LABELS[active.stage] || active.stage || '准备中'} · 后台运行不依赖页面保持打开` })
       );
     }
 
@@ -117,7 +104,9 @@ export default async function overviewView(container, ctx) {
       .filter((key) => key !== 'baseline')
       .map((key) => items[key]?.label || key);
     return sectionCard({
-      title: '配置完整性',
+      title: completeness.ready ? '当前配置' : '完成运行配置',
+      collapsible: completeness.ready,
+      open: !completeness.ready,
       description: completeness.ready ? '基础配置已齐备，可以运行评测。' : `还缺 ${missingLabels.length || completeness.missing.length} 项配置`,
       body: h(
         'div',
@@ -163,27 +152,7 @@ export default async function overviewView(container, ctx) {
   function metricSection() {
     const metrics = overview?.metrics;
     const baseline = overview?.baseline;
-    if (!metrics) {
-      return sectionCard({
-        title: '评测指标',
-        body: callout({
-          tone: 'neutral',
-          title: '还没有可展示的指标',
-          body: '完成配置后运行基线评测，这里会展示分发准确率（R）与工具入参准确率（A），并标注数据集版本、有效样本数与评测时间。',
-          actions: h(
-            'div',
-            null,
-            button({
-              label: '运行基线',
-              variant: 'secondary',
-              iconName: 'play',
-              disabled: !overview?.completeness?.ready,
-              onClick: () => openStartDrawer('baseline'),
-            })
-          ),
-        }),
-      });
-    }
+    if (!metrics) return h('p.overview-empty-metrics', { text: '当前配置还没有基线成绩；运行基线评测后，这里会显示分发、工具参数和联合通过率。' });
     const datasetInfo = metrics.dataset;
     const evaluatedText = metrics.evaluated_at ? formatDateTime(metrics.evaluated_at) : '—';
     const samples = metrics.routing?.evaluated ?? metrics.tool_args?.evaluated ?? null;
@@ -192,9 +161,9 @@ export default async function overviewView(container, ctx) {
 
     const cards = [];
     for (const [key, label, hint] of [
-      ['routing', '分发准确率 R', '允许路线命中 ÷ 分发有效案例'],
-      ['tool_args', '工具入参准确率 A', '完整业务工具序列与参数正确 ÷ 需工具调用的有效案例'],
-      ['joint', '联合通过率 J', '分发、动作、工具与参数全部正确 ÷ 有效案例'],
+      ['joint', '联合通过率 J', '分发、动作与工具参数全部正确'],
+      ['routing', '分发准确率 R', '子技能分发是否正确'],
+      ['tool_args', '工具入参准确率 A', '工具选择与完整参数是否正确'],
     ]) {
       const block = metrics[key];
       if (!block) continue;
@@ -257,67 +226,27 @@ export default async function overviewView(container, ctx) {
     });
   }
 
-  function guidanceSection() {
-    const runs = overview?.recent_runs?.items || [];
-    const completeness = overview?.completeness;
-    if (runs.length || !completeness) return null;
-    return sectionCard({
-      title: '开始使用',
-      description: '这个项目还没有运行记录。按顺序完成以下步骤，首次运行不展示空图表。',
-      body: h(
-        'div.stack',
-        null,
-        h(
-          'ol.import-steps',
-          { style: { marginBottom: '4px' } },
-          ...IMPORT_STEPS.map((step, index) => {
-            const item = completeness.items[step.key];
-            const done = Boolean(item && item.ok);
-            return h(
-              `li.import-step${done ? ' is-done' : ''}`,
-              null,
-              h('span.import-step__num', { text: done ? '✓' : String(index + 1) }),
-              h('span', { text: step.title })
-            );
-          })
-        ),
-        h(
-          'div',
-          null,
-          ...IMPORT_STEPS.map((step) => {
-            const item = completeness.items[step.key];
-            const done = Boolean(item && item.ok);
-            return h(
-              'div.config-item',
-              { style: { marginBottom: '8px' } },
-              h(`span.config-item__icon ${done ? '' : ''}`, null, icon(done ? 'check' : 'arrowRight', { size: 12 })),
-              h(
-                'div.config-item__body',
-                null,
-                h('div.config-item__label', { text: step.title }),
-                h('div.config-item__detail', { text: step.description })
-              ),
-              !done && item?.route ? h('a.config-item__action', { href: item.route }, '前往') : chip('已完成', 'success')
-            );
-          })
-        )
-      ),
-    });
-  }
-
   function recentRunsSection() {
     const runs = overview?.recent_runs?.items || [];
     return sectionCard({
       title: '最近运行',
       description: '刷新页面不会中断后台运行；可随时回到运行详情查看实时日志。',
       padded: false,
-      actions: runs.length > 5 ? [button({ label: '查看更多', variant: 'ghost', size: 'sm', onClick: () => toast('运行列表已显示最近 8 条', { type: 'info' }) })] : [],
+
       body: runs.length
         ? h(
             'div.run-list',
             null,
             ...runs.map((run) => {
               const decision = run.decision ? DECISION_META[run.decision] : null;
+              const historical = [
+                ['baseline_skill_version_id', 'current_skill_version_id'],
+                ['environment_id', 'current_environment_id'],
+                ['dataset_id', 'current_dataset_id'],
+              ].some(([field, current]) => run[field] && project[current] && run[field] !== project[current]);
+              const provider = run.snapshot?.environment?.provider;
+              const source = provider === 'demo_scripted' ? '离线演示' : provider === 'openai_http' ? '标准 API' : provider === 'enterprise_ws' ? '企业网关' : '';
+
               return h(
                 'a.run-list__item',
                 { href: `#/runs/${encodeURIComponent(run.id)}` },
@@ -329,11 +258,12 @@ export default async function overviewView(container, ctx) {
                     'div.run-list__title',
                     null,
                     h('span', { text: modeLabel(run.mode) }),
-                    h('span.monospace.xsmall.muted', { text: shortenId(run.id, 14) }),
-                    decision ? statusBadge(run.decision, 'decision') : null
+
+                    decision ? statusBadge(run.decision, 'decision') : null,
+                    historical ? chip('历史配置', 'neutral') : null
                   ),
                   h('div.run-list__meta', {
-                    text: `${run.stage ? STAGE_LABELS[run.stage] || run.stage : '—'} · ${formatDateTime(run.created_at)} · ${relativeTime(run.created_at)}`,
+                    text: `${source ? `${source} · ` : ''}${formatDateTime(run.created_at)} · ${relativeTime(run.created_at)}`,
                   })
                 ),
                 h('span.run-list__metrics', { text: metricsSummary(run.metrics?.candidate || run.metrics?.baseline) })
@@ -344,33 +274,8 @@ export default async function overviewView(container, ctx) {
             iconName: 'run',
             title: '还没有运行',
             description: '配置完成后运行基线评测，这里会出现运行记录与指标。',
-            actions: [
-              {
-                label: '运行基线',
-                variant: 'primary',
-                iconName: 'play',
-                onClick: () => openStartDrawer('baseline'),
-              },
-            ],
-          }),
-    });
-  }
 
-  function activeRunBanner() {
-    const active =
-      overview?.active_run ||
-      (overview?.recent_runs?.items || []).find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
-    if (!active) return null;
-    return callout({
-      tone: 'accent',
-      iconName: 'play',
-      title: '当前有运行正在进行',
-      body: `运行 ${active.id} 处于「${STAGE_LABELS[active.stage] || active.stage || '运行中'}」。后台执行不依赖页面保持打开。`,
-      actions: h(
-        'div',
-        null,
-        button({ label: '查看运行进度', variant: 'secondary', iconName: 'arrowRight', href: `#/runs/${encodeURIComponent(active.id)}` })
-      ),
+          }),
     });
   }
 
@@ -386,12 +291,12 @@ export default async function overviewView(container, ctx) {
       );
       return;
     }
+    const header = container.querySelector('.page-head');
+    if (header) header.replaceWith(makeHeader());
     mount(
       contentHost,
-      activeRunBanner(),
       completenessSection(),
       metricSection(),
-      guidanceSection(),
       recentRunsSection()
     );
   }
@@ -453,7 +358,7 @@ export default async function overviewView(container, ctx) {
           h('h3', { text: '版本快照' }),
           kvList([
             { label: 'Skill 包', value: skillVersion ? `${skillVersion.label || shortenId(skillVersion.id, 14)} · ${skillVersion.status === 'draft' ? '草稿' : '已发布'}` : '—', mono: true },
-            { label: '执行环境', value: environment ? `v${environment.version_seq} · ${environment.hash || ''}` : '—', mono: true },
+            { label: '执行环境', value: environment ? `v${environment.version_seq} · ${environment.model_config?.model || environment.model_config?.provider || '已配置'}` : '—' },
             { label: '数据集', value: dataset ? `v${dataset.version_seq} · ${dataset.case_count ?? 0} 条案例` : '—', mono: true },
             { label: '评分器', value: environment?.scorer_config?.scorer_version || 'score-v1', mono: true },
           ]),
@@ -496,7 +401,7 @@ export default async function overviewView(container, ctx) {
           kvList(
             [
               { label: '候选数量', value: mode === 'optimize' ? '1 个候选' : '—' },
-              { label: '验证重复', value: `${runConfig.repeats_validation || 3} 次配对` },
+              { label: '验证重复', value: `${environment?.acceptance_config?.validation_repeats || runConfig.validation_repeats || 3} 次配对` },
               { label: '并发', value: `${runConfig.concurrency || 3} 个案例` },
               { label: '案例上限', value: `${runConfig.max_model_calls || 12} 次模型调用 / ${runConfig.case_timeout_s || 120} 秒` },
               { label: 'Token 预算', value: budget.max_tokens ? `上限 ${formatTokens(budget.max_tokens)} Token` : '未设置（启动前必须设置）' },
@@ -506,9 +411,9 @@ export default async function overviewView(container, ctx) {
           )
         ),
         h(
-          'div.start-summary__section',
+          'details.start-summary__section',
           null,
-          h('h3', { text: '接受条件（启动后冻结）' }),
+          h('summary', { text: '查看完整接受条件' }),
           h(
             'ul',
             { style: { paddingLeft: '1.1em', color: 'var(--text-2)', fontSize: '12.5px', lineHeight: '1.8' } },
@@ -583,45 +488,18 @@ export default async function overviewView(container, ctx) {
     }
   }
 
-  mount(
-    container,
-    h(
-      'div',
-      null,
-      pageHeader({
-        title: project.name,
-        description: project.description || '项目概览与最近评测结果',
-        meta: overview?.completeness?.ready
-          ? chip('配置已就绪', 'success', { iconName: 'check' })
-          : chip('配置未完成', 'warning', { iconName: 'alert' }),
-        actions: [
-          button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => load() }),
-          primaryActionView(),
-        ],
-      })
-    ),
-    contentHost
-  );
-
-  await load();
-  // The primary action (page header) depends on loaded overview data; re-render
-  // the header once the data is available by re-mounting the whole view body.
-  if (!error && overview) {
-    const headerHost = container.querySelector('.page-head');
-    if (headerHost) {
-      const newHeader = pageHeader({
-        title: project.name,
-        description: project.description || '项目概览与最近评测结果',
-        meta: overview.completeness?.ready
-          ? chip('配置已就绪', 'success', { iconName: 'check' })
-          : chip('配置未完成', 'warning', { iconName: 'alert' }),
-        actions: [
-          button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => load() }),
-          primaryActionView(),
-        ],
-      });
-      headerHost.replaceWith(newHeader);
-    }
+  function makeHeader() {
+    return pageHeader({
+      title: project.name,
+      description: project.description || '从失败案例改进 Skill，再用独立案例验证',
+      actions: [
+        button({ label: '刷新', variant: 'ghost', iconName: 'refresh', onClick: () => load() }),
+        loading ? null : primaryActionView(),
+      ].filter(Boolean),
+    });
   }
+
+  mount(container, makeHeader(), contentHost);
+  await load();
   return () => {};
 }

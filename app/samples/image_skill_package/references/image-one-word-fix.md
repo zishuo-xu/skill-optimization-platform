@@ -1,34 +1,27 @@
-# 子技能：一句话修图（image_one_word_fix）
+# 一句话修图（image_one_word_fix）
 
-## 适用场景
+## 含义
+处理没有更专用 reference 覆盖的单一自然语言修图诉求，完整保留独立诉求，不猜测强度、颜色或滤镜。`useOneWordFixPicture` 是必填字符串，业务含义是用户完整的一句话，不截断、不改写。
 
-用户用一句自然语言描述局部或整体修图诉求，例如调整眼睛神采、肤色、光线、质感。
-该子技能不负责换色、去背景或画质增强。
-
-## 工作流调用
-
+## 参数契约
 ```json
 {
-  "functionName": "imageEditWorkflow",
-  "skillName": "gallery-image-editor",
-  "arguments": {
-    "method": "imageOneWordFixPicture",
-    "script": "scripts/ImageEditorAdaptor.ets",
-    "request": {"query": "帮我修一修眼睛，让它更有神采"},
-    "args": {"useOneWordFixPicture": "帮我修一修眼睛，让它更有神采"}
-  }
+  "method": "imageOneWordFixPicture",
+  "fields": {"useOneWordFixPicture": {"type": "string", "minLength": 1}},
+  "required": ["useOneWordFixPicture"],
+  "defaults": {},
+  "mappings": {"useOneWordFixPicture": {}}
 }
 ```
 
-## 参数
+## 澄清
+空请求或同时包含多个可拆分专用操作时先澄清或改走专用技能。
 
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `useOneWordFixPicture` | string | 是 | 用户的完整修图诉求，保留原句，不拆分子任务 |
+## 正反例
+- 正例：“把脸上的小瑕疵修自然一点”。
+- 反例：“把背景换成海边”，应使用 `image_background_replace`。
 
-- useOneWordFixPicture
-
-## 约束
-
-- 一句话修图只传入整句需求，不要额外编造强度、滤镜或颜色。
-- 如果用户同时要求换色或去背景，应交由对应子技能处理。
+## 工作流例子
+```json
+{"functionName":"imageEditWorkflow","skillName":"gallery-image-editor","arguments":{"method":"imageOneWordFixPicture","script":"scripts/ImageEditorAdaptor.ets","request":{"query":"帮我让人物更精神"},"args":{"useOneWordFixPicture":"帮我让人物更精神"}}}
+```

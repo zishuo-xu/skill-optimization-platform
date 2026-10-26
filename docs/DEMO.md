@@ -19,10 +19,10 @@ start.bat --reset
 `seed --with-optimize` 会为**两个示例项目**真实执行完整闭环：
 
 - 「示例项目：任务管理」：21 子技能 Skill 包 + 45 条数据集
-- 「示例项目：修图」：4 子技能渐进式修图 Skill 包 + 15 条数据集
+- 「示例项目：修图」：12 类语流参数子技能 + 62 条数据集（24 优化 / 21 验证 / 17 最终测试）
 
-两者都会导入 Skill 包 → 发布环境与数据集 → 跑基线 → 跑一次单轮优化（候选补丁、
-静态检查、3 次配对验证、接受规则判定）。
+两者都会导入 Skill 包、发布环境和数据集并跑基线。任务管理示例演示缺陷修复与候选接受；
+修图标准包不植入缺陷，完整基线已经通过时单轮优化可因无有效候选而拒绝。
 
 ## 2. 预期结果
 
@@ -34,32 +34,24 @@ start.bat --reset
 
 候选改动 5 个文件、9 处局部修改，静态检查通过，`decision=accept`（“评测达标，待应用”）。
 
-### 2.1 修图示例项目（渐进式 Skill）
+### 2.1 修图示例项目（主技能路由，子技能定义参数）
 
-| 指标 | 基线（优化集） | 候选（优化集） |
-| --- | --- | --- |
-| 分发准确率 R | 50.00%（4/8） | **100%（8/8）** |
-| 工具入参准确率 A | 12.50%（1/8） | **100%（8/8）** |
-| 联合通过率 J | 11.11%（1/9） | **100%（9/9）** |
+- 12 类功能：一句话修图、换色、去背景、增强、裁剪、旋转/镜像、尺寸、色调、滤镜、人像、移物、替换背景。
+- 主 `SKILL.md` 处理口语、改口、否定、专用技能优先和最多三步有序任务；只按需加载 reference。
+- 业务选择输出 `path + skillName`；工具输出 `functionName + skillName + arguments`。
+- 每个 reference 定义 method、字段含义、类型/范围、枚举、默认、澄清及完整调用示例。
+- 数据集完整比较 method、固定 script、原始 request.query 和 args，不只比较 args 子树。
+- 标准包不再故意缺参数或包含错误颜色映射。任务管理示例仍保留显式的优化练习。
+- fixtures 模拟业务工具返回；新增 method 是示例协议，不代表真实 SDK 或图片效果已经验证。
 
-演示点：
+已有项目可不清空历史直接更新：
 
-- 主 `SKILL.md` 用分发表选择 4 个修图子技能，再通过 `read_skill` 渐进式读取对应 reference；
-  读取更多 reference 不计入 R，只有一次显式子技能选择。
-- 业务工具固定为 `imageEditWorkflow`，外层 `method`、`script`、`request.query` 是固定包装；
-  数据集只比较 `arguments.args`（如 `useOneWordFixPicture`、`targetColor`、`keepSubject`、
-  `enhanceType`），即你真正关心的子技能参数。
-- 基线刻意保留 4 类缺陷：分发关键词缺失、颜色映射错误、两个必填参数缺失、缺少澄清条件；
-  冻结启发式生成 8 处局部修改，候选复测全部通过。
-- 数据集使用简化写法：`query + skill + tool.args + mock`；`tool` 里只写 args 时，
-  平台自动设置 `arguments_path: "args"`，A 只比较该子树。
+```bash
+.venv/bin/python -m app.seed --refresh-image
+```
 
-> 上表指标对应示例环境的 `demo_scripted` / `demo-image-v1` 确定性模拟器。若在执行环境
-> 切换为真实模型（如 `openai_http` + `deepseek-flash`），模型行为与指标会不同，不能与
-> 演示数字直接比较；真实模型的失败同样可在「案例对比」逐字段定位。
-
-示例环境未接真实优化模型：运行日志会明确记录 `optimizer_not_configured`、
-`fallback_started`，再使用冻结启发式回退——不会伪造模型输出。
+该命令保留既有业务模型、优化模型、预算、旧 Skill/环境/数据集与运行，发布并切换三项新版本；
+不发起模型调用。新环境与旧基线不兼容，需要重新评测。设计见 [IMAGE_SKILL_EXPANSION.md](IMAGE_SKILL_EXPANSION.md)。
 
 ## 3. 界面验证步骤
 
@@ -146,7 +138,7 @@ curl -s -OJ http://127.0.0.1:8765/api/v3/runs/$RID/report.json
 ## 5. 自动化验收
 
 ```bash
-.venv/bin/python -m pytest -q     # 233 passed
+.venv/bin/python -m pytest -q     # 306 passed
 ```
 
 A01–A20 的用例映射见 [VERIFICATION.md](VERIFICATION.md) 与

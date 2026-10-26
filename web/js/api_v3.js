@@ -236,6 +236,11 @@ export const api = {
       body: { set_current: setCurrent },
     });
   },
+  activateSkillVersion(versionId, expectedCurrentVersion) {
+    return request('POST', `/skill-versions/${encodeURIComponent(versionId)}/activate`, {
+      body: { expected_current_version: expectedCurrentVersion },
+    });
+  },
   async getSkillFile(versionId, filePath) {
     const data = await request(
       'GET',
@@ -386,6 +391,9 @@ export const api = {
         stage,
       },
     });
+  },
+  getModelOutput(runId, seq) {
+    return request('GET', `/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(seq)}/model-output`);
   },
   async getTraceArtifact(runId, artifactId) {
     const data = await request(

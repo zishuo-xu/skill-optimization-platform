@@ -259,6 +259,7 @@ export function coerceJson(value) {
   return parsed === undefined ? value : parsed;
 }
 
+const TOKEN_COUNT_KEYS = new Set(['input_tokens', 'output_tokens', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'cached_tokens', 'max_tokens']);
 const SENSITIVE_KEY = /(api[_-]?key|authorization|password|secret|token|cookie|credential|access[_-]?key)/i;
 
 /** Deep-clone and redact credential-ish values before showing/copying trace data. */
@@ -268,7 +269,8 @@ export function redactValue(value, depth = 0) {
   if (value && typeof value === 'object') {
     const out = {};
     for (const [key, val] of Object.entries(value)) {
-      if (SENSITIVE_KEY.test(key) && val !== null && val !== undefined) {
+      if (SENSITIVE_KEY.test(key) && val !== null && val !== undefined
+          && !(TOKEN_COUNT_KEYS.has(key) && typeof val === 'number')) {
         out[key] = '***';
       } else {
         out[key] = redactValue(val, depth + 1);

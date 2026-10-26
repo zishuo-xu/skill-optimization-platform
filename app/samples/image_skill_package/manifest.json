@@ -1,18 +1,18 @@
 {
-  "version": 1,
+  "version": 2,
   "main": "SKILL.md",
   "subskills": [
-    {"skill_id": "image_one_word_fix", "name": "一句话修图",
-     "path": "references/image-one-word-fix.md",
-     "description": "按一句话描述修图，例如眼睛、肤色、光线"},
-    {"skill_id": "image_color_transfer", "name": "图片换色",
-     "path": "references/image-color-transfer.md",
-     "description": "把图片整体或某一区域换成目标颜色"},
-    {"skill_id": "image_background_remove", "name": "去除背景",
-     "path": "references/image-background-remove.md",
-     "description": "去除照片背景并保留主体"},
-    {"skill_id": "image_enhance", "name": "画质增强",
-     "path": "references/image-enhance.md",
-     "description": "提亮暗图、增强清晰度与画质"}
+    {"skill_id": "image_one_word_fix", "name": "一句话修图", "path": "references/image-one-word-fix.md", "description": "按一句自然语言描述执行未被专用技能覆盖的修图诉求"},
+    {"skill_id": "image_color_transfer", "name": "图片换色", "path": "references/image-color-transfer.md", "description": "将整体或指定区域转换到用户要求的颜色"},
+    {"skill_id": "image_background_remove", "name": "去除背景", "path": "references/image-background-remove.md", "description": "移除背景并保留主体，输出透明背景"},
+    {"skill_id": "image_enhance", "name": "画质增强", "path": "references/image-enhance.md", "description": "按光线、清晰度或噪点问题增强画质"},
+    {"skill_id": "image_crop", "name": "图片裁剪", "path": "references/image-crop.md", "description": "按比例裁剪并以主体为默认焦点"},
+    {"skill_id": "image_transform", "name": "图片变换", "path": "references/image-transform.md", "description": "旋转或翻转图片"},
+    {"skill_id": "image_resize", "name": "图片缩放", "path": "references/image-resize.md", "description": "按宽度或高度调整尺寸"},
+    {"skill_id": "image_tone_adjust", "name": "色调调整", "path": "references/image-tone-adjust.md", "description": "调整亮度、对比度、饱和度或曝光"},
+    {"skill_id": "image_filter", "name": "图片滤镜", "path": "references/image-filter.md", "description": "应用胶片、黑白、复古或冷暖滤镜"},
+    {"skill_id": "image_portrait_retouch", "name": "人像美颜", "path": "references/image-portrait-retouch.md", "description": "执行磨皮、美白、瘦脸等自然人像修饰"},
+    {"skill_id": "image_object_remove", "name": "移除物体", "path": "references/image-object-remove.md", "description": "删除用户明确指出的画面物体并保留背景"},
+    {"skill_id": "image_background_replace", "name": "替换背景", "path": "references/image-background-replace.md", "description": "替换成用户明确指定的背景"}
   ]
 }

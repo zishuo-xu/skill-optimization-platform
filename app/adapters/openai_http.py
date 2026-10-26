@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Callable, Mapping
 
 from .. import event_types
+from ..model_output import capture_model_response, response_summary
 from .base import (
     AdapterError,
     ModelAdapter,
@@ -31,7 +32,7 @@ from .base import (
     resolve_secret_ref,
     safe_log_config,
 )
-from .stream_events import SSEEventAssembler, aggregate, extract_stream_error
+from .stream_events import SSEEventAssembler, SSEParseError, aggregate, extract_stream_error
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +108,12 @@ class OpenAIHTTPAdapter(ModelAdapter):
     def _headers(self, config: Mapping[str, Any]) -> dict[str, str]:
         headers = {str(k): str(v) for k, v in (config.get("headers") or {}).items()}
         lowered = {key.lower() for key in headers}
-        secret = resolve_secret_ref(config.get("api_key_ref") if config.get("api_key_ref")
-                                    is not None else config.get("api_key"))
+        ref = config.get("api_key_ref") if config.get("api_key_ref") is not None else config.get("api_key")
+        secret = None if "authorization" in lowered else resolve_secret_ref(ref)
+        if "authorization" not in lowered and isinstance(ref, str) and ref.startswith("env:") and not secret:
+            raise AdapterError("模型服务鉴权引用未解析", code="auth_failed", retryable=False)
+        if "authorization" not in lowered and isinstance(ref, Mapping) and ref.get("env") and not secret:
+            raise AdapterError("模型服务鉴权引用未解析", code="auth_failed", retryable=False)
         if secret and "authorization" not in lowered:
             headers["Authorization"] = f"Bearer {secret}"
         if "content-type" not in lowered:
@@ -133,11 +138,21 @@ class OpenAIHTTPAdapter(ModelAdapter):
             body["tools"] = tool_defs
             if config.get("tool_choice") is not None:
                 body["tool_choice"] = config["tool_choice"]
+        else:
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
         extra_body = config.get("extra_body")
         if isinstance(extra_body, Mapping):
-            body.update(extra_body)
+            # Gateway extensions are allowed, but the execution protocol is
+            # frozen here: callers cannot replace the messages/tools/model or
+            # stream controls assembled from the actual case.
+            frozen = {"model", "messages", "tools", "stream", "stream_options",
+                      "temperature", "max_tokens", "top_p", "tool_choice"}
+            body.update({key: value for key, value in extra_body.items()
+                         if key not in frozen})
         if body.get("stream"):
-            stream_options = dict(config.get("stream_options") or {})
+            stream_options = dict(body.get("stream_options") or {})
+            stream_options.update(config.get("stream_options") or {})
             stream_options.setdefault("include_usage", True)
             body["stream_options"] = stream_options
         return body
@@ -150,8 +165,16 @@ class OpenAIHTTPAdapter(ModelAdapter):
         call_id = _call_id(effective)
         attempt = 0
         total_attempts = max(0, self.max_retries) + 1
+        configured_deadline = effective.get("deadline_monotonic")
+        deadline = time.monotonic() + self.timeout_s
+        if isinstance(configured_deadline, (int, float)):
+            deadline = min(deadline, float(configured_deadline))
         while True:
             attempt += 1
+            if effective.get("cancel_check") and effective["cancel_check"]():
+                raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
+            if time.monotonic() >= deadline:
+                raise AdapterError("模型请求总超时", code="timeout", retryable=False)
             emit_event(
                 emit, event_types.MODEL_CALL_STARTED, call_id=call_id, attempt=attempt,
                 payload={
@@ -164,7 +187,9 @@ class OpenAIHTTPAdapter(ModelAdapter):
             )
             started = time.monotonic()
             try:
-                result = self._invoke_once(messages, tools, effective, emit=emit,
+                attempt_config = dict(effective)
+                attempt_config["deadline_monotonic"] = deadline
+                result = self._invoke_once(messages, tools, attempt_config, emit=emit,
                                            call_id=call_id, attempt=attempt)
             except AdapterError as exc:
                 exc.attempt = attempt
@@ -191,8 +216,15 @@ class OpenAIHTTPAdapter(ModelAdapter):
                                                   "max_attempts": total_attempts}),
                         },
                     )
-                    if delay:
-                        time.sleep(delay)
+                    while delay > 0:
+                        if effective.get("cancel_check") and effective["cancel_check"]():
+                            raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise AdapterError("模型请求总超时", code="timeout", retryable=False)
+                        pause = min(delay, remaining, 0.05)
+                        time.sleep(pause)
+                        delay -= pause
                     continue
                 emit_event(
                     emit, event_types.MODEL_CALL_FAILED, level="error",
@@ -224,6 +256,8 @@ class OpenAIHTTPAdapter(ModelAdapter):
                     "usage": result.get("usage"),
                     "tool_call_count": len(result.get("tool_calls") or []),
                     "content_chars": len(result.get("content") or ""),
+                    "response": capture_model_response(result, effective),
+                    "response_summary": response_summary(capture_model_response(result, effective)),
                 },
             )
             return result
@@ -252,7 +286,18 @@ class OpenAIHTTPAdapter(ModelAdapter):
             "url": self.url, "model": body.get("model"), "stream": stream,
             "messages": len(messages), "tools": len(tools or []),
             "config": safe_log_config(config)}))
-        timeout = httpx.Timeout(self.timeout_s)
+        configured_deadline = config.get("deadline_monotonic")
+        deadline = time.monotonic() + self.timeout_s
+        if isinstance(configured_deadline, (int, float)):
+            deadline = min(deadline, float(configured_deadline))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AdapterError("模型请求总超时", code="timeout", retryable=False)
+        # Keep the provider's normal per-request timeout; the global deadline
+        # still caps this attempt and the retry budget.  This synchronous
+        # adapter can inspect cancellation between received chunks, but cannot
+        # interrupt a blocking connect/read without switching to async httpx.
+        timeout = httpx.Timeout(min(self.timeout_s, remaining))
         try:
             with httpx.Client(timeout=timeout) as client:
                 if not stream:
@@ -267,6 +312,8 @@ class OpenAIHTTPAdapter(ModelAdapter):
                                                 cancel_check=cancel_check)
         except AdapterError:
             raise
+        except SSEParseError as exc:
+            raise AdapterError("模型流格式无效", code="format_error", retryable=False) from exc
         except httpx.TimeoutException as exc:
             raise AdapterError(f"模型请求超时（>{self.timeout_s:.0f}s）", code="timeout",
                                details={"url": self.url}, retryable=True) from exc
@@ -340,16 +387,46 @@ class OpenAIHTTPAdapter(ModelAdapter):
     def _consume_stream(self, response: Any, config: Mapping[str, Any], *,
                         emit: Callable[..., Any] | None, call_id: str,
                         attempt: int, cancel_check: Callable[[], bool] | None) -> dict[str, Any]:
+        import httpx
+
         assembler = SSEEventAssembler(
             done_markers=tuple(config.get("end_markers") or ("[DONE]",)))
         events: list[dict[str, Any]] = []
+        business_output = False
+        done_seen = False
         emit_deltas = bool(config.get("emit_deltas", False))
         try:
             for chunk in response.iter_bytes():
                 if cancel_check is not None and cancel_check():
                     raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
+                deadline = config.get("deadline_monotonic")
+                if isinstance(deadline, (int, float)) and time.monotonic() >= float(deadline):
+                    raise AdapterError("模型请求总超时", code="timeout", retryable=False)
                 new_events = assembler.feed(chunk)
                 events.extend(new_events)
+                for event in new_events:
+                    payload = event.get("json")
+                    if isinstance(payload, Mapping) and isinstance(payload.get("error"), Mapping):
+                        error = payload["error"]
+                        code = error.get("code")
+                        message = str(error.get("message") or "模型流返回错误")
+                        if code in (401, "401", "unauthorized"):
+                            raise AdapterError("模型流鉴权失败", code="auth_failed", retryable=False)
+                        if code in (429, "429", "rate_limit_exceeded"):
+                            raise AdapterError("模型流被限流", code="rate_limited",
+                                               retryable=not business_output)
+                        raise AdapterError(message, code="platform_error", details={"code": code},
+                                           retryable=False)
+                    if isinstance(payload, Mapping):
+                        for choice in payload.get("choices") or []:
+                            if not isinstance(choice, Mapping):
+                                continue
+                            delta = choice.get("delta") or {}
+                            if isinstance(delta, Mapping) and (
+                                    delta.get("content") or delta.get("tool_calls")):
+                                business_output = True
+                    if event.get("done"):
+                        done_seen = True
                 if emit_deltas:
                     for event in new_events:
                         text = _delta_text(event)
@@ -357,9 +434,22 @@ class OpenAIHTTPAdapter(ModelAdapter):
                             emit_event(emit, event_types.MODEL_DELTA, call_id=call_id,
                                        attempt=attempt,
                                        payload={"content": text, "provider": self.name})
-            events.extend(assembler.finish())
+                if done_seen:
+                    break
+            if not done_seen:
+                events.extend(assembler.finish())
         except AdapterError:
             raise
+        except SSEParseError as exc:
+            raise AdapterError("模型流格式无效", code="format_error", retryable=False) from exc
+        except httpx.TimeoutException as exc:
+            if cancel_check is not None and cancel_check():
+                raise AdapterError("模型调用已取消", code="cancelled", retryable=False) from exc
+            deadline = config.get("deadline_monotonic")
+            if isinstance(deadline, (int, float)) and time.monotonic() >= float(deadline):
+                raise AdapterError("模型请求总超时", code="timeout", retryable=False) from exc
+            raise AdapterError("模型流式连接超时", code="timeout",
+                               retryable=not business_output) from exc
         except Exception as exc:  # network cut mid-stream
             raise AdapterError("模型流式连接中断", code="stream_interrupted",
                                details={"error": type(exc).__name__},
@@ -372,7 +462,8 @@ class OpenAIHTTPAdapter(ModelAdapter):
             if code in (401, "401", "unauthorized"):
                 raise AdapterError("模型流鉴权失败", code="auth_failed", retryable=False)
             if code in (429, "429", "rate_limit_exceeded"):
-                raise AdapterError("模型流被限流", code="rate_limited", retryable=True)
+                raise AdapterError("模型流被限流", code="rate_limited",
+                                   retryable=not business_output)
             raise AdapterError(message, code="platform_error",
                                details={"code": code}, retryable=False)
 

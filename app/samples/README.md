@@ -4,15 +4,15 @@
 - `tool_schema.json`：固定业务工具协议（21 个工具，平台管理，候选不可修改）。
 - `system_prompt.md`：需求文档 §31 的固定业务系统 Prompt 模板。
 - `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/预算/接受规则等）。
-- `image_skill_package/`：第二个示例 Skill 包（主 Skill + 4 个渐进式修图子技能）。
-  每个子技能 reference 都按真实业务格式说明固定调用（`functionName=imageEditWorkflow`、
-  `skillName=gallery-image-editor`、`method`、`script`、`request.query`、`args`），
-  数据集按 `tool.args` 只比较子技能参数。
+- `image_skill_package/`：主技能负责语流理解与路由，12 个子技能负责修图参数契约。
+  子技能选择为 `path + skillName`；业务调用为 `functionName + skillName + arguments`，
+  `arguments` 包含 `method / script / request.query / args`。标准包字段完整，不再故意缺参数。
 - `image_tool_schema.json`：图片编辑工具协议（`imageEditWorkflow`）。
 - `image_system_prompt.md` / `image_environment.json`：图片编辑示例环境
   （provider=`demo_scripted`，model=`demo-image-v1`，domain=image）。
-- `image_dataset.jsonl`：15 条修图示例（9 优化 / 4 验证 / 2 最终测试），使用简化写法并只比较
-  `imageEditWorkflow` 的 `arguments.args`；外层 `method`/`script`/`request` 固定，不参与 A 评分。
+- `image_dataset.jsonl`：覆盖 12 类操作、澄清、否定改口和有序复合任务。
+  使用完整 `tool.arguments`，同时比较 method、script、原始 query 和 args，防止参数正确但调错业务方法。
+  运行 `python scripts/build_image_sample_assets.py` 可重新生成。
 - `dataset.jsonl`：45 条示例案例（33 优化集 / 8 验证集 / 4 最终测试集），含澄清、无操作、多路线与关键案例。
   该文件使用平台**简化写法**（`query + skill + tool + mock`），导入时自动展开为完整的
   `expected`/`fixtures`；`mock` 会生成一条 `name: "*"` 的通配模拟返回，因此案例 JSON
@@ -31,17 +31,22 @@
 优化器（示例环境未接真实模型，记录 `optimizer_not_configured` 后使用冻结启发式回退）会基于失败证据生成 9 处局部修改（5 个文件），
 经静态检查后生成候选、跑复测与 3 次配对验证，按 `accept-v1` 判定 `accept`。全流程无硬编码评分，评分由 `app/evaluation.py` 确定性计算。
 
-### 修图示例项目刻意保留的缺陷
+### 语流修图示例
 
-| 缺陷 | 位置 | 失败案例 |
-| --- | --- | --- |
-| 路由关键词缺失（眼睛 / 蓝色 / 背景 / 提亮） | `image_skill_package/SKILL.md` 分发表 | img_opt_fix_route、color_route、bg_route、enhance_route |
-| 换色映射错误 `夕阳 -> 红色`（应为橙色） | `image-color-transfer.md` | img_opt_color_mapping |
-| 缺少必填参数 `keepSubject` | `image-background-remove.md` | img_opt_bg_missing |
-| 缺少必填参数 `enhanceType` | `image-enhance.md` | img_opt_enhance_missing |
-| 缺少澄清条件（缺 targetColor） | `image_skill_package/SKILL.md` | img_opt_clarify |
+12 个子技能：一句话修图、换色、去背景、增强、裁剪、旋转/镜像、尺寸、色调、滤镜、人像精修、移除物体、替换背景。
+主 Skill 只决定路由、否定/改口与操作顺序；字段含义、范围、默认值、自然语言映射及澄清规则放在对应 reference。
+每个 reference 的“参数契约” JSON 与人类可读说明、完整工具调用示例保持一致。
 
-启发式回退会基于失败证据生成 8 处局部修改（4 个文件），候选复测 R/A/J 均达到 100%。
+这是本仓库的示例工作流协议，新增 method 不代表外部 `ImageEditorAdaptor.ets` SDK 已实现；
+fixtures 模拟业务工具返回，不实际生成图片。主 Skill 与 references 可直接作为路由/参数契约参考。
+标准包不再为制造优化提升而植入错误；基线已全通过时不生成虚假改进，优化可能因无有效候选而拒绝。
+需要演示失败修复时可使用任务管理示例或在隔离测试中显式构造缺陷变体。
+
+已有本地修图项目可执行 `.venv/bin/python -m app.seed --refresh-image`：
+发布新的 Skill/工具协议/数据集版本，保留业务模型、优化模型、预算及所有历史；该操作不调用模型。
+不要用 `--reset` 覆盖自己的接入配置。
+
+设计与验证边界见 `docs/IMAGE_SKILL_EXPANSION.md`。
 
 ## 关于 `demo_scripted`
 

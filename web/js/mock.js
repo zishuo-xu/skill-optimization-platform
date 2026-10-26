@@ -1986,6 +1986,19 @@ async function fetchImpl({ method, path, query = {}, body }) {
     return ok(clone(version));
   }
 
+  match = path.match(/^\/skill-versions\/([^/]+)\/activate$/);
+  if (match && method === 'POST') {
+    const version = skillVersions.find((item) => item.id === decodeURIComponent(match[1]));
+    if (!version) return notFound('Skill 版本不存在');
+    const project = projects.find((item) => item.id === version.project_id);
+    if (!project) return notFound('项目不存在');
+    if (body.expected_current_version !== undefined && project.current_skill_version_id !== body.expected_current_version) {
+      throw new ApiError('项目当前 Skill 已变更', { code: 'version_conflict', status: 409 });
+    }
+    project.current_skill_version_id = version.id;
+    return ok(clone(version));
+  }
+
   match = path.match(/^\/skill-versions\/([^/]+)\/publish$/);
   if (match && method === 'POST') {
     const version = skillVersions.find((item) => item.id === decodeURIComponent(match[1]));
@@ -2405,6 +2418,21 @@ async function fetchImpl({ method, path, query = {}, body }) {
     const runId = decodeURIComponent(match[1]);
     findRun(runId);
     return ok(issuesFor(runId));
+  }
+
+  match = path.match(/^\/runs\/([^/]+)\/events\/(\d+)\/model-output$/);
+  if (match && method === 'GET') {
+    const runId = decodeURIComponent(match[1]);
+    findRun(runId);
+    const event = (runEvents.get(runId) || []).find(item => item.seq === Number(match[2]));
+    if (!event) return notFound('运行记录不存在');
+    const payload = event.payload || {};
+    const saved = payload.response || payload.raw_output || payload.output_preview;
+    return ok({
+      source: saved ? 'captured' : 'unavailable', scope: 'model_call', case_results: [],
+      response: saved ? (typeof saved === 'string' ? { content: saved, tool_calls: [] } : clone(saved)) : null,
+      message: saved ? '演示事件中保存的返回示例。' : '此演示事件没有逐次返回内容；真实新运行会保存模型输出。',
+    });
   }
 
   match = path.match(/^\/runs\/([^/]+)\/event-history$/);

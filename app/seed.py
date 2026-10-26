@@ -15,7 +15,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import config, db, persistence, services, single_round, skill_package
+from . import config, dataset as dataset_module, db, hashing, persistence, services, single_round, skill_package
+from .errors import ConflictError, ValidationError
 from .worker import Worker
 
 DEMO_PROJECT_NAME = "示例项目：任务管理"
@@ -73,9 +74,9 @@ DEMO_SPECS = [
     },
     {
         "name": DEMO_IMAGE_PROJECT_NAME,
-        "description": "使用渐进式图片编辑 Skill 包演示分发、工具参数与单轮优化闭环。",
+        "description": "将用户修图语流分发到 12 类子技能，生成有序、完整的工作流参数。",
         "zip": build_image_package_zip,
-        "version_message": "示例图片编辑 Skill 包（主 Skill + 4 个子技能）",
+        "version_message": "语流修图 Skill 包（主技能路由 + 12 类参数子技能）",
         "environment": "image_environment.json",
         "prompt": "image_system_prompt.md",
         "tools": "image_tool_schema.json",
@@ -156,6 +157,98 @@ def seed(with_optimize: bool) -> dict:
     return {"projects": results}
 
 
+def refresh_image_sample() -> dict:
+    """Publish the expanded image assets without resetting user data or models.
+
+    All three versions are validated and saved before a single guarded pointer
+    update. This command does not invoke any model or change historical runs.
+    """
+    db.init_db()
+    spec = next(item for item in DEMO_SPECS if item["name"] == DEMO_IMAGE_PROJECT_NAME)
+    existing = [p for p in persistence.list_projects() if p["name"] == spec["name"]]
+    if not existing:
+        raise ValidationError("修图示例尚未初始化，请先运行 python -m app.seed")
+    project = existing[0]
+    for status in config.ACTIVE_RUN_STATUSES:
+        if persistence.list_runs(project_id=project["id"], status=status, limit=1)["total"]:
+            raise ConflictError("修图项目仍有活动运行，请等待结束后更新示例")
+
+    previous = {key: project.get(key) for key in (
+        "current_skill_version_id", "current_environment_id", "current_dataset_id")}
+    template = _load_json(config.SAMPLES_DIR / spec["environment"])
+    old_env = persistence.get_environment(previous["current_environment_id"]) \
+        if previous["current_environment_id"] else template
+    env_payload = dict(old_env)
+    env_payload["prompt"] = (config.SAMPLES_DIR / spec["prompt"]).read_text(encoding="utf-8")
+    env_payload["tool_schema"] = _load_json(config.SAMPLES_DIR / spec["tools"])
+    for key, fields in (("loader_config", ("max_steps",)),
+                        ("run_config", ("max_model_calls",))):
+        env_payload[key] = dict(old_env.get(key) or template[key])
+        for field in fields:
+            env_payload[key][field] = max(int(env_payload[key].get(field) or 0),
+                                          int(template[key][field]))
+    env_payload["reproducibility_note"] = (
+        "12 类修图示例协议；模型接入配置沿用既有版本。新增 method 需由真实业务 SDK 实现；"
+        "demo_scripted 成绩只代表确定性模拟器。")
+    model = env_payload["model_config"]
+    env_payload["adapter_hash"] = hashing.hash_json({
+        "provider": model.get("provider"), "model": model.get("model"),
+        "request_template": model.get("request_template"),
+        "stream_parser": model.get("stream_parser")})
+
+    package = skill_package.import_package(spec["zip"]())
+    if package["errors"]:
+        raise ValidationError("新版修图包校验失败", details=package["errors"])
+    content = (config.SAMPLES_DIR / spec["dataset"]).read_bytes()
+    items, _ = dataset_module.parse_payload(content, spec["dataset"])
+    split_config = {"optimize": 0.7, "validation": 0.2, "final_test": 0.1}
+    report = dataset_module.validate_and_prepare(
+        items, manifest=package["manifest"], tool_schema=env_payload["tool_schema"],
+        split_config=split_config, seed=42)
+    if report["errors"]:
+        raise ValidationError("新版修图数据集校验失败", details=report["errors"])
+
+    old_files = services._read_version_files(previous["current_skill_version_id"]) \
+        if previous["current_skill_version_id"] else {}
+    old_dataset = persistence.get_dataset(previous["current_dataset_id"]) \
+        if previous["current_dataset_id"] else {}
+    if (old_files == package["files"]
+            and old_env.get("hash") == persistence.compute_environment_hash(env_payload)
+            and old_dataset.get("hash") == hashing.hash_json(report["cases"])):
+        return {"project": project, "updated": False, "case_count": len(report["cases"])}
+
+    version = persistence.create_skill_version(
+        project["id"], package["files"], package["manifest"],
+        parent_id=previous["current_skill_version_id"], status="published",
+        message=spec["version_message"], set_current=False)
+    env = services.create_environment(
+        project["id"], env_payload, parent_id=previous["current_environment_id"],
+        status="published", set_current=False)
+    dataset = persistence.create_dataset(
+        project["id"], report["cases"], split_config,
+        source_name=spec["dataset_name"], parent_id=previous["current_dataset_id"],
+        import_report={k: report.get(k) for k in ("errors", "warnings", "stats")},
+        status="published", set_current=False)
+    with db.transaction() as conn:
+        changed = conn.execute(
+            "UPDATE projects SET current_skill_version_id=?, current_environment_id=?,"
+            " current_dataset_id=?, description=?, updated_at=? WHERE id=?"
+            " AND current_skill_version_id IS ? AND current_environment_id IS ?"
+            " AND current_dataset_id IS ?",
+            (version["id"], env["id"], dataset["id"], spec["description"],
+             persistence.now_iso(), project["id"],
+             previous["current_skill_version_id"], previous["current_environment_id"],
+             previous["current_dataset_id"])).rowcount
+        if changed != 1:
+            raise ConflictError("更新期间项目配置已变化，已保留新版本但未切换当前指针")
+    persistence.append_audit(project["id"], "sample.image.refresh", {
+        "previous": previous, "skill_version_id": version["id"],
+        "environment_id": env["id"], "dataset_id": dataset["id"]})
+    return {"project": persistence.get_project(project["id"]), "updated": True,
+            "case_count": len(report["cases"]), "skill_version": version,
+            "environment": env, "dataset": dataset}
+
+
 def _print_metrics(run: dict, key: str) -> None:
     metrics = (run.get("metrics") or {}).get(key) or {}
     for name, label in (("routing", "分发准确率 R"), ("tool_args", "工具入参准确率 A"),
@@ -171,7 +264,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset", action="store_true", help="清空本地 data/ 后重建")
     parser.add_argument("--with-optimize", action="store_true",
                         help="创建并执行一次单轮优化")
+    parser.add_argument("--refresh-image", action="store_true",
+                        help="为已有修图示例发布新版包/协议/数据集，保留模型配置和历史；不调用模型")
     args = parser.parse_args(argv)
+    if args.refresh_image:
+        if args.reset or args.with_optimize:
+            parser.error("--refresh-image 不与 --reset/--with-optimize 混用")
+        refreshed = refresh_image_sample()
+        project = refreshed["project"]
+        print(f"修图示例{'已更新' if refreshed['updated'] else '已是最新'}: {project['id']}"
+              f"（12 个子技能 / {refreshed['case_count']} 个案例；未发起模型调用）")
+        return 0
     if args.reset:
         reset_data()
     seed(args.with_optimize)

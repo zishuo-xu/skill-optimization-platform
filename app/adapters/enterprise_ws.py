@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Callable, Mapping
 
 from .. import event_types
+from ..model_output import capture_model_response, response_summary
 from .base import (
     AdapterError,
     ModelAdapter,
@@ -36,8 +37,9 @@ from .base import (
     json_dumps,
     normalize_tool_definitions,
     safe_log_config,
+    resolve_secret_ref,
 )
-from .stream_events import SSEEventAssembler, aggregate, extract_stream_error
+from .stream_events import SSEEventAssembler, SSEParseError, aggregate, extract_stream_error
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ class EnterpriseWSAdapter(ModelAdapter):
         self.end_markers = tuple(config.get("end_markers") or DEFAULT_END_MARKERS)
         self.accept_finish_reason_as_done = bool(
             config.get("accept_finish_reason_as_done", True))
+        self.finish_grace_s = float(config.get("finish_grace_s", 1.0))
         self.emit_deltas = bool(config.get("emit_deltas", False))
 
     # -- configuration ----------------------------------------------------- #
@@ -138,9 +141,21 @@ class EnterpriseWSAdapter(ModelAdapter):
             body["tools"] = tool_defs
             if config.get("tool_choice") is not None:
                 body["tool_choice"] = config["tool_choice"]
+        else:
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
         extra_body = config.get("extra_body")
         if isinstance(extra_body, Mapping) and "extra_body" not in body:
             body["extra_body"] = dict(extra_body)
+        if ("api_key" not in body or body.get("api_key") == "***") and (config.get("api_key_ref") is not None or
+                                      config.get("api_key") is not None):
+            ref = config.get("api_key_ref") if config.get("api_key_ref") is not None else config.get("api_key")
+            secret = resolve_secret_ref(ref)
+            if secret is None or secret == "***":
+                raise AdapterError("企业网关凭据引用不可用", code="auth_failed", retryable=False)
+            body["api_key"] = secret
+        if body.get("api_key") == "***":
+            raise AdapterError("企业网关凭据不可用", code="auth_failed", retryable=False)
         stream_options = config.get("stream_options")
         if stream_options is not None and "stream_options" not in body:
             body["stream_options"] = dict(stream_options)
@@ -157,6 +172,10 @@ class EnterpriseWSAdapter(ModelAdapter):
                                retryable=False)
         body = self.build_request_body(messages, tools, effective)
         total_attempts = max(0, self.max_retries) + 1
+        deadline = time.monotonic() + self.total_timeout_s
+        configured_deadline = effective.get("deadline_monotonic")
+        if isinstance(configured_deadline, (int, float)):
+            deadline = min(deadline, float(configured_deadline))
         logger.info("enterprise_ws invoke %s", json_dumps({
             "ws_url": self.ws_url,
             "model": body.get("model"),
@@ -180,8 +199,14 @@ class EnterpriseWSAdapter(ModelAdapter):
             )
             started = time.monotonic()
             try:
+                if effective.get("cancel_check") and effective["cancel_check"]():
+                    raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
+                if time.monotonic() >= deadline:
+                    raise AdapterError("模型调用超过总超时", code="timeout", retryable=False)
+                attempt_config = dict(effective)
+                attempt_config["deadline_monotonic"] = deadline
                 result = asyncio.run(self._run_once(
-                    body, effective, emit=emit, call_id=call_id, attempt=attempt))
+                    body, attempt_config, emit=emit, call_id=call_id, attempt=attempt))
             except AdapterError as exc:
                 exc.attempt = attempt
                 partial = bool(getattr(exc, "partial", False))
@@ -209,7 +234,13 @@ class EnterpriseWSAdapter(ModelAdapter):
                         },
                     )
                     if delay:
-                        time.sleep(delay)
+                        wait_until = min(time.monotonic() + delay, deadline)
+                        while time.monotonic() < wait_until:
+                            if effective.get("cancel_check") and effective["cancel_check"]():
+                                raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
+                            time.sleep(min(0.05, wait_until - time.monotonic()))
+                    if time.monotonic() >= deadline:
+                        raise AdapterError("模型调用超过总超时", code="timeout", retryable=False)
                     continue
                 emit_event(
                     emit, event_types.MODEL_CALL_FAILED, level="error",
@@ -242,6 +273,8 @@ class EnterpriseWSAdapter(ModelAdapter):
                     "usage": result.get("usage"),
                     "tool_call_count": len(result.get("tool_calls") or []),
                     "content_chars": len(result.get("content") or ""),
+                    "response": capture_model_response(result, effective),
+                    "response_summary": response_summary(capture_model_response(result, effective)),
                 },
             )
             return result
@@ -262,12 +295,17 @@ class EnterpriseWSAdapter(ModelAdapter):
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.total_timeout_s
+        configured_deadline = config.get("deadline_monotonic")
+        if isinstance(configured_deadline, (int, float)):
+            deadline = min(deadline, float(configured_deadline))
         cancel_check = config.get("cancel_check")
         assembler = SSEEventAssembler(done_markers=self.end_markers)
         events: list[dict[str, Any]] = []
         finish_reason: str | None = None
         received_frames = 0
         content_chars = 0
+        business_output = False
+        finish_deadline: float | None = None
         model_name = str(config.get("model") or "")
         connect_kwargs: dict[str, Any] = {
             "open_timeout": self.connect_timeout_s,
@@ -293,16 +331,27 @@ class EnterpriseWSAdapter(ModelAdapter):
                     if now >= deadline:
                         raise self._partial_error(
                             AdapterError("模型调用超过总超时", code="timeout",
-                                         retryable=True), received_frames)
-                    if received_frames == 0 and now >= first_packet_deadline:
+                                         retryable=True), received_frames,
+                            business_output=business_output)
+                    # A finish_reason is a valid business response even when
+                    # content is empty; its grace window takes precedence over
+                    # the first-content deadline while tail usage/DONE arrives.
+                    if finish_deadline is not None and now >= finish_deadline:
+                        break
+                    if finish_deadline is None and not business_output and now >= first_packet_deadline:
                         raise AdapterError("等待模型首包超时", code="timeout",
                                            retryable=True)
+                    # Once any frame (including a heartbeat) has arrived, use
+                    # the configured idle window. Heartbeats don't satisfy the
+                    # first-business-packet deadline, but they must not keep a
+                    # stalled attempt alive until the gateway closes it.
                     idle_limit = (self.idle_timeout_s if received_frames
                                   else self.first_packet_timeout_s)
-                    if now - last_activity >= idle_limit:
+                    if finish_deadline is None and now - last_activity >= idle_limit:
                         raise self._partial_error(
                             AdapterError("模型流空闲超时", code="timeout",
-                                         retryable=True), received_frames)
+                                         retryable=True), received_frames,
+                            business_output=business_output)
                     try:
                         frame = await asyncio.wait_for(
                             websocket.recv(), timeout=_POLL_INTERVAL)
@@ -318,11 +367,25 @@ class EnterpriseWSAdapter(ModelAdapter):
                             payload={"provider": self.name, "phase": "first_packet",
                                      "bytes": size},
                         )
-                    new_events = assembler.feed(frame)
+                    try:
+                        new_events = assembler.feed(frame)
+                    except SSEParseError as exc:
+                        raise AdapterError("企业网关流格式解析失败", code="format_error",
+                                           details={"error": str(exc)}, retryable=False) from exc
                     events.extend(new_events)
+                    early_error = extract_stream_error(new_events)
+                    if early_error is not None:
+                        error_code = early_error.get("code")
+                        message = str(early_error.get("message") or "企业网关返回错误")
+                        if error_code in (401, "401", "unauthorized"):
+                            raise AdapterError(message, code="auth_failed", retryable=False)
+                        if error_code in (429, "429", "rate_limit_exceeded"):
+                            raise AdapterError(message, code="rate_limited", retryable=not business_output)
+                        raise AdapterError(message, code="platform_error", retryable=False)
                     for event in new_events:
                         text = _first_packet_text(event)
                         if text:
+                            business_output = True
                             content_chars += len(text)
                             if self.emit_deltas:
                                 emit_event(emit, event_types.MODEL_DELTA,
@@ -330,10 +393,17 @@ class EnterpriseWSAdapter(ModelAdapter):
                                            payload={"provider": self.name,
                                                     "phase": "receiving",
                                                     "content": text})
+                        payload = event.get("json")
+                        if isinstance(payload, Mapping):
+                            for choice in payload.get("choices") or []:
+                                delta = choice.get("delta") if isinstance(choice, Mapping) else None
+                                if isinstance(delta, Mapping) and delta.get("tool_calls"):
+                                    business_output = True
                         reason = _payload_finish_reason(event)
                         if reason:
                             finish_reason = reason
-                        payload = event.get("json")
+                            if self.accept_finish_reason_as_done and finish_deadline is None:
+                                finish_deadline = loop.time() + max(0.0, self.finish_grace_s)
                         if isinstance(payload, Mapping) and isinstance(
                                 payload.get("model"), str):
                             model_name = payload["model"]
@@ -351,19 +421,21 @@ class EnterpriseWSAdapter(ModelAdapter):
             raise AdapterError(f"企业网关握手失败（HTTP {status}）", code="network_error",
                                details={"status": status}, retryable=True) from exc
         except ConnectionClosed as exc:
-            interrupted = not (finish_reason is not None
-                               and self.accept_finish_reason_as_done)
+            close_code = None
+            for attribute in ("rcvd", "sent"):
+                frame = getattr(exc, attribute, None)
+                if frame is not None and getattr(frame, "code", None) is not None:
+                    close_code = frame.code
+                    break
+            interrupted = (close_code not in (None, 1000, 1001) or
+                           not (finish_reason is not None and
+                                self.accept_finish_reason_as_done))
             if interrupted:
-                close_code = None
-                for attribute in ("rcvd", "sent"):
-                    frame = getattr(exc, attribute, None)
-                    if frame is not None and getattr(frame, "code", None) is not None:
-                        close_code = frame.code
-                        break
                 raise self._partial_error(
                     AdapterError("模型流连接中断，未收到结束标记",
                                  code="stream_interrupted", retryable=False),
-                    received_frames, details={"close_code": close_code})
+                    received_frames, business_output=business_output,
+                    details={"close_code": close_code})
         except AdapterError:
             raise
         except (OSError, asyncio.TimeoutError) as exc:
@@ -396,7 +468,8 @@ class EnterpriseWSAdapter(ModelAdapter):
             else:
                 raise self._partial_error(
                     AdapterError("模型流在结束标记前中断", code="stream_interrupted",
-                                 retryable=False), received_frames)
+                                 retryable=False), received_frames,
+                    business_output=business_output)
         return {
             "content": result["content"],
             "tool_calls": result["tool_calls"],
@@ -415,8 +488,9 @@ class EnterpriseWSAdapter(ModelAdapter):
 
     @staticmethod
     def _partial_error(error: AdapterError, received_frames: int,
-                       *, details: Mapping[str, Any] | None = None) -> AdapterError:
-        error.partial = received_frames > 0  # type: ignore[attr-defined]
+                       *, business_output: bool,
+                       details: Mapping[str, Any] | None = None) -> AdapterError:
+        error.partial = business_output  # type: ignore[attr-defined]
         error.details = {
             "frames": received_frames,
             **(dict(details) if details else {}),

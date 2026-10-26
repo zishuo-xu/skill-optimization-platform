@@ -155,7 +155,7 @@ export const RUN_STATUS_META = {
 };
 
 export const DECISION_META = {
-  accept: { label: '评测达标，待应用', short: '达标待应用', icon: 'check', tone: 'success' },
+  accept: { label: '评测有改善', short: '有改善', icon: 'check', tone: 'success' },
   reject: { label: '未达标', short: '未达标', icon: 'x', tone: 'danger' },
   inconclusive: { label: '证据不足', short: '证据不足', icon: 'info', tone: 'warning' },
 };

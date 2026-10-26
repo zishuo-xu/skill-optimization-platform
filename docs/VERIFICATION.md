@@ -1,10 +1,40 @@
 # 验收执行记录（A01–A20 + 界面联调）
 
+## 模型输出可见性验收
+
+- 全量 pytest：364 passed，1 个已有弃用提示；新增 18 项回归。
+- 普通文本、tool-only、超长 artifact、脱敏、旧案例结果、API 隔离与浏览器按需查看均已验证；现有真实记录只读检查，无新增真实模型调用。
+- 使用与证据见 [MODEL_OUTPUT_VISIBILITY.md](MODEL_OUTPUT_VISIBILITY.md)。
+
+## 2026-10-25 标准 API 与企业 HTTP 网关验收
+
+- 全量 pytest：346 passed，1 个已有弃用提示；本批新增 27 项网关/配置回归。
+- 本地真实 HTTP/WS socket 验证流结束、usage、延迟、鉴权、扩展 Body/Headers、deadline、重试边界；隔离浏览器验证完整 URL 与模板/凭据保存发布。
+- 真实内网网关尚未验收；详见 [专项记录](ENTERPRISE_GATEWAY_REVIEW.md) 和 [内网接入指南](HTTP_GATEWAY_INTEGRATION.md)。
+
+## 2026-10-25 最小界面改版验收
+
+- 全量 pytest：319 passed；新增 13 项回归，保留 1 个已有弃用警告。
+- 结果页首屏操作、验证集统计口径、过期候选禁用、应用与恢复、凭据保护、空历史后 SSE、终态全局同步与 390px 布局已做隔离浏览器验证。
+- 原数据全 13 表与备份一致；本批没有调用付费模型。
+- 证据、边界与截图路径见 [MINIMAL_REDESIGN.md](MINIMAL_REDESIGN.md#已完成验收2026-10-25)。
+
+## 2026-10-25 修图语流扩展验收
+
+- 主技能分发、12 个参数子技能、62 条案例（24 优化 / 21 验证 / 17 最终测试）。
+- 全量 `.venv/bin/python -m pytest -q`：306 passed，1 个现有 Starlette/httpx 弃用警告。
+- 修图案例逐条经过 execution 与完整协议评分；另验证三步渐进加载、缺参零业务调用、错误 method/script 拒绝、旧 v1 执行兼容。
+- 已配置真实业务模型（openai_http / deepseek-flash）抽查 16 条独立编写的语流：首轮 15/16，补充超限澄清的 finish 选择一致性指令后 16/16；这些样本已用于开发验证，不作为全新留出集成绩。
+- 真实模型抽查不使用 expected 构造模型请求；业务工具仍使用 fixtures，没有验收真实图片处理结果。
+- 浏览器确认已有项目可查看 12 个子技能及新增 reference；新版本发布保留了 3 条历史运行、原模型/优化器/预算配置。
+- `--refresh-image` 连续调用第二次无新增版本；ZIP 14 文件/12 reference 可导入；Skill Creator 校验通过；数据生成器重复运行内容一致。
+- 设计见 [IMAGE_SKILL_EXPANSION.md](IMAGE_SKILL_EXPANSION.md)，抽查与截图在 `output/playwright/`。
+
 ## 1. 自动化验收
 
 ```bash
 bash scripts/setup.sh
-.venv/bin/python -m pytest -q          # 233 passed
+.venv/bin/python -m pytest -q          # 364 passed
 ```
 
 用例按需求编号组织在 `tests/`：
@@ -28,7 +58,7 @@ bash scripts/setup.sh
 | A19 | 取消/崩溃恢复后不存在永久执行中的步骤 | `test_a19_cancel_restart.py` |
 | A20 | 凭据不出现在日志/报告/导出/接口；观测不改变评分 | `test_a20_security.py` |
 
-## 2. 界面联调（真实后端，非 mock）
+## 2. 2026-10-24 界面联调（旧版 4 类修图，真实后端，非 mock）
 
 环境：`.venv/bin/python -m app.seed --reset --with-optimize` + `./run.sh`（http://127.0.0.1:8765）。
 
@@ -52,7 +82,7 @@ bash scripts/setup.sh
   `POST /runs/{id}/apply` 的 409 冲突、取消排队运行、版本回滚由自动化用例覆盖。
 
 > 说明：浏览器界面联调为人工/脚本化抽查，仓库没有引入 Playwright 作为测试依赖；
-> 后端行为由 233 条 pytest 用例保证，前端静态资源由后端直接托管、无构建步骤。
+> 当前后端回归包含 306 条 pytest 用例，前端静态资源由后端直接托管、无构建步骤。
 
 ## 3. 已知边界
 

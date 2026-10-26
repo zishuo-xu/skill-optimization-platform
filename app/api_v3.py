@@ -536,6 +536,14 @@ async def run_cases(request: Request) -> Response:
     return ok(result)
 
 
+async def run_model_output(request: Request) -> Response:
+    try:
+        seq = int(request.path_params["seq"])
+    except (TypeError, ValueError):
+        raise ValidationError("记录序号必须为整数", field_path="seq")
+    return ok(services.run_model_output(request.path_params["run_id"], seq))
+
+
 async def run_case_detail(request: Request) -> Response:
     return ok(services.run_case_detail(request.path_params["run_id"],
                                        request.path_params["case_id"]))
@@ -773,6 +781,8 @@ def build_routes() -> list[Route]:
         Route(f"{p}/runs/{{run_id}}/diff", run_diff, methods=["GET"]),
         Route(f"{p}/runs/{{run_id}}/issues", run_issues, methods=["GET"]),
         Route(f"{p}/runs/{{run_id}}/events", run_events_sse, methods=["GET"]),
+        Route(f"{p}/runs/{{run_id}}/events/{{seq}}/model-output",
+              run_model_output, methods=["GET"]),
         Route(f"{p}/runs/{{run_id}}/event-history", run_event_history, methods=["GET"]),
         Route(f"{p}/runs/{{run_id}}/trace-artifacts/{{artifact_id}}",
               run_trace_artifact, methods=["GET"]),

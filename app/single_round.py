@@ -269,8 +269,16 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                           impact="本轮将使用启发式回退。",
                           next_action="修复执行环境的优化模型配置后新建运行。",
                           level="warning", stage="candidate_generation")
+    if cancel.cancelled():
+        raise RunCancelled()
+    budget.ensure_available()
+    if optimizer_adapter is not None:
+        optimizer_adapter = _ControlledOptimizer(optimizer_adapter, cancel, budget)
     outcome = optimizer.generate_candidate(
         context, optimizer_adapter, emitter.emit, budget=budget.remaining_tokens())
+    if cancel.cancelled():
+        raise RunCancelled()
+    budget.ensure_available()
     if outcome.get("status") != "ok":
         _finish_inconclusive(
             run, emitter,
@@ -610,6 +618,13 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
         emitter.case_started(case["case_id"])
         request_payload = _case_request(run, env, case, skill_version_id,
                                         manifest, loader_config, run_config, cancel)
+        request_payload.update(stage=emitter.stage, split=case.get("split"),
+                               variant=case.get("variant") or "main", repeat_index=repeat)
+        if budget.max_seconds is not None:
+            request_payload["model_config"] = {
+                **request_payload["model_config"],
+                "deadline_monotonic": budget.started + float(budget.max_seconds),
+            }
         try:
             actual = execution.run_case(request_payload, adapter, emit_mapping)
         except Exception as exc:  # noqa: BLE001 - isolate case failures
@@ -931,6 +946,28 @@ def _cost(metrics: Mapping[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # budget / cancellation
 # --------------------------------------------------------------------------- #
+class _ControlledOptimizer:
+    """Apply runtime controls without modifying the frozen environment config."""
+
+    def __init__(self, adapter: Any, cancel: Any, budget: Any):
+        self.adapter, self.cancel, self.budget = adapter, cancel, budget
+
+    def invoke(self, messages: Any, model_config: Mapping[str, Any], tools: Any) -> Any:
+        runtime_config = dict(model_config)
+        runtime_config["cancel_check"] = self.cancel.cancelled
+        if self.budget.max_seconds is not None:
+            runtime_config["deadline_monotonic"] = (
+                self.budget.started + float(self.budget.max_seconds))
+        remaining = self.budget.remaining_tokens()
+        if remaining is not None:
+            runtime_config["max_tokens"] = min(
+                int(runtime_config.get("max_tokens") or remaining), remaining)
+        result = self.adapter.invoke(messages, runtime_config, tools)
+        if isinstance(result, Mapping):
+            self.budget.consume(result.get("usage"))
+        return result
+
+
 class _Budget:
     def __init__(self, config_payload: Mapping[str, Any]):
         self.max_tokens = config_payload.get("max_tokens")

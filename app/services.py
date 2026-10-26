@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -40,7 +41,12 @@ def normalize_model_config(raw: Any) -> dict[str, Any]:
     if provider not in ("demo_scripted", "openai_http", "enterprise_ws", "flow", "heuristic"):
         raise ValidationError(
             f"不支持的模型提供方: {provider!r}", field_path="model_config.provider")
-    return raw
+    normalized = dict(raw)
+    if provider == "enterprise_ws":
+        if "heartbeat_interval_s" not in normalized and "heartbeat_s" in normalized:
+            normalized["heartbeat_interval_s"] = normalized["heartbeat_s"]
+        normalized.pop("heartbeat_s", None)
+    return normalized
 
 
 def normalize_tool_schema(raw: Any) -> list[dict[str, Any]]:
@@ -139,10 +145,10 @@ def activate_skill_version(version_id: str, *, expected_current_version: str | N
     version = persistence.get_skill_version(version_id)
     if version["status"] != "published":
         raise ConflictError("只能把已发布版本设为当前版本", code="version_not_published")
-    if expected_current_version is not None:
-        persistence.assert_project_version(version["project_id"], expected_current_version)
     previous = persistence.get_project(version["project_id"]).get("current_skill_version_id")
-    persistence.set_current_skill_version(version["project_id"], version_id)
+    persistence.activate_skill_version_cas(
+        version["project_id"], version_id, expected_current_version,
+    )
     persistence.append_audit(version["project_id"], "skill_version.activate",
                              {"skill_version_id": version_id, "previous": previous,
                               "actor": actor})
@@ -190,13 +196,37 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
                        status: str = "published", parent_id: str | None = None,
                        set_current: bool | None = None) -> dict[str, Any]:
     persistence.get_project(project_id)
+    parent = None
+    if parent_id:
+        parent = persistence.get_environment(parent_id)
+        if parent["project_id"] != project_id:
+            raise ValidationError("parent_id 必须属于当前项目", field_path="parent_id")
     if status not in ("draft", "published"):
         raise ValidationError("status 只能是 draft/published", field_path="status")
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValidationError("业务系统 Prompt 不能为空", field_path="prompt")
-    model_config = normalize_model_config(payload.get("model_config"))
-    optimizer_config = payload.get("optimizer_config") or {}
+    raw_model_config = payload.get("model_config")
+    if not raw_model_config and parent:
+        raw_model_config = dict(parent.get("model_config") or {})
+    model_config = normalize_model_config(raw_model_config)
+    optimizer_config = payload.get("optimizer_config") or (
+        dict(parent.get("optimizer_config") or {}) if parent else {})
+    if optimizer_config:
+        optimizer_config = normalize_model_config(optimizer_config)
+    # Public configuration contains masks at any depth (templates, headers,
+    # lists). Restore only matching credential paths, never ordinary settings.
+    for group_name, group in (("model_config", model_config),
+                              ("optimizer_config", optimizer_config)):
+        parent_group = (parent or {}).get(group_name) or {}
+        same_provider = group.get("provider") == parent_group.get("provider")
+        inherited = _inherit_credentials(
+            group, parent_group if same_provider else {})
+        _reject_credential_masks(inherited, group_name)
+        if group_name == "model_config":
+            model_config = inherited
+        else:
+            optimizer_config = inherited
     if optimizer_config:
         provider = optimizer_config.get("provider")
         if provider not in ("heuristic", "demo_scripted", "openai_http", "enterprise_ws"):
@@ -280,13 +310,48 @@ _SECRET_KEYS = {"api_key", "apikey", "authorization", "access_token",
 
 
 def _is_secret_key(key: str) -> bool:
-    lowered = key.lower()
+    lowered = key.lower().replace("-", "_")
     if lowered.endswith("_ref"):
-        return False  # server-side credential references are not secrets
+        return True
     if lowered in _SECRET_KEYS:
         return True
     return lowered.endswith(("_api_key", "_secret", "_password", "_token")) \
         and lowered not in ("max_tokens", "total_tokens", "token_budget")
+
+
+def _inherit_credentials(value: Any, parent: Any) -> Any:
+    if isinstance(value, Mapping):
+        old = parent if isinstance(parent, Mapping) else {}
+        result = {}
+        for key, item in value.items():
+            if _is_secret_key(str(key)):
+                result[key] = old.get(key) if item in (None, "", "***") and key in old else item
+            else:
+                result[key] = _inherit_credentials(item, old.get(key))
+        # Old credentials omitted by the form remain server-side. Missing
+        # non-secret fields are deliberately not copied from the parent.
+        for key, item in old.items():
+            if key not in result and _is_secret_key(str(key)):
+                result[key] = item
+        return result
+    if isinstance(value, list):
+        old = parent if isinstance(parent, list) else []
+        return [_inherit_credentials(item, old[index] if index < len(old) else None)
+                for index, item in enumerate(value)]
+    return value
+
+
+def _reject_credential_masks(value: Any, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            field = f"{path}.{key}"
+            if _is_secret_key(str(key)) and item == "***":
+                raise ValidationError("没有可继承的凭据，不能把掩码当作凭据保存",
+                                      field_path=field)
+            _reject_credential_masks(item, field)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_credential_masks(item, f"{path}[{index}]")
 
 
 def redact_secrets(value: Any) -> Any:
@@ -295,7 +360,12 @@ def redact_secrets(value: Any) -> Any:
         out: dict[str, Any] = {}
         for key, item in value.items():
             if _is_secret_key(str(key)):
-                out[key] = "***" if item not in (None, "") else item
+                text = str(item) if item is not None else ""
+                env_ref = (isinstance(item, Mapping) and
+                           set(item) == {"env"} and
+                           isinstance(item.get("env"), str) and
+                           re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", item["env"]))
+                out[key] = item if env_ref or re.match(r"^\{?env:[A-Za-z_][A-Za-z0-9_]*\}?$", text) else ("***" if item not in (None, "") else item)
             else:
                 out[key] = redact_secrets(item)
         return out
@@ -308,11 +378,33 @@ def public_environment(env: Mapping[str, Any]) -> dict[str, Any]:
     public = dict(env)
     public["model_config"] = redact_secrets(env.get("model_config") or {})
     public["optimizer_config"] = redact_secrets(env.get("optimizer_config") or {})
+    public["credential_status"] = {
+        "model_config": _credential_status(env.get("model_config") or {}),
+        "optimizer_config": _credential_status(env.get("optimizer_config") or {}),
+    }
     return public
 
 
+def _credential_status(value: Mapping[str, Any]) -> dict[str, bool]:
+    result: dict[str, bool] = {}
+    for key, item in value.items():
+        lowered = str(key).lower()
+        if _is_secret_key(lowered) or lowered.endswith("_ref"):
+            result[str(key)] = item not in (None, "", "***")
+    return result
+
+
 def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
-    model_config = normalize_model_config(payload.get("model_config") or {})
+    if payload.get("environment_id"):
+        env = persistence.get_environment(str(payload["environment_id"]))
+        model_config = dict(env.get("model_config") or {})
+        supplied = payload.get("model_config")
+        if isinstance(supplied, Mapping):
+            for key, value in supplied.items():
+                if value not in (None, "", "***"):
+                    model_config[key] = value
+    else:
+        model_config = normalize_model_config(payload.get("model_config") or {})
     tool_schema = payload.get("tool_schema")
     if tool_schema:
         normalize_tool_schema(tool_schema)
@@ -328,10 +420,10 @@ def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "message": "未配置优化模型，运行时将记录 optimizer_not_configured 并使用冻结启发式回退",
                 "capabilities": {"model": False, "heuristic": True}}
     if provider == "openai_http":
-        base_url = model_config.get("base_url")
+        base_url = model_config.get("url") or model_config.get("endpoint") or model_config.get("base_url")
         if not base_url:
             return {"ok": False, "provider": provider,
-                    "message": "缺少 base_url（标准 API 接入）"}
+                    "message": "缺少 API 根地址或完整请求地址"}
         return {"ok": True, "provider": provider,
                 "message": "已配置标准 API 接入；实际连通性需在该环境可访问网关时验证",
                 "capabilities": {"routing": True, "tool_arguments": True,
@@ -857,6 +949,17 @@ def run_view(run_id: str) -> dict[str, Any]:
     run["decision_record"] = decision
     run["project_name"] = (project or {}).get("name")
     run["current_skill_version_id"] = (project or {}).get("current_skill_version_id")
+    stale_reasons: list[str] = []
+    for field, label in (("current_skill_version_id", "Skill"),
+                         ("current_environment_id", "环境"),
+                         ("current_dataset_id", "数据集")):
+        expected = run.get({
+            "current_skill_version_id": "baseline_skill_version_id",
+            "current_environment_id": "environment_id",
+            "current_dataset_id": "dataset_id",
+        }[field])
+        if project and project.get(field) != expected:
+            stale_reasons.append(f"{label}已变更")
     acceptance_config = dict(run.get("acceptance") or {})
     rationale = (decision or {}).get("rationale") or {}
     run["acceptance"] = {
@@ -919,8 +1022,14 @@ def run_view(run_id: str) -> dict[str, Any]:
     run["can_apply"] = (
         run["status"] == "completed" and run.get("decision") == "accept"
         and candidate is not None and candidate.get("skill_version_id") is not None
-        and (decision is None or not decision.get("applied_at"))
+        and decision is not None and not decision.get("applied_at")
+        and not stale_reasons
     )
+    run["applicability"] = {
+        "current": not stale_reasons,
+        "stale_reasons": stale_reasons,
+        "message": "当前评测条件仍有效" if not stale_reasons else "；".join(stale_reasons) + "，需要重新评测",
+    }
     run["stage_labels"] = _stage_labels()
     run["issues_summary"] = _issues_summary(run_id)
     return run
@@ -1079,6 +1188,77 @@ def _diagnostics(baseline: Mapping[str, Any] | None,
     return merged
 
 
+def run_model_output(run_id: str, seq: int) -> dict[str, Any]:
+    """Return captured output, or honestly labelled saved case data for old events."""
+    from .model_output import capture_model_response, redact_output
+
+    run = persistence.get_run(run_id)
+    event = persistence.get_event(run_id, seq)
+    if event is None:
+        raise NotFoundError("运行记录不存在", code="not_found")
+    if event["type"] not in ("model_call_finished", "optimizer_call_finished"):
+        raise ValidationError("该记录不是模型调用完成记录", field_path="seq")
+    try:
+        env = persistence.get_environment(run["environment_id"])
+    except NotFoundError:
+        env = {}
+    credentials = {"model_config": env.get("model_config") or {},
+                   "optimizer_config": env.get("optimizer_config") or {}}
+    payload = event.get("payload") or {}
+    result = {"source": "unavailable", "scope": "model_call", "response": None,
+              "case_results": [], "message": "此历史调用未保存逐次模型输出，无法恢复原始回复。"}
+    response = payload.get("response")
+    if not isinstance(response, Mapping):
+        for ref in payload.get("artifacts") or []:
+            if ref.get("kind") != "model_response":
+                continue
+            artifact = persistence.get_artifact(run_id, ref["id"])
+            try:
+                loaded = json.loads(artifact["content_path"].read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise NotFoundError("已保存的模型输出文件不可读取", code="output_unavailable") from exc
+            if isinstance(loaded, Mapping):
+                # Accept earlier trace writers that wrapped the projection.
+                wrapped = loaded.get("response")
+                response = wrapped if isinstance(wrapped, Mapping) else loaded
+                break
+    if isinstance(response, Mapping):
+        result.update(source="captured", response=capture_model_response(response, credentials),
+                      message=payload.get("response_note") or "本次调用已保存的模型输出（已脱敏）。")
+        return result
+    if event["type"] == "optimizer_call_finished":
+        preview = payload.get("output_preview") or payload.get("raw_preview")
+        if preview:
+            result.update(source="captured", response={"content": redact_output(preview, credentials),
+                                                       "tool_calls": []},
+                          message="旧记录仅保存优化器输出摘要，可能已截断，无法恢复完整回复。")
+        return result
+    if not event.get("case_id"):
+        return result
+    rows = persistence.list_case_results(run_id, case_id=event["case_id"], limit=1000)["items"]
+    if event.get("stage") == "baseline_eval" or run["mode"] == "baseline":
+        rows = [row for row in rows if row["phase"] == "baseline"]
+    elif run["mode"] == "final_test":
+        rows = [row for row in rows if row["phase"] == "final"]
+    saved = []
+    for row in rows:
+        actual = row.get("actual") or {}
+        saved.append({"phase": row["phase"], "repeat_index": row.get("repeat_index"),
+                      "variant": row.get("variant"),
+                      "selected_skills": row.get("selected_skills") or [],
+                      "action": row.get("action"),
+                      "tool_calls": row.get("tool_calls") or [],
+                      "raw_output": actual.get("raw_output") or "",
+                      "missing_fields": row.get("missing_fields") or [],
+                      "usage": row.get("usage"),
+                      "finish_reason": actual.get("finish_reason")})
+    if saved:
+        result.update(source="legacy_case_result", scope="case_result",
+                      case_results=redact_output(saved, credentials),
+                      message="此历史调用没有保存逐次原始回复；以下为该案例已保存的执行结果，包含业务工具及参数，不代表本次单独模型回复。")
+    return result
+
+
 def run_case_detail(run_id: str, case_id: str) -> dict[str, Any]:
     run = persistence.get_run(run_id)
     case = persistence.get_case(run["dataset_id"], case_id)
@@ -1145,6 +1325,10 @@ def apply_candidate(run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ConflictError("项目当前版本已不是本轮基线版本，请重新比较", code="version_conflict",
                             details={"current_version": current,
                                      "baseline_version": run["baseline_skill_version_id"]})
+    if project.get("current_environment_id") != run.get("environment_id"):
+        raise ConflictError("项目当前环境已变更，请重新评测", code="version_conflict")
+    if project.get("current_dataset_id") != run.get("dataset_id"):
+        raise ConflictError("项目当前数据集已变更，请重新评测", code="version_conflict")
     candidate = persistence.get_candidate_for_run(run_id)
     if not candidate or not candidate.get("skill_version_id"):
         raise ConflictError("本轮没有可应用的候选", code="no_candidate")
@@ -1152,10 +1336,20 @@ def apply_candidate(run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     version = persistence.get_skill_version(version_id)
     if version["project_id"] != run["project_id"]:
         raise ConflictError("候选版本不属于当前项目", code="no_candidate")
-    persistence.publish_skill_version(version_id, set_current=True)
+    integrity = persistence.skill_version_integrity(version_id)
+    if not integrity.get("ok"):
+        raise ConflictError("候选文件已变化，请重新评测", code="candidate_changed")
+    errors, _warnings = skill_package.validate_manifest(
+        version["manifest"], _read_version_files(version_id))
+    if errors:
+        raise ValidationError("Skill 包校验失败", code="skill_package_invalid",
+                              details=errors)
     decision = persistence.get_decision_for_run(run_id)
-    if decision:
-        persistence.mark_decision_applied(decision["id"], expected, "user")
+    if not decision or decision.get("applied_at"):
+        raise ConflictError("候选已经应用或缺少决策记录", code="version_conflict")
+    persistence.apply_candidate_cas(
+        run_id, run["project_id"], version_id, expected,
+        run.get("environment_id"), run.get("dataset_id"), decision["id"])
     persistence.append_audit(run["project_id"], "candidate.apply", {
         "run_id": run_id, "skill_version_id": version_id,
         "previous": current, "expected_current_version": expected,

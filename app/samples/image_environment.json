@@ -23,13 +23,13 @@
     "select_skill_tool": true,
     "read_skill_tool": true,
     "finish_tool": true,
-    "max_steps": 8,
+    "max_steps": 16,
     "max_context_chars": 60000,
     "context_overflow": "error"
   },
   "run_config": {
     "concurrency": 3,
-    "max_model_calls": 12,
+    "max_model_calls": 24,
     "case_timeout_s": 120,
     "max_retries": 2,
     "base_repeats": 1,

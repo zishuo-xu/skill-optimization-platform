@@ -137,6 +137,26 @@ def set_current_skill_version(project_id: str, skill_version_id: str | None) -> 
     _set_project_pointer(project_id, "current_skill_version_id", skill_version_id)
 
 
+def activate_skill_version_cas(project_id: str, version_id: str,
+                               expected_current_version: str | None) -> None:
+    """Move the current Skill pointer only if the expected version still holds."""
+    with transaction() as conn:
+        if expected_current_version is None:
+            cursor = conn.execute(
+                "UPDATE projects SET current_skill_version_id = ?, updated_at = ? "
+                "WHERE id = ?",
+                (version_id, now_iso(), project_id),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE projects SET current_skill_version_id = ?, updated_at = ? "
+                "WHERE id = ? AND current_skill_version_id = ?",
+                (version_id, now_iso(), project_id, expected_current_version),
+            )
+        if cursor.rowcount != 1:
+            raise ConflictError("项目当前 Skill 已变更，请重新比较后再恢复", code="version_conflict")
+
+
 def set_current_environment(project_id: str, environment_id: str | None) -> None:
     _set_project_pointer(project_id, "current_environment_id", environment_id)
 
@@ -1049,6 +1069,31 @@ def mark_decision_applied(decision_id: str, expected_current_version: str,
             (now_iso(), applied_by, expected_current_version, decision_id),
         )
     return get_decision(decision_id)
+
+
+def apply_candidate_cas(run_id: str, project_id: str, candidate_version_id: str,
+                        expected_skill_id: str, expected_environment_id: str | None,
+                        expected_dataset_id: str | None, decision_id: str) -> None:
+    """Atomically publish a candidate and mark its decision applied."""
+    with transaction() as conn:
+        cursor = conn.execute(
+            "UPDATE projects SET current_skill_version_id = ?, updated_at = ? "
+            "WHERE id = ? AND current_skill_version_id = ? "
+            "AND current_environment_id IS ? AND current_dataset_id IS ?",
+            (candidate_version_id, now_iso(), project_id, expected_skill_id,
+             expected_environment_id, expected_dataset_id),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("项目配置已变更，请重新比较后再应用", code="version_conflict")
+        decision = conn.execute(
+            "UPDATE decisions SET applied_at = ?, applied_by = ?, "
+            "expected_current_version = ? WHERE id = ? AND applied_at IS NULL",
+            (now_iso(), "user", expected_skill_id, decision_id),
+        )
+        if decision.rowcount != 1:
+            raise ConflictError("候选已经应用或决策已失效", code="version_conflict")
+        conn.execute("UPDATE skill_versions SET status = 'published' WHERE id = ?",
+                     (candidate_version_id,))
 
 
 # --------------------------------------------------------------------------- #
