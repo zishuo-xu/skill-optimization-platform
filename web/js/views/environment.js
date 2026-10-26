@@ -692,6 +692,117 @@ export default async function environmentView(container, ctx) {
     );
   }
 
+  // Gateway request fields (the OpenAI request body travels as one WS frame).
+  const WS_TEMPLATE_EXAMPLE = {
+    user: '调用方标识',
+    extra_body: { enable_thinking: false },
+    stream_options: { include_usage: true },
+  };
+  const WS_HEADERS_EXAMPLE = { sender: '工号' };
+
+  function fillExampleButton(path, example) {
+    if (!EDITABLE()) return null;
+    const current = String(state.form[path] || '').trim();
+    if (current && current !== '{}') return null;
+    return h(
+      'button.link-button',
+      {
+        type: 'button',
+        onClick: () => {
+          state.form[path] = JSON.stringify(example, null, 2);
+          markDirty();
+          renderForm();
+        },
+      },
+      '填入示例'
+    );
+  }
+
+  /** Read-only summary: field names only, never header or credential values. */
+  function wsGatewayFacts(config, group) {
+    const keys = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : []);
+    const templateKeys = keys(config.request_template).filter((key) => key !== 'api_key');
+    const headerKeys = keys(config.headers);
+    const serviceConfigured = Boolean(config.api_key_ref) || Boolean(state.credentialStatus?.[group]?.api_key_ref)
+      || keys(config.request_template).includes('api_key');
+    return [
+      { label: 'WebSocket 地址', value: config.ws_url || '—', mono: true },
+      { label: '模型名', value: config.model || '—', mono: true },
+      { label: '接入服务名', value: serviceConfigured ? '已配置' : '未配置' },
+      { label: '请求体附加字段', value: templateKeys.length ? templateKeys.join('、') : '未设置', mono: templateKeys.length > 0 },
+      { label: '握手请求头', value: headerKeys.length ? headerKeys.join('、') : '未设置', mono: headerKeys.length > 0 },
+      { label: '总超时', value: secondsText(config.total_timeout_s || 180) },
+    ];
+  }
+
+  /** WebSocket gateway form shared by the business and optimizer models. */
+  function wsGatewayFields(target) {
+    const cfg = target === 'optimizer' ? 'optimizer_config' : 'model_config';
+    const templatePath = target === 'optimizer' ? 'optimizer_request_template_text' : 'request_template_text';
+    const headersPath = target === 'optimizer' ? 'optimizer_headers_text' : 'model_headers_text';
+    return h(
+      'div.stack',
+      null,
+      h(
+        'div.form-grid',
+        null,
+        inputFor(`${cfg}.ws_url`, { label: 'WebSocket 地址', hint: 'ws:// 或 wss://，形如 ws://网关地址/网关路径。' }),
+        inputFor(`${cfg}.model`, { label: target === 'optimizer' ? '优化模型名' : '模型名', hint: '网关可路由多种厂商模型；按网关的模型名填写。' }),
+        inputFor(`${cfg}.api_key_ref`, {
+          label: '接入服务名（api_key）',
+          hint: '放入请求体 api_key，不生成 Authorization 头；可写 env:变量名 从环境变量读取。请求模板里已有 api_key 时以模板为准。',
+        })
+      ),
+      h(
+        'div.form-grid',
+        null,
+        h(
+          'div.stack.stack--sm',
+          null,
+          inputFor(templatePath, {
+            label: '请求体附加字段（JSON）',
+            rows: 6,
+            mono: true,
+            hint: '与 OpenAI Chat Completions 同构；model、messages、tools、stream、temperature、max_tokens 由平台填写，这里放 user、extra_body、stream_options 等网关字段。',
+          }),
+          fillExampleButton(templatePath, WS_TEMPLATE_EXAMPLE)
+        ),
+        h(
+          'div.stack.stack--sm',
+          null,
+          inputFor(headersPath, {
+            label: '握手请求头（JSON）',
+            rows: 6,
+            mono: true,
+            hint: '建立 WebSocket 连接时发送，例如网关用于识别调用人的 sender 工号。不会自动添加 Authorization。',
+          }),
+          fillExampleButton(headersPath, WS_HEADERS_EXAMPLE)
+        )
+      ),
+      advancedSettings(
+        '高级：超时与心跳',
+        h(
+          'div.stack',
+          null,
+          h(
+            'div.form-grid',
+            null,
+            inputFor(`${cfg}.connect_timeout_s`, { label: '连接超时（秒）', type: 'number' }),
+            inputFor(`${cfg}.first_packet_timeout_s`, { label: '首包超时（秒）', type: 'number' }),
+            inputFor(`${cfg}.idle_timeout_s`, { label: '空闲超时（秒）', type: 'number' }),
+            inputFor(`${cfg}.total_timeout_s`, { label: '总超时（秒）', type: 'number' }),
+            inputFor(`${cfg}.heartbeat_interval_s`, { label: '心跳间隔（秒）', type: 'number' })
+          ),
+          callout({
+            tone: 'info',
+            title: '返回流解析',
+            body: '逐帧完整 JSON 与 SSE 均可解析。没有 [DONE] 时以 finish_reason 或连接关闭判定结束；每帧都带 usage 时取最后一帧；result_info、debug_info 等遥测字段解析后即丢弃，不写入运行记录。',
+          })
+        )
+      )
+    );
+  }
+
   function modelFields(provider) {
     if (provider === 'demo_scripted') {
       return h(
@@ -709,46 +820,7 @@ export default async function environmentView(container, ctx) {
       );
     }
     if (provider === 'enterprise_ws') {
-      return h(
-        'div.stack',
-        null,
-        h(
-          'div.form-grid',
-          null,
-          inputFor('model_config.ws_url', { label: 'WebSocket 地址', hint: 'ws:// 或 wss://，按网关约定握手与鉴权。' }),
-          inputFor('model_config.model', { label: '模型标识', hint: '保留供应商返回的实际模型标识以便复现。' }),
-          inputFor('model_config.api_key_ref', { label: '鉴权引用（可选）', hint: '仅当请求模板未显式提供 api_key 时解析并放入请求体；不会生成 Authorization。' })
-        ),
-        advancedSettings(
-          '高级：流解析与超时',
-          h(
-            'div.form-grid',
-            null,
-            callout({
-              tone: 'info',
-              title: '流解析',
-              body: '适配器自动兼容 SSE 与逐帧 JSON；无需选择解析器。',
-            }),
-            inputFor('model_config.connect_timeout_s', { label: '连接超时（秒）', type: 'number' }),
-            inputFor('model_config.first_packet_timeout_s', { label: '首包超时（秒）', type: 'number' }),
-            inputFor('model_config.idle_timeout_s', { label: '空闲超时（秒）', type: 'number' }),
-            inputFor('model_config.total_timeout_s', { label: '总超时（秒）', type: 'number' }),
-            inputFor('model_config.heartbeat_interval_s', { label: '心跳间隔（秒）', type: 'number' }),
-            inputFor('request_template_text', {
-              label: '请求模板（JSON）',
-              rows: 6,
-              mono: true,
-              hint: '保留 api_key、user 等网关字段，不自动改写为 Authorization。',
-            }),
-            inputFor('model_headers_text', {
-              label: '自定义 Headers（JSON）',
-              rows: 4,
-              mono: true,
-              hint: '显式 Authorization 优先；未显式设置时 api_key_ref 默认生成 Bearer。',
-            })
-          )
-        )
-      );
+      return wsGatewayFields('business');
     }
     return h(
       'div.stack',
@@ -876,12 +948,7 @@ export default async function environmentView(container, ctx) {
     if (provider === 'demo_scripted') {
       items.push({ label: '模型标识', value: config.model || 'demo-scripted-v1', mono: true });
     } else if (provider === 'enterprise_ws') {
-      items.push(
-        { label: 'WebSocket 地址', value: config.ws_url || '—', mono: true },
-        { label: '模型标识', value: config.model || '—', mono: true },
-        { label: '流解析器', value: config.stream_parser || 'sse' },
-        { label: '总超时', value: secondsText(config.total_timeout_s || 180) }
-      );
+      items.push(...wsGatewayFacts(config, 'model_config'));
     } else {
       items.push(
         { label: '请求地址', value: config.url || config.base_url || '—', mono: true },
@@ -1000,11 +1067,7 @@ export default async function environmentView(container, ctx) {
     const provider = config.provider || 'heuristic';
     const items = [{ label: '接入方式', value: optimizerLabel(provider) }];
     if (provider === 'enterprise_ws') {
-      items.push(
-        { label: 'WebSocket 地址', value: config.ws_url || '—', mono: true },
-        { label: '模型标识', value: config.model || '—', mono: true },
-        { label: '请求模板', value: config.request_template && Object.keys(config.request_template).length ? '已配置' : '未设置' }
-      );
+      items.push(...wsGatewayFacts(config, 'optimizer_config'));
     } else if (provider !== 'heuristic') {
       items.push(
         { label: '模型标识', value: config.model || '—', mono: true },
@@ -1034,44 +1097,7 @@ export default async function environmentView(container, ctx) {
                 body: '按固定规则尝试修复分发关键词、澄清条件、参数映射或缺失字段，运行记录中显示为「规则修复模式」。候选仍须通过静态检查和配对验证。',
               })
             : provider === 'enterprise_ws'
-            ? h(
-                'div.stack',
-                null,
-                h(
-                  'div.form-grid',
-                  null,
-                  inputFor('optimizer_config.ws_url', { label: 'WebSocket 地址' }),
-                  inputFor('optimizer_config.model', { label: '优化模型标识' }),
-                  inputFor('optimizer_config.api_key_ref', { label: '鉴权引用（可选）', hint: '仅当请求模板未显式提供 api_key 时放入请求体；不会生成 Authorization。' })
-                ),
-                advancedSettings(
-                  '高级：请求模板、超时与心跳',
-                  h(
-                    'div.stack',
-                    null,
-                    inputFor('optimizer_request_template_text', {
-                      label: '优化器请求模板（JSON）',
-                      rows: 6,
-                      mono: true,
-                      hint: '与业务模型模板独立；保留网关字段，不自动改写鉴权。',
-                    }),
-                    h(
-                      'div.form-grid',
-                      null,
-                      inputFor('optimizer_config.connect_timeout_s', { label: '连接超时（秒）', type: 'number' }),
-                      inputFor('optimizer_config.first_packet_timeout_s', { label: '首包超时（秒）', type: 'number' }),
-                      inputFor('optimizer_config.idle_timeout_s', { label: '空闲超时（秒）', type: 'number' }),
-                      inputFor('optimizer_config.total_timeout_s', { label: '总超时（秒）', type: 'number' }),
-                      inputFor('optimizer_config.heartbeat_interval_s', { label: '心跳间隔（秒）', type: 'number' })
-                    ),
-                    callout({
-                      tone: 'info',
-                      title: '流解析',
-                      body: '适配器自动兼容 SSE 与逐帧 JSON；无需选择解析器。',
-                    })
-                  )
-                )
-              )
+            ? wsGatewayFields('optimizer')
             : h(
                 'div.stack',
                 null,

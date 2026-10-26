@@ -178,7 +178,7 @@ your-skill.zip
 **测试：**
 
 ```bash
-.venv/bin/python -m pytest -q        # 2026-10-26：405 passed
+.venv/bin/python -m pytest -q        # 2026-10-26：413 passed
 ```
 
 ### 文档导航
@@ -350,9 +350,10 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 - 「标准 API」（`openai_http`）：标准 Chat Completions HTTP；`base_url`、模型标识、超时/重试。
   企业 HTTP 网关也走这一项，在「高级」里配置完整请求地址、请求模板和 Headers。
-- 「WebSocket 网关」（`enterprise_ws`）：企业网关 WebSocket。保留 `api_key`/`user`/`extra_body` 等字段原样发送，
-  不自动改写 `Authorization`；WS 帧还原为 SSE 式事件，支持跨帧拆分/单帧多事件、
-  content 与 tool_calls（按 choice/tool index）聚合、尾部 usage、`[DONE]`；
+- 「WebSocket 网关」（`enterprise_ws`）：OpenAI 兼容报文经 WebSocket 发送的企业多模型网关，
+  请求体 `api_key` + 握手头 `sender` 鉴权、逐帧完整 JSON、每帧 usage、无 `[DONE]`，
+  填写方法与解析规则见 [WebSocket 网关接入](docs/WS_GATEWAY_INTEGRATION.md)。附加字段原样发送，
+  不自动改写 `Authorization`；也兼容 SSE 文本帧（跨帧拆分/单帧多事件、尾部 usage、`[DONE]`）；
   连接/首包/空闲/总超时与心跳可配；中断标记 `stream_interrupted` 且不跨连接拼接。
 - 优化模型在「优化模型」中单独配置，可选「规则修复（不调用模型）」、标准 API 或 WebSocket 网关；
   规则修复按 §49 先记录原因再生成候选，运行记录中显示为「规则修复模式」。

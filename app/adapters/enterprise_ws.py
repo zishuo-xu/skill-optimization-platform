@@ -8,7 +8,12 @@ Requirements (§37/§38/§40/§42, contract §2.6):
 * incoming WS frames are buffered and restored into SSE events (events can be
   split across frames or several per frame, ``\\r\\n`` or ``\\n``, heartbeats and
   empty deltas ignored, tail ``usage`` consumed after ``finish_reason``,
-  ``[DONE]`` or configured end marker terminates);
+  ``[DONE]`` or configured end marker terminates; gateways without an end
+  marker finish on ``finish_reason`` — immediately when that frame already
+  carries ``usage``, otherwise after a short grace window for tail usage);
+* frames may be one complete JSON chunk each and carry large telemetry blocks
+  (``result_info`` / ``debug_info``); telemetry is dropped after parsing and the
+  default frame size limit is 16 MiB;
 * connection / first-packet / idle / total timeouts and heartbeat are
   configurable;
 * auth failures are not retried; timeouts / 429 retry at most twice with a fresh
@@ -50,6 +55,40 @@ DEFAULT_END_MARKERS = ("[DONE]",)
 
 #: Poll interval while waiting for the next frame (keeps cancel/timeout responsive).
 _POLL_INTERVAL = 0.2
+
+#: Default per-frame size limit. Gateways may inject large telemetry blocks
+#: (e.g. ``debug_info`` echoing the whole request) into every frame; the
+#: websockets library default of 1 MiB would drop such connections.
+DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024
+
+#: Payload keys the aggregator needs; everything else (telemetry such as
+#: ``result_info`` / ``debug_info``) is dropped right after parsing.
+_KEPT_PAYLOAD_KEYS = ("choices", "usage", "model", "error", "code", "message",
+                      "done", "finished", "type", "id", "object")
+
+
+def _slim_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        return {key: payload[key] for key in _KEPT_PAYLOAD_KEYS if key in payload}
+    if isinstance(payload, list):
+        return [_slim_payload(item) for item in payload]
+    return payload
+
+
+def _slim_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Drop gateway telemetry from a parsed event to bound memory per call."""
+    if isinstance(event.get("json"), (Mapping, list)):
+        event["json"] = _slim_payload(event["json"])
+        event["data"] = ""
+    return event
+
+
+def _payload_has_usage(event: Mapping[str, Any]) -> bool:
+    payload = event.get("json")
+    if not isinstance(payload, Mapping):
+        return False
+    usage = payload.get("usage")
+    return isinstance(usage, Mapping) and bool(usage)
 
 
 def _call_id(config: Mapping[str, Any]) -> str:
@@ -99,7 +138,9 @@ class EnterpriseWSAdapter(ModelAdapter):
         self.total_timeout_s = float(config.get("total_timeout_s", 120.0))
         self.close_timeout_s = float(config.get("close_timeout_s", 5.0))
         self.heartbeat_interval_s = config.get("heartbeat_interval_s", 20.0)
-        self.max_size = config.get("max_size")
+        # ``max_size: null`` in the config keeps "no limit"; absent means default.
+        self.max_size = (config.get("max_size") if "max_size" in config
+                         else DEFAULT_MAX_FRAME_BYTES)
         self.max_retries = int(config.get("max_retries", 2))
         self.retry_backoff_s = float(config.get("retry_backoff_s", 0.5))
         self.end_markers = tuple(config.get("end_markers") or DEFAULT_END_MARKERS)
@@ -314,8 +355,7 @@ class EnterpriseWSAdapter(ModelAdapter):
             "ping_interval": self.heartbeat_interval_s if self.heartbeat_interval_s else None,
             "ping_timeout": self.heartbeat_interval_s if self.heartbeat_interval_s else None,
         }
-        if self.max_size is not None:
-            connect_kwargs["max_size"] = self.max_size
+        connect_kwargs["max_size"] = self.max_size
         try:
             async with connect(self.ws_url, **connect_kwargs) as websocket:
                 await asyncio.wait_for(
@@ -372,6 +412,7 @@ class EnterpriseWSAdapter(ModelAdapter):
                     except SSEParseError as exc:
                         raise AdapterError("企业网关流格式解析失败", code="format_error",
                                            details={"error": str(exc)}, retryable=False) from exc
+                    new_events = [_slim_event(event) for event in new_events]
                     events.extend(new_events)
                     early_error = extract_stream_error(new_events)
                     if early_error is not None:
@@ -403,7 +444,13 @@ class EnterpriseWSAdapter(ModelAdapter):
                         if reason:
                             finish_reason = reason
                             if self.accept_finish_reason_as_done and finish_deadline is None:
-                                finish_deadline = loop.time() + max(0.0, self.finish_grace_s)
+                                # The grace window only exists to collect a tail
+                                # usage frame / end marker. Gateways that put usage
+                                # on every frame (including the finish frame) and
+                                # send no [DONE] are complete right here.
+                                grace = (0.0 if _payload_has_usage(event)
+                                         else max(0.0, self.finish_grace_s))
+                                finish_deadline = loop.time() + grace
                         if isinstance(payload, Mapping) and isinstance(
                                 payload.get("model"), str):
                             model_name = payload["model"]

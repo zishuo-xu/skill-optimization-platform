@@ -75,7 +75,7 @@
 | A19 | `tests/test_a19_cancel_restart.py` | 通过 |
 | A20 | `tests/test_a20_security.py` | 通过 |
 
-最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **405 passed**，1 个已有 Starlette/httpx 弃用提示。
+最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **413 passed**，1 个已有 Starlette/httpx 弃用提示。
 覆盖修图语流扩展、最小界面改版、HTTP 网关、模型输出查看、自定义输入连接测试与数据集在线修订。
 各批次原始结果见 [VERIFICATION.md](VERIFICATION.md)。
 

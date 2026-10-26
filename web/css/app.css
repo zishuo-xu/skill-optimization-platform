@@ -1829,6 +1829,13 @@ pre,
   display: inline-flex;
 }
 
+/* "填入示例" under a form field: left-aligned, no inline offset. */
+.stack > .link-button {
+  align-self: flex-start;
+  margin-left: 0;
+  font-size: 12.5px;
+}
+
 .primary-action-block {
   display: flex;
   flex-direction: column;

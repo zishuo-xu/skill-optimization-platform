@@ -156,9 +156,6 @@ class SSEEventAssembler:
         if not text:
             return []
         self._decoded_chars += len(text)
-        if self._decoded_chars > self._max_buffer_chars:
-            raise SSEParseError("流缓冲区超过上限")
-
         events: list[dict[str, Any]] = []
         # Fast path: a frame that is exactly one complete JSON payload (the common
         # "one JSON object per WebSocket message" gateway mode) when no SSE event
@@ -183,6 +180,11 @@ class SSEEventAssembler:
             event = self._process_line(line)
             if event is not None:
                 events.append(event)
+        # Only data still waiting for an event boundary is bounded. Complete
+        # frames are released immediately, so a long stream of large frames
+        # (e.g. gateways echoing the request in telemetry on every frame) is fine.
+        if self.pending_chars > self._max_buffer_chars:
+            raise SSEParseError("流缓冲区超过上限")
         return events
 
     def _next_line(self) -> Any:
@@ -320,6 +322,10 @@ def iter_event_payloads(events: Iterable[Mapping[str, Any]]) -> Iterable[Mapping
                     yield item
 
 
+#: Top-level ``code`` values gateways use for success / acknowledgement frames.
+_SUCCESS_CODES = (None, 0, "0", 200, "200")
+
+
 def extract_stream_error(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """Return the provider error object if the stream carried one."""
     for payload in iter_event_payloads(events):
@@ -330,7 +336,7 @@ def extract_stream_error(events: Iterable[Mapping[str, Any]]) -> Mapping[str, An
             return error
         if isinstance(error, str) and error:
             return {"message": error}
-        if payload.get("code") not in (None, 200, "200") and payload.get("message"):
+        if payload.get("code") not in _SUCCESS_CODES and payload.get("message"):
             return {"code": payload.get("code"), "message": payload.get("message")}
     return None
 
