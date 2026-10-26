@@ -209,7 +209,7 @@ fixture_misses) -> metrics`（同名函数在 evaluator 中）：
   但返回 warning `no_final_test`。分组不跨集合。
 - `coverage(cases, skill_ids, tools)`：见 `persistence.dataset_coverage` 的返回结构；
   未覆盖项前端显示“未评估”。
-- 已发布数据不可原地修改；重新导入生成新版本。
+- 已发布数据不可原地修改；可通过 `POST /datasets/{did}/draft` 复制为草稿，使用 `PUT /datasets/{did}/cases/{cid}` 携带 `expected_hash` 原子修改，再通过发布接口校验后生成新版本。草稿不参与运行，发布新版本后需要重跑基线；旧版本和历史运行保持不变。
 
 ### 2.6 模型适配层与执行循环（`app/adapters/*`, `app/execution.py`, T2）
 
@@ -350,13 +350,16 @@ retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式�
 | `POST /projects/{pid}/environments` | 创建环境版本（draft 或 published） |
 | `GET /environments/{eid}` | 环境详情 |
 | `POST /environments/{eid}/publish` | 发布并设为 current |
-| `POST /environments/test-connection` | 工具/模型连接检查（不落库） |
+| `POST /environments/test-connection` | 真实业务/优化模型单请求探测（不落库）；`target`、`environment_id`、自定义 `input` 可选，`mode=check` 仅配置检查 |
 | `GET /projects/{pid}/datasets` | 数据集版本列表 |
 | `POST /datasets/preflight` | JSONL/JSON 导入预检（不落库） |
 | `POST /projects/{pid}/datasets` | 发布数据集版本 |
 | `GET /datasets/{did}` | 数据集详情 + 划分/覆盖统计 |
 | `GET /datasets/{did}/cases` | 案例分页/筛选（split/search/tag/status） |
 | `GET /datasets/{did}/cases/{cid}` | 案例详情 |
+| `POST /datasets/{did}/draft` | 从已发布数据集复制编辑草稿；不改变项目当前指针 |
+| `PUT /datasets/{did}/cases/{cid}` | 草稿单案例 CAS 更新；body `{case, expected_hash}`；已发布版本返回 409，非法数据/缺 guard 返回 422 |
+| `POST /datasets/{did}/publish` | 草稿完整校验并发布；需 `expected_hash`、`expected_current_version`，并发冲突返回 409 |
 | `GET /projects/{pid}/versions` | 版本记录（Skill/环境/数据集） |
 | `GET /projects/{pid}/overview` | 概览：配置完整性、最近指标、最近运行 |
 | `POST /runs` | `{project_id, mode: baseline|optimize|final_test, parent_run_id?, expected_current_version?, reuse_baseline?}` + `Idempotency-Key`；202 `{run_id}` |
@@ -368,6 +371,7 @@ retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式�
 | `GET /runs/{rid}/cases/{cid}` | 单案例详情（基线/候选/评分/参数差异/事件） |
 | `GET /runs/{rid}/diff` | 文件差异（候选 vs 基线） |
 | `GET /runs/{rid}/events` | SSE，`id: seq`，支持 `Last-Event-ID`/`after_seq`；仅本运行事件 |
+| `GET /runs/{rid}/events/{seq}/model-output` | 返回脱敏模型正文/工具调用，或标记为历史案例结果/不可用 |
 | `GET /runs/{rid}/event-history?after_seq=&limit=&level=&type=&case_id=&stage=` | 历史/筛选分页 |
 | `GET /runs/{rid}/issues` | 问题摘要（错误/警告事件 + 定位 seq + 影响范围） |
 | `GET /runs/{rid}/trace-artifacts/{aid}` | 大内容按需加载 |

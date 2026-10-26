@@ -135,7 +135,7 @@ location / {
 ## 8. 测试与 CI
 
 ```bash
-.venv/bin/python -m pytest -q        # 306 passed
+.venv/bin/python -m pytest -q        # 2026-10-26：395 passed
 for f in web/js/*.js web/js/views/*.js; do node --check "$f"; done
 ```
 
@@ -151,5 +151,9 @@ GitHub Actions 工作流 `.github/workflows/ci.yml` 在 push / PR 时执行同�
 | 运行日志不实时 | 反向代理缓冲了 SSE：按第 5 节关闭 `proxy_buffering` |
 | ZIP 导入返回 422 | 查看 `error.details`：路径穿越、缺失 SKILL.md/manifest、失效引用、重复 skill_id 等 |
 | 数据集发布被拒 | 预检存在无效行：先修复，或显式 `exclude_invalid=true` 剔除并在导入报告中留痕 |
+| 已导入数据集需要修改 | 数据集页创建编辑草稿 → 点击案例修改 JSON 并保存 → 发布新版本；旧版本保留，发布后重跑基线。见 [在线修订](DATASET_EDITING.md) |
+| 保存或发布数据集返回 409 | 草稿 hash 或项目当前版本已变化；保留需要的修改，刷新获取最新版本后重新核对再保存，避免覆盖他人修改 |
+| 需要验证模型地址与凭据 | 环境页填写自定义输入后点击对应模型「测试连接」；已发布配置也支持。内网网关需在内网验证，见 [连接测试](CONNECTION_TEST.md) |
+| 运行记录只有调用统计 | 展开模型返回记录并点击「查看模型输出」；历史未保存的逐次回复无法恢复，可查看已保存案例结果。见 [输出说明](MODEL_OUTPUT_VISIBILITY.md) |
 | 无法应用候选 | `decision` 不是 `accept`，或项目当前版本已变化（409）；重新比较后再应用 |
 | 后台 Worker 崩溃后运行卡住 | 重启服务会回收过期租约；如仍异常，查看 `runs` 的 `error_code/error_message` 与事件 |

@@ -116,7 +116,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | GET | `/environments/{eid}` | 详情（凭据脱敏） |
 | POST | `/environments/{eid}/publish` | `{set_current?:true}` |
 | POST | `/environments/{eid}/activate` | `{expected_current_version?}` 设为当前（回滚） |
-| POST | `/environments/test-connection` | `{model_config, tool_schema?}` 连通性/配置检查 |
+| POST | `/environments/test-connection` | `{environment_id?, target?, input?, model_config?, optimizer_config?, mode?}`；默认真实探测一次，`target` 为 `business`/`optimizer`，`input` 最多 16000 字符；`mode=check` 仅做本地配置检查，不出网 |
 | GET | `/environment-template` | 内置 Prompt + 示例模型/加载/预算/接受配置 |
 
 创建环境请求（可从 `/environment-template` 获取完整模板）：
@@ -145,6 +145,20 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 - `budget_config` 必须至少设置 Token 或金额上限，并设置最长运行时间；金额未知时以 Token 为准。
 - 已发布版本只读；修改必须创建新版本（草稿→发布）。运行启动后环境/规则被快照冻结。
 
+`POST /environments/test-connection` 示例：
+
+```json
+{"environment_id":"env_…","target":"business","input":"用一句话解释企业网关。"}
+```
+
+响应包含 `ok`、`performed`、`target`、`provider`、`model`、`latency_ms`、`message`、`error_code`、`response_preview`、`usage`、`finish_reason` 与 `response_truncated`；不会返回凭据或原始网关错误体。连接测试不执行 Skill、不调用业务工具、不创建运行。
+
+以上为默认 `mode=probe` 的响应字段；探测失败可能仍返回 HTTP 200，应检查 `ok` 和 `error_code`。
+`performed=false` 表示未发起网络探测。`mode=check` 返回本地配置检查结果，不保证相同字段或真实连通性。
+默认 `target=business`；切换为 `optimizer` 时从同一环境读取优化模型配置。
+临时覆盖所选模型可传 `model_config`，同 provider 的未更改凭据由服务端继承；不保存配置。
+空白 `input` 使用“只回复 OK”，非空文本原样发送；最多 64 输出 Token、无自动重试。详见 [连接测试](CONNECTION_TEST.md)。
+
 ## 5. 数据集
 
 | 方法 | 路径 | 说明 |
@@ -156,9 +170,30 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | GET | `/datasets/{did}/cases?split=&search=&tag=&limit=&offset=` | 案例列表 |
 | GET | `/datasets/{did}/cases/{cid}` | 案例详情（expected/fixtures；工具调用可带 `arguments_path`） |
 | GET | `/datasets/{did}/coverage` | 子技能/工具/动作/多路线覆盖 |
-| POST | `/datasets/{did}/publish` | 发布（通常创建时已发布，用于“设为当前”） |
+| POST | `/datasets/{did}/draft` | 从已发布版本复制编辑草稿，不改变项目当前指针 |
+| PUT | `/datasets/{did}/cases/{cid}` | 仅 draft 可改；`{case, expected_hash}` 原子保存单个案例 |
+| POST | `/datasets/{did}/publish` | draft 发布并可设为当前；需 `expected_hash` 与 `expected_current_version`，冲突 409、校验失败 422；已发布版本仍兼容无 guard 的“设为当前” |
 | POST | `/datasets/{did}/activate` | `{expected_current_version?}` 设为当前 |
 | GET | `/datasets/{did}/export` | 同结构 JSONL 下载 |
+
+在线修订时，先创建草稿（201 返回含 `id`、`hash` 的数据集详情），再 GET 草稿案例详情，修改完整案例后保存。
+PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expected`、`fixtures`、`split`、`group_id`、`tags`，且不可更名 `case_id`。
+不要使用列表摘要代替完整案例，否则可能丢失参数与模拟返回。保存响应为 `{dataset, case}`，下一次保存/发布使用返回的新 `dataset.hash`。
+
+发布草稿请求：
+
+```json
+{
+  "expected_hash": "草稿当前 hash",
+  "expected_current_version": "项目当前 current_dataset_id",
+  "set_current": true
+}
+```
+
+`expected_current_version` 是发布前的项目当前数据集 ID，并非草稿 ID；当前无数据集时显式传 `null`。
+草稿保存只改变草稿，发布并设为当前才切换项目指针；hash/指针冲突返回 409 并回滚，非法案例或缺 guard 返回 422。
+同一非空 group 不可跨 split，编辑不会静默重分配其他案例。旧版本与运行结果保留，新版本需重跑基线。
+完整流程与边界见 [数据集在线修订](DATASET_EDITING.md)。
 
 预检请求：
 
@@ -202,6 +237,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | GET | `/runs/{rid}/events` | SSE 事件流，`id: <seq>`；支持 `Last-Event-ID`/`?after_seq=` |
 | GET | `/runs/{rid}/event-history?after_seq=&limit=&offset=&level=&type=&stage=&case_id=&errors_only=` | 历史事件回放/筛选 |
 | GET | `/runs/{rid}/trace-artifacts/{aid}` | 按需加载大内容 `{artifact, content}` |
+| GET | `/runs/{rid}/events/{seq}/model-output` | 查看指定模型完成事件的脱敏正文/工具参数；新记录 `source=captured`，旧记录按实际保存结果返回 `legacy_case_result`，不可恢复时为 `unavailable` |
 | GET | `/runs/{rid}/report.json` | 评测报告 JSON 下载 |
 | GET | `/runs/{rid}/report.csv` | 评测报告 CSV 下载 |
 | POST | `/runs/{rid}/debug-cases` 或 `/projects/{pid}/debug-cases` | 单案例调试（不写正式成绩） |

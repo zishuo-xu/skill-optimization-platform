@@ -17,7 +17,7 @@
 | §9 Skill 包管理（ZIP/文件夹、manifest、安全检查、Markdown 白名单、草稿/发布/不可变、导出） | `app/skill_package.py`、`app/services.py`、`app/persistence.py` | A01 |
 | §10 执行环境配置（Prompt/业务模型/优化模型/工具协议/加载/运行参数/预算） | `app/services.py`、`web/js/views/environment.js` | A02、A10 |
 | §11 冻结与隔离（快照、执行器不可见 expected、优化器不可见验证集、凭据、可复现性） | `app/single_round.py`、`app/execution.py`、`app/services.py`、`app/reports.py` | A02、A20、A13 |
-| §12 数据导入与版本（JSONL/JSON、预检、稳定 ID、导出、发布不可变） | `app/dataset.py`、`app/persistence.py`、`app/api_v3.py` | A03 |
+| §12 数据导入与版本（JSONL/JSON、预检、稳定 ID、导出、发布不可变、复制草稿修订） | `app/dataset.py`、`app/services.py`、`app/persistence.py`、`app/api_v3.py` | A03、`test_dataset_editing.py`、`test_dataset_editing_api.py` |
 | §13 字段与扩展（context/fixtures/action/clarify/no_action/missing_fields） | `app/dataset.py`、`app/execution.py`、`app/fixtures.py`、`app/evaluation.py` | A03、A04、A10 |
 | §14 划分与覆盖（group 70/20/10、固定种子、覆盖提示、未覆盖不算满分） | `app/dataset.py`、`app/services.py` | A03、界面数据集页 |
 | §15 指标与有效案例（R/A/J、诊断、执行与成本、infra/能力失败） | `app/evaluation.py`、`app/single_round.py` | A04/A05/A10 |
@@ -75,7 +75,9 @@
 | A19 | `tests/test_a19_cancel_restart.py` | 通过 |
 | A20 | `tests/test_a20_security.py` | 通过 |
 
-全量命令与结果：`.venv/bin/python -m pytest -q` → **306 passed**（含 2026-10-25 修图扩展）。
+最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **395 passed**，1 个已有 Starlette/httpx 弃用提示。
+覆盖修图语流扩展、最小界面改版、HTTP 网关、模型输出查看、自定义输入连接测试与数据集在线修订。
+各批次原始结果见 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 3. 实现口径与差异说明
 

@@ -45,6 +45,7 @@ flowchart LR
 - API：Starlette，同步业务逻辑 + SSE 流；不依赖 pydantic（避免原生扩展签名问题）。
 - Worker：进程内线程，通过数据库租约 + 心跳领取任务；任务持久化在 `runs` 表。
 - 存储：SQLite 保存元数据与事件；不可变 Skill 包、trace 资源、导出文件保存在磁盘。
+- 企业 HTTP 网关复用 `openai_http`，支持完整请求地址、Body 扩展与 Headers；响应仍需兼容 Chat Completions/SSE，特殊协议在适配层调整。见 [接入说明](HTTP_GATEWAY_INTEGRATION.md)。
 
 ## 3. 组件职责
 
@@ -80,6 +81,11 @@ flowchart LR
    评分器与接受规则 → 发布 `EnvironmentVersion`（哈希冻结）。
 4. 导入数据集 JSONL/JSON → 预检（行号/错误/字段路径）→ 按 group 固定种子划分 →
    发布 `DatasetVersion`（不可原地修改）。
+5. 修订数据集时复制已发布版本为草稿，逐案例保存并更新 hash/校验报告；发布前完整校验，
+   同一事务核对草稿 hash 与项目当前数据集指针。草稿不用于运行，发布后旧运行仍引用原版本，新版本需重跑基线。
+
+环境页的连接测试与评测运行独立：复用正式 HTTP/WS 适配器发送一次自定义输入短请求，
+不调用业务工具，不创建运行或保存配置；同步探测在 threadpool 执行。详情见 [连接测试](CONNECTION_TEST.md)。
 
 ### 4.2 运行阶段（`single_round.py`）
 
@@ -145,6 +151,9 @@ erDiagram
 | `audit_log` | 导入/发布/应用/回滚等人工操作记录 |
 
 事件写入使用事务分配 `seq`，先落盘再通过 SSE 发布；单运行只有一个写入者（Worker 租约保证）。
+
+模型完成事件保存脱敏正文与工具调用，大响应转存 `trace_artifacts` 后按需读取。
+输出接口区分逐次调用记录与历史案例结果；不会用案例结果补造原始回复。见 [模型输出说明](MODEL_OUTPUT_VISIBILITY.md)。
 
 ## 6. 评分与接受
 
