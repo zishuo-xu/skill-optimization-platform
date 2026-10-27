@@ -384,10 +384,12 @@ function buildCtx(route) {
     },
     reload: () => renderRoute(),
     refreshShell: async () => {
+      const previous = { project: state.project, run: state.run, recentRuns: state.recentRuns };
       try {
         await loadContext(route);
       } catch {
-        /* keep previous shell */
+        // loadContext clears these fields before fetching. Restore them on failure.
+        Object.assign(state, previous);
       }
       refreshSidebar();
       renderTopbar();

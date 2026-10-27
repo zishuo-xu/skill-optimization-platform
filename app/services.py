@@ -718,7 +718,7 @@ def activate_dataset(dataset_id: str,
         raise ConflictError("项目当前数据集已变更", code="conflict",
                             details={"current_version": project.get("current_dataset_id")})
     previous = project.get("current_dataset_id")
-    persistence.set_current_dataset(dataset["project_id"], dataset_id)
+    persistence.activate_dataset_cas(dataset["project_id"], dataset_id, previous)
     persistence.append_audit(dataset["project_id"], "dataset.activate",
                              {"dataset_id": dataset_id, "previous": previous})
     return persistence.get_dataset(dataset_id)
@@ -890,6 +890,11 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         _check_validation_independence(source, cases)
     if mode == "final_test" and "final_test" not in split_names:
         raise ValidationError("最终测试运行需要最终测试集", code="dataset_incomplete")
+    if mode == "final_test" and payload.get("skill_version_id"):
+        selected_version = persistence.get_skill_version(payload["skill_version_id"])
+        if selected_version["project_id"] != project_id:
+            raise ConflictError("所选 Skill 版本不属于当前项目", code="version_conflict")
+        skill_version_id = selected_version["id"]
     scorer_version = (env.get("scorer_config") or {}).get("version") or config.SCORER_VERSION
     repeats = _baseline_repeats(env)
     fingerprint = run_fingerprint(skill_version_id, environment_id, dataset_id,
@@ -915,8 +920,6 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         elif parent_run_id is None:
             parent = persistence.find_cached_baseline(project_id, fingerprint)
             parent_run_id = parent["id"] if parent else None
-    if mode == "final_test" and payload.get("skill_version_id"):
-        skill_version_id = payload["skill_version_id"]
     snapshot = {
         "project": {"id": project["id"], "name": project["name"]},
         "skill_version": _version_snapshot(skill_version_id),

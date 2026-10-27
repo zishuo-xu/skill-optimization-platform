@@ -2151,6 +2151,17 @@ async function fetchImpl({ method, path, query = {}, body }) {
     return ok({ dataset: { ...clone(dataset), split_counts: countBy(cases, 'split'), coverage: coverageFor(cases) }, case: clone(nextCase) });
   }
 
+  match = path.match(/^\/datasets\/([^/]+)\/activate$/);
+  if (match && method === 'POST') {
+    const dataset = findDataset(decodeURIComponent(match[1]));
+    if (dataset.status !== 'published') throw new ApiError('只能把已发布数据集设为当前版本', { code: 'version_not_published', status: 409 });
+    const project = projects.find((item) => item.id === dataset.project_id);
+    if (body?.expected_current_version != null && project.current_dataset_id !== body.expected_current_version)
+      throw new ApiError('项目当前数据集已变更', { code: 'conflict', status: 409 });
+    project.current_dataset_id = dataset.id;
+    return ok(clone(dataset));
+  }
+
   match = path.match(/^\/datasets\/([^/]+)\/publish$/);
   if (match && method === 'POST') {
     const dataset = findDataset(decodeURIComponent(match[1]));

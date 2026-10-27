@@ -409,6 +409,11 @@ export const api = {
       },
     });
   },
+  activateDataset(datasetId, expectedCurrentVersion) {
+    return request('POST', `/datasets/${encodeURIComponent(datasetId)}/activate`, {
+      body: { expected_current_version: expectedCurrentVersion },
+    });
+  },
   listDatasetCases(datasetId, { split, search, tag, status, limit = 200, offset = 0 } = {}) {
     return request('GET', `/datasets/${encodeURIComponent(datasetId)}/cases`, {
       query: { split, search, tag, status, limit, offset },

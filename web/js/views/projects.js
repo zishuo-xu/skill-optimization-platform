@@ -229,7 +229,7 @@ export default async function projectsView(container, ctx) {
         emptyState({
           iconName: 'projects',
           title: '还没有项目',
-          description: '先创建一个项目，然后按「导入 Skill 包 → 配置执行环境 → 导入数据集 → 运行基线评测」的顺序开始。',
+          description: '先创建一个项目，然后按「导入 Skill 包 → 配置执行环境 → 导入测试集 → 运行评测」的顺序开始。',
           actions: [
             { label: '新建项目', variant: 'primary', iconName: 'plus', onClick: openCreateDialog },
             { label: '查看导入说明', variant: 'ghost', href: '#/projects' },

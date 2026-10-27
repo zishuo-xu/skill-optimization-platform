@@ -165,6 +165,19 @@ def set_current_dataset(project_id: str, dataset_id: str | None) -> None:
     _set_project_pointer(project_id, "current_dataset_id", dataset_id)
 
 
+def activate_dataset_cas(project_id: str, dataset_id: str,
+                         expected_current_version: str | None) -> None:
+    """Atomically switch a dataset only while the observed pointer is current."""
+    with transaction() as conn:
+        cursor = conn.execute(
+            "UPDATE projects SET current_dataset_id = ?, updated_at = ? "
+            "WHERE id = ? AND current_dataset_id IS ?",
+            (dataset_id, now_iso(), project_id, expected_current_version),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("项目当前数据集已变更", code="conflict")
+
+
 # --------------------------------------------------------------------------- #
 # skill versions
 # --------------------------------------------------------------------------- #
@@ -740,11 +753,21 @@ def find_latest_evaluation(project_id: str, fingerprint: str) -> dict[str, Any] 
 
 
 def find_cached_baseline(project_id: str, fingerprint: str) -> dict[str, Any] | None:
-    return _fetchone(
+    candidates = _fetchall(
         "SELECT * FROM runs WHERE project_id = ? AND fingerprint = ? AND mode = 'baseline'"
-        " AND status = 'completed' ORDER BY created_at DESC LIMIT 1",
+        " AND status = 'completed' AND decision IS NULL ORDER BY created_at DESC",
         (project_id, fingerprint),
     )
+    for run in candidates:
+        expected = {case["case_id"] for case in all_cases(run["dataset_id"])
+                    if (case.get("split") or "optimize") == "optimize"}
+        rows = get_case_results_for_run(run["id"], "baseline")
+        actual = {row["case_id"] for row in rows}
+        if (expected and actual == expected
+                and all((row.get("scores") or {}).get("status") in ("pass", "fail", "invalid")
+                        for row in rows)):
+            return run
+    return None
 
 
 def claim_run(worker_id: str, lease_seconds: int = 30) -> dict[str, Any] | None:

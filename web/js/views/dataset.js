@@ -161,6 +161,9 @@ export default async function datasetView(container, ctx) {
         state.dataset && state.dataset.status === 'published'
           ? button({ label: '创建编辑草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createEditDraft })
           : null,
+        state.dataset && state.dataset.status === 'published' && state.dataset.id !== project.current_dataset_id
+          ? button({ label: '设为当前版本', variant: 'secondary', size: 'sm', iconName: 'check', onClick: activateDataset })
+          : null,
         button({ label: '试跑一句话', variant: 'secondary', size: 'sm', iconName: 'play', onClick: openQueryTrial }),
         button({ label: '导入数据集', variant: 'primary', size: 'sm', iconName: 'upload', onClick: openImportModal })
       )
@@ -784,9 +787,9 @@ export default async function datasetView(container, ctx) {
   }
 
   function renderImportStep1(modal, data) {
-    const fileState = { file: null, content: '', filename: '' };
+    const fileState = { file: null, content: data.content || '', filename: data.filename || '' };
     const zoneText = h('div', null, h('div', { text: '点击选择文件，或将 JSONL / JSON 文件拖到此处' }), h('div.xsmall.muted', { style: { marginTop: '4px' }, text: '支持 .jsonl 与 .json（数组）；容忍 BOM 与空行。' }));
-    const fileLabel = h('div.upload-zone__file');
+    const fileLabel = h('div.upload-zone__file', { text: fileState.filename });
     const fileInput = h('input', { type: 'file', accept: '.jsonl,.json,application/json', style: { display: 'none' } });
     const zone = h(
       'div.upload-zone',
@@ -830,6 +833,12 @@ export default async function datasetView(container, ctx) {
     });
     const seedInput = h('input.input', { type: 'number', value: '42', min: '0' });
     const sourceInput = h('input.input', { type: 'text', placeholder: '例如 customer_service_cases_v2.jsonl' });
+    purposeInput.value = data.importPurpose || 'optimize';
+    optimizeInput.value = String((data.splitConfig?.optimize ?? 1) * 100);
+    validationInput.value = String((data.splitConfig?.validation ?? 0) * 100);
+    finalInput.value = String((data.splitConfig?.final_test ?? 0) * 100);
+    seedInput.value = String(data.splitConfig?.seed ?? 42);
+    sourceInput.value = data.sourceName || '';
     const errorHost = h('div');
     let busy = false;
 
@@ -915,7 +924,7 @@ export default async function datasetView(container, ctx) {
       }
     }
 
-    const advancedSettings = h('details', { hidden: true }, h('summary', { text: '高级划分设置' }),
+    const advancedSettings = h('details', { hidden: purposeInput.value !== 'preserve' }, h('summary', { text: '高级划分设置' }),
       h('div.form-grid.form-grid--3', null, formField({ label: '测试集 %', control: optimizeInput }), formField({ label: '独立验收集 %', control: validationInput }), formField({ label: '最终测试集 %', control: finalInput })),
       formField({ label: '随机种子', control: seedInput, hint: '仅对文件中未指定 split 的案例生效；固定种子保证划分可复现。' }));
     mount(
@@ -980,10 +989,6 @@ export default async function datasetView(container, ctx) {
           excludeInvalid: excludeInput.checked,
           sourceName: data.sourceName,
         });
-        modal.close();
-        toast('数据集版本已发布', { type: 'success' });
-        await load();
-        await ctx.refreshShell();
       } catch (error) {
         const nested = error.details?.errors || [];
         mount(
@@ -1001,10 +1006,19 @@ export default async function datasetView(container, ctx) {
               : null
           )
         );
+        return;
       } finally {
         busy = false;
         publishButton.disabled = false;
         publishButton.textContent = invalid ? `剔除 ${invalid} 条无效记录并发布` : '发布数据集';
+      }
+      modal.close();
+      toast('数据集版本已发布', { type: 'success' });
+      try {
+        await load();
+        await ctx.refreshShell();
+      } catch (error) {
+        toast(`发布已完成，但刷新失败：${error.message}`, { type: 'warning' });
       }
     }
 
@@ -1142,7 +1156,7 @@ export default async function datasetView(container, ctx) {
       h(
         'div.btn-row',
         null,
-        button({ label: '返回修改', variant: 'ghost', onClick: () => renderImportStep1(modal, {}) }),
+        button({ label: '返回修改', variant: 'ghost', onClick: () => renderImportStep1(modal, data) }),
         publishButton
       )
     );
@@ -1172,6 +1186,30 @@ export default async function datasetView(container, ctx) {
       toast('编辑草稿已创建，当前版本指针未改变', { type: 'success' });
     } catch (error) {
       toast(`创建编辑草稿失败：${error.message}`, { type: 'error' });
+    }
+  }
+
+  async function activateDataset() {
+    const selected = state.dataset;
+    if (!selected || selected.status !== 'published' || selected.id === project.current_dataset_id) return;
+    const ok = await confirmDialog({
+      title: '切换当前数据集',
+      message: `将数据集 v${selected.version_seq} 设为当前版本。后续运行使用该版本，已有运行保留原快照。`,
+      confirmText: '设为当前版本',
+    });
+    if (!ok) return;
+    try {
+      await api.activateDataset(selected.id, project.current_dataset_id);
+    } catch (error) {
+      toast(`切换失败：${error.status === 409 || error.code === 'conflict' ? '版本已变化，请刷新后重试。' : error.message}`, { type: 'error' });
+      return;
+    }
+    toast('数据集已设为当前版本', { type: 'success' });
+    try {
+      await load(selected.id);
+      await ctx.refreshShell();
+    } catch (error) {
+      toast(`切换已完成，但刷新失败：${error.message}`, { type: 'warning' });
     }
   }
 
