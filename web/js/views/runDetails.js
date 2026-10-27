@@ -692,19 +692,19 @@ export default async function runDetailsView(container, ctx) {
         counts.regressed
           ? button({ label: `看变差的 ${counts.regressed} 个案例`, variant: 'primary', iconName: 'alert', onClick: () => openCases('regressed') })
           : button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }),
-        run.decision === 'inconclusive' ? button({ label: '回概览重新验证', variant: 'secondary', iconName: 'play', onClick: createVerificationRun }) : null,
+        run.decision === 'inconclusive' ? button({ label: '回工作台重新验证', variant: 'secondary', iconName: 'play', onClick: createVerificationRun }) : null,
         candVersion ? button({ label: '看改了什么', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') }) : null,
       ];
     }
     if (isBaselineRun() && run.status === 'completed') {
       return [
         baselineCounts().failed ? button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }) : null,
-        button({ label: '回项目概览', variant: baselineCounts().failed ? 'secondary' : 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+        button({ label: '回工作台', variant: baselineCounts().failed ? 'secondary' : 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
       ];
     }
     return [
       button({ label: '查看运行记录', variant: 'primary', iconName: 'run', onClick: () => switchTab('log') }),
-      button({ label: '回项目概览', variant: 'ghost', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+      button({ label: '回工作台', variant: 'ghost', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
     ];
   }
 
@@ -875,7 +875,7 @@ export default async function runDetailsView(container, ctx) {
         sectionCard({ title: '执行与成本', body: executionStats() })
       )
     );
-    mount(resultHost, h('div.stack', null, verdictCard(), caseChangeCard(), changeSummaryCard(), metricDetails));
+    mount(resultHost, h('div.stack', null, verdictCard(), changeSummaryCard(), caseChangeCard(), metricDetails));
   }
 
   async function applyCandidate() {
@@ -975,7 +975,7 @@ export default async function runDetailsView(container, ctx) {
 
   function continueNextRound() {
     ctx.navigate(`#/projects/${encodeURIComponent(state.run.project_id)}/overview`);
-    toast('已返回项目概览，请确认配置后再启动下一轮；不会自动发起模型调用。', { type: 'info' });
+    toast('已返回工作台，请确认配置后再启动下一轮；不会自动发起模型调用。', { type: 'info' });
   }
 
   async function restoreAppliedVersion() {

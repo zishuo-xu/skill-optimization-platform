@@ -801,6 +801,12 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     skill_version_id = project.get("current_skill_version_id")
     environment_id = project.get("current_environment_id")
     dataset_id = project.get("current_dataset_id")
+    for field, actual in (("expected_skill_version_id", skill_version_id),
+                          ("expected_environment_id", environment_id),
+                          ("expected_dataset_id", dataset_id)):
+        if field in payload and payload[field] != actual:
+            raise ConflictError("当前版本已变更，请重新选择后启动", code="version_conflict",
+                                details={"field": field, "actual": actual})
     missing = []
     if not skill_version_id:
         missing.append("skill_package")

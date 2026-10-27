@@ -358,6 +358,7 @@ export default async function environmentView(container, ctx) {
     testInput: { business: '只回复 OK', optimizer: '只回复 OK', judge: '只回复 OK' },
     promptPreview: false,
     promptOpen: false,
+    scoringOpen: false,
     credentialStatus: { model_config: {}, optimizer_config: {} },
   };
 
@@ -779,10 +780,10 @@ export default async function environmentView(container, ctx) {
           ? button({ label: '保存草稿', variant: 'secondary', size: 'sm', iconName: 'save', className: 'env-save-draft', onClick: () => saveDraft(), disabled: state.busy || !state.dirty })
           : null,
         env && env.status === 'draft'
-          ? button({ label: '发布版本', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => publishDraft(), disabled: state.busy })
+          ? button({ label: '保存并使用', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => publishDraft(), disabled: state.busy })
           : null,
         !state.versions.length
-          ? button({ label: '发布版本', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
+          ? button({ label: '保存并使用', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
           : null
       )
     );
@@ -975,7 +976,6 @@ export default async function environmentView(container, ctx) {
                 inputFor(headersPath, { label: '请求头（JSON）', rows: 5, mono: true })
               )
             ),
-            { open: true }
           )
         : null
     );
@@ -988,7 +988,7 @@ export default async function environmentView(container, ctx) {
       { label: 'URL', value: config.base_url || config.url || '—', mono: true },
       { label: '模型 ID', value: config.model || '—', mono: true },
       { label: 'API Key', value: envRef || (keyConfigured ? '已配置' : '未配置'), mono: Boolean(envRef) },
-      ...(group === 'judge_config' ? [{ label: '流式返回', value: config.stream ? '已启用' : '未启用' }] : []),
+      ...(['judge_config', 'model_config'].includes(group) ? [{ label: '流式返回', value: config.stream ? '已启用' : '未启用' }] : []),
     ];
   }
 
@@ -1247,47 +1247,37 @@ export default async function environmentView(container, ctx) {
       },
       prompt
     );
-    const card = sectionCard({
+    const details = collapsible({
+      summary: h('span', { text: editable ? '编辑 Prompt' : '查看完整 Prompt' }),
+      body: h('div.stack', null, editable ? textarea : preview, state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null),
+      open: state.promptOpen || Boolean(state.fieldErrors.prompt),
+    });
+    details.addEventListener('toggle', () => { state.promptOpen = details.open; });
+    return sectionCard({
       title: '业务系统 Prompt',
-      description: editable
-        ? `默认折叠 · ${prompt.length.toLocaleString()} 字符 · 发布后只读，优化器没有修改权限`
-        : `默认折叠 · 只读 · ${prompt.length.toLocaleString()} 字符`,
+      description: `${prompt.length.toLocaleString()} 字符 · 发布后只读，优化器没有修改权限`,
       actions: editable
-        ? [
-            button({
-              label: '恢复内置模板',
-              variant: 'ghost',
-              size: 'sm',
-              iconName: 'refresh',
-              onClick: async () => {
-                const ok = await confirmDialog({
-                  title: '恢复内置模板',
-                  message: '将用内置业务 Prompt 模板替换当前内容，已发布版本不会受影响。',
-                  confirmText: '恢复模板',
-                });
-                if (!ok) return;
-                state.form.prompt = DEFAULT_PROMPT;
-                state.promptOpen = true;
-                markDirty();
-                renderForm();
-              },
-            }),
-          ]
+        ? [button({
+            label: '恢复内置模板', variant: 'ghost', size: 'sm', iconName: 'refresh',
+            onClick: async () => {
+              const ok = await confirmDialog({
+                title: '恢复内置模板',
+                message: '将用内置业务 Prompt 模板替换当前内容，已发布版本不会受影响。',
+                confirmText: '恢复模板',
+              });
+              if (!ok) return;
+              state.form.prompt = DEFAULT_PROMPT;
+              state.promptOpen = true;
+              markDirty();
+              renderForm();
+            },
+          })]
         : [chip('只读', 'neutral')],
-      collapsible: false,
-      body: h(
-        'div.stack',
-        null,
-        editable
-          ? textarea
-          : preview,
-        state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null
+      body: h('div.stack', null,
+        h('p.small.muted', { text: prompt.trim().slice(0, 160) + (prompt.trim().length > 160 ? '…' : '') || '尚未填写 Prompt' }),
+        details
       ),
     });
-    card.addEventListener('toggle', () => {
-      state.promptOpen = card.open;
-    });
-    return card;
   }
 
   function businessModelSection() {
@@ -1421,7 +1411,7 @@ export default async function environmentView(container, ctx) {
                   { value: 'file_tool', label: '通过文件工具读取' },
                 ],
               }),
-              inputFor('loader_config.subskill_tool', { label: '子技能读取工具' }),
+              h('div.form-field', null, h('span.form-field__label', { text: '子技能读取工具（内部配置）' }), h('span.mono', { text: loader.subskill_tool || 'read_skill' })),
               inputFor('loader_config.context_overflow', {
                 label: '上下文超限处理',
                 options: [
@@ -1523,7 +1513,7 @@ export default async function environmentView(container, ctx) {
         }),
         h(
           'select.select',
-          { disabled: !editable, 'aria-label': '比较方式', onchange: (event) => update(index, 'mode', event.target.value) },
+          { disabled: !editable, 'aria-label': '比较方式', onchange: (event) => { update(index, 'mode', event.target.value); renderForm(); } },
           ...FIELD_RULE_OPTIONS.map((option) => h('option', { value: option.value, selected: option.value === rule.mode }, option.label))
         ),
         h('input.input', {
@@ -1586,13 +1576,15 @@ export default async function environmentView(container, ctx) {
         )
       )
     );
-    return sectionCard({
+    const card = sectionCard({
       title: '评分规则',
-      description: `参数比较：${(COMPARE_MODE_OPTIONS.find((item) => item.value === compare.mode) || {}).label || compare.mode}${compare.field_rules?.length ? ` · ${compare.field_rules.length} 条字段规则` : ''}`,
+      description: `参数比较：${(COMPARE_MODE_OPTIONS.find((item) => item.value === compare.mode) || {}).label || compare.mode}${compare.field_rules?.length ? ` · ${compare.field_rules.length} 条字段规则` : ''} · 点击展开${EDITABLE() ? '编辑' : '查看'}`,
       collapsible: true,
-      open: compare.mode === 'semantic' && !judgeReady,
+      open: state.scoringOpen || (compare.mode === 'semantic' && !judgeReady),
       body,
     });
+    card.addEventListener('toggle', () => { state.scoringOpen = card.open; });
+    return card;
   }
 
   const JUDGE_PROVIDERS = [
@@ -1631,7 +1623,7 @@ export default async function environmentView(container, ctx) {
         ? [button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--judge', onClick: () => testConnection('judge'), disabled: state.testLoading.judge })]
         : [],
       collapsible: true,
-      open: active || state.form.scorer_compare?.mode === 'semantic',
+      open: state.form.scorer_compare?.mode === 'semantic' || (state.form.scorer_compare?.field_rules || []).some((rule) => rule.mode === 'semantic'),
       body,
     });
   }
@@ -1765,7 +1757,7 @@ export default async function environmentView(container, ctx) {
       'div.env-snapshot',
       null,
       h('span.env-snapshot__label', { text: '当前环境摘要' }),
-      h('span.env-snapshot__value', { text: `${items[0].value} · 优化器 ${items[1].value} · 预算 ${items[3].value}` }),
+      h('span.env-snapshot__value', { text: `${items[0].value} · 优化器 ${items[1].value} · 预算 ${items[4].value}` }),
       h('span.env-snapshot__hint', { text: '详细参数在下方配置区；启动运行时会再次展示冻结快照。' })
     );
   }
@@ -1820,10 +1812,13 @@ export default async function environmentView(container, ctx) {
           h('span#env-save-status.xsmall.muted', { text: '未发布' })
         );
 
+    const compare = state.form.scorer_compare || {};
+    const needsJudge = compare.mode === 'semantic' || (compare.field_rules || []).some((rule) => rule.mode === 'semantic');
+    const hasJudge = ['openai_http', 'enterprise_ws'].includes(state.form.judge_config?.provider);
     const groups = [
-      ['业务接入', '先选择业务模型；Prompt 属于高级上下文设置。', [businessModelSection(), advancedSettings('高级：业务 Prompt', promptSection())]],
-      ['执行设置', '上下文加载和并发只在需要调整时展开。', [advancedSettings('高级：上下文与并发', h('div.stack', null, loaderSection(), runParamsSection()))]],
-      ['优化与验收', '优化模型、评分方式与预算直接可见；验收规则按需查看。', [optimizerSection(), scoringRulesSection(), judgeSection(), budgetSection(), advancedSettings('高级：接受条件', acceptanceSection())]],
+      ['任务必需', '配置执行模型、业务 Prompt、优化模型和预算。', [businessModelSection(), promptSection(), optimizerSection(), budgetSection()]],
+      ['按需配置', '查看评分规则；使用语义比较时配置评分模型。', [scoringRulesSection(), ...(needsJudge || hasJudge ? [judgeSection()] : [])]],
+      ['高级设置', '上下文加载、并发与接受条件可按需调整。', [advancedSettings('高级运行设置', h('div.stack', null, loaderSection(), runParamsSection(), acceptanceSection()))]],
     ];
     const children = [
       banner,
@@ -1836,7 +1831,7 @@ export default async function environmentView(container, ctx) {
           'div.form-actions',
           null,
           button({ label: '保存草稿', variant: 'secondary', iconName: 'save', onClick: () => saveDraft('draft'), disabled: state.busy }),
-          button({ label: '发布版本', variant: 'primary', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
+          button({ label: '保存并使用', variant: 'primary', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
         )
       );
     }
@@ -1881,18 +1876,18 @@ export default async function environmentView(container, ctx) {
 
   async function publishDraft() {
     if (!state.env) return;
-    let target = state.env;
-    if (state.dirty) {
-      const saved = await saveDraft('draft');
-      if (!saved) return;
-      target = saved;
-    }
     const ok = await confirmDialog({
       title: '发布执行环境',
       message: '发布后将设为项目当前环境，并冻结本轮使用的 Prompt 与模型参数。已有运行保留原快照。',
       confirmText: '发布并设为当前',
     });
     if (!ok) return;
+    let target = state.env;
+    if (state.dirty) {
+      const saved = await saveDraft('draft');
+      if (!saved) return;
+      target = saved;
+    }
     state.busy = true;
     try {
       const published = await api.publishEnvironment(target.id);

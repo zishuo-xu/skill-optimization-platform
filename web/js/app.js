@@ -170,7 +170,7 @@ function buildSidebarNav() {
       'div.nav-group',
       null,
       h('div.nav-group__title', { text: '项目' }),
-      navLink({ href: `${base}/overview`, iconName: 'overview', label: '概览', active: activeFor('overview') || (route.name === 'run' && state.run) }),
+      navLink({ href: `${base}/overview`, iconName: 'overview', label: '工作台', active: activeFor('overview') || (route.name === 'run' && state.run) }),
       navLink({ href: `${base}/skill`, iconName: 'skill', label: 'Skill 包', active: activeFor('skill') }),
       navLink({ href: `${base}/environment`, iconName: 'environment', label: '执行环境', active: activeFor('environment') }),
       navLink({ href: `${base}/dataset`, iconName: 'dataset', label: '数据集', active: activeFor('dataset') }),
@@ -317,7 +317,7 @@ export function parseHash(hash) {
 }
 
 const PROJECT_VIEWS = {
-  overview: { label: '概览', component: overviewView },
+  overview: { label: '工作台', component: overviewView },
   skill: { label: 'Skill 包', component: skillView },
   environment: { label: '执行环境', component: environmentView },
   dataset: { label: '数据集', component: datasetView },

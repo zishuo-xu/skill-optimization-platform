@@ -1,6 +1,7 @@
 /** 项目概览：配置完整性、最近指标、最近运行、随状态变化的主操作。 */
 
 import { api } from '../api_v3.js';
+import { createRunPreparation } from '../runPreparation.js';
 import { h, mount, icon } from '../dom.js';
 import {
   button,
@@ -14,23 +15,19 @@ import {
   loadingState,
   metricCard,
   openDrawer,
-  formField,
   toast,
   kvList,
 } from '../components.js';
 import {
   formatDateTime,
-  formatDelta,
   formatPercent,
   formatDate,
   formatTokens,
   metricsSummary,
   modeLabel,
-  relativeTime,
   shortenId,
-  splitLabel,
 } from '../format.js';
-import { DECISION_META, MODE_META, RULE_LABELS, STAGE_LABELS, decisionKey } from '../eventTypes.js';
+import { DECISION_META, RULE_LABELS, STAGE_LABELS, decisionKey } from '../eventTypes.js';
 
 export default async function overviewView(container, ctx) {
   const { project } = ctx;
@@ -59,19 +56,9 @@ export default async function overviewView(container, ctx) {
     }
 
     if (!ready) {
-      const firstMissing = (completeness?.missing || []).find((key) => completeness.items[key]?.route);
-      const item = firstMissing ? completeness.items[firstMissing] : null;
-      return h(
-        'div.primary-action-block',
-        null,
-        button({
-          label: '完成配置',
-          variant: 'primary',
-          iconName: 'arrowRight',
-          href: item?.route || `#/projects/${encodeURIComponent(project.id)}/skill`,
-        }),
-        h('span.start-hint', { text: primary?.reason || '配置尚未完成，补齐后即可运行基线评测。' })
-      );
+      return h('div.primary-action-block', null,
+        button({ label: '选择版本并运行基线', variant: 'primary', iconName: 'play', onClick: () => openStartDrawer('baseline') }),
+        h('span.start-hint', { text: '可选择已保存的草稿，发布后开始运行。' }));
     }
 
     if (primary?.mode === 'apply' && primary.run_id) {
@@ -127,12 +114,12 @@ export default async function overviewView(container, ctx) {
     const completeness = overview?.completeness;
     if (!completeness) return null;
     const items = completeness.items || {};
-    const itemKeys = ['skill_package', 'environment', 'dataset', 'baseline'];
+    const itemKeys = ['skill_package', 'environment', 'dataset'];
     const missingLabels = (completeness.missing || [])
       .filter((key) => key !== 'baseline')
       .map((key) => items[key]?.label || key);
     return sectionCard({
-      title: completeness.ready ? '当前配置' : '完成运行配置',
+      title: '运行准备',
       collapsible: completeness.ready,
       open: !completeness.ready,
       description: completeness.ready ? '基础配置已齐备，可以运行评测。' : `还缺 ${missingLabels.length || completeness.missing.length} 项配置`,
@@ -166,7 +153,7 @@ export default async function overviewView(container, ctx) {
               h(
                 'div.config-item__body',
                 null,
-                h('div.config-item__label', { text: item.label || key }),
+                h('div.config-item__label', { text: ({skill_package: 'Skill', environment: '配置 Prompt', dataset: '测试集'})[key] || item.label || key }),
                 h('div.config-item__detail', { title: item.detail || '', text: item.detail || (ok ? '已就绪' : '未配置') })
               ),
               action
@@ -179,11 +166,9 @@ export default async function overviewView(container, ctx) {
 
   function metricSection() {
     const metrics = overview?.metrics;
-    const baseline = overview?.baseline;
     if (!metrics) return h('p.overview-empty-metrics', { text: '当前配置还没有基线成绩；运行基线评测后，这里会显示分发、工具参数和联合通过率。' });
     const datasetInfo = metrics.dataset;
     const evaluatedText = metrics.evaluated_at ? formatDateTime(metrics.evaluated_at) : '—';
-    const samples = metrics.routing?.evaluated ?? metrics.tool_args?.evaluated ?? null;
     const stale = Boolean(metrics.stale);
     const coverageMissing = [metrics.routing, metrics.tool_args, metrics.joint].some((block) => block && block.status === 'not_evaluated');
 
@@ -224,16 +209,6 @@ export default async function overviewView(container, ctx) {
           ? h('div.row', { style: { gap: '16px', marginBottom: '14px' } }, h('span.muted.small', { text: metrics.meta }))
           : null,
         h('div.metric-grid', null, ...cards),
-        h(
-          'div.dataset-summary',
-          { style: { marginTop: '14px', marginBottom: 0 } },
-          h('span', null, h('strong', { text: '数据集' }), ` ${datasetInfo ? `v${datasetInfo.version_seq}` : '—'}`),
-          h('span', null, h('strong', { text: '有效样本' }), ` ${samples === null ? '—' : samples}`),
-          h('span', null, h('strong', { text: '评测时间' }), ` ${evaluatedText}`),
-          datasetInfo?.id
-            ? h('a', { href: `#/projects/${encodeURIComponent(project.id)}/dataset` }, '查看数据集')
-            : null
-        ),
         stale
           ? h(
               'p.coverage-hint',
@@ -258,7 +233,8 @@ export default async function overviewView(container, ctx) {
     const runs = overview?.recent_runs?.items || [];
     return sectionCard({
       title: '最近运行',
-      description: '刷新页面不会中断后台运行；可随时回到运行详情查看实时日志。',
+      collapsible: true,
+      open: false,
       padded: false,
 
       body: runs.length
@@ -291,7 +267,7 @@ export default async function overviewView(container, ctx) {
                     historical ? chip('历史配置', 'neutral') : null
                   ),
                   h('div.run-list__meta', {
-                    text: `${source ? `${source} · ` : ''}${formatDateTime(run.created_at)} · ${relativeTime(run.created_at)}`,
+                    text: `${source ? `${source} · ` : ''}${formatDateTime(run.created_at)}`,
                   })
                 ),
                 h('span.run-list__metrics', { text: metricsSummary(run.metrics?.candidate || run.metrics?.baseline) })
@@ -329,8 +305,8 @@ export default async function overviewView(container, ctx) {
     );
   }
 
-  function acceptanceRules() {
-    const rules = overview?.environment?.acceptance_config || {};
+  function acceptanceRules(environment) {
+    const repeats = environment?.acceptance_config?.validation_repeats || environment?.run_config?.validation_repeats || 3;
     const list = [
       ['routing_not_decreased', RULE_LABELS.routing_not_decreased],
       ['tool_args_not_decreased', RULE_LABELS.tool_args_not_decreased],
@@ -341,164 +317,101 @@ export default async function overviewView(container, ctx) {
       ['package_integrity', RULE_LABELS.package_integrity],
       ['validation_complete', RULE_LABELS.validation_complete],
     ];
-    void rules;
-    return list.map(([, label]) => label);
+    return [...list.map(([, label]) => label), `验证配对重复 ${repeats} 次`];
   }
 
   async function openStartDrawer(mode) {
     if (loading || error || !overview) return;
-    const completeness = overview.completeness;
-    if (!completeness.ready) {
-      toast('请先完成配置并发布对应版本', { type: 'warning' });
-      return;
-    }
-    const baseline = overview.baseline;
-    let environment = overview.environment || project.current_environment || null;
-    const dataset = overview.dataset || project.current_dataset || null;
-    const skillVersion = overview.skill_version || project.current_skill_version || null;
-    if (environment && !environment.run_config && project.current_environment_id) {
-      try {
-        environment = await api.getEnvironment(project.current_environment_id);
-      } catch {
-        /* keep summary */
-      }
-    }
-    const runConfig = environment?.run_config || {};
-    const budget = environment?.budget_config || {};
-    const reuseBaseline = mode === 'optimize' && Boolean(baseline?.available && baseline?.compatible);
-    const reuseInput = h('input', { type: 'checkbox', checked: reuseBaseline });
+    const body = h('div', null, loadingState('正在加载已保存版本…'));
     const errorHost = h('div');
-    let submitting = false;
-
-    const startButton = button({ label: mode === 'baseline' ? '开始基线评测' : '开始单轮优化', variant: 'primary', iconName: 'play' });
-    startButton.addEventListener('click', submit);
-
+    const stageHost = h('p.start-summary__note', { role: 'status' });
+    const startButton = button({ label: '开始运行', variant: 'primary', iconName: 'play', disabled: true });
     const drawer = openDrawer({
       title: mode === 'baseline' ? '运行基线评测' : '启动单轮优化',
-      subtitle: '启动时冻结 Skill 包、执行环境与数据集；运行期间不可修改配置。',
-      size: 'md',
-      body: h(
-        'div.start-summary',
-        null,
-        h(
-          'div.start-summary__section',
-          null,
-          h('h3', { text: '版本快照' }),
-          kvList([
-            { label: 'Skill 包', value: skillVersion ? `${skillVersion.label || shortenId(skillVersion.id, 14)} · ${skillVersion.status === 'draft' ? '草稿' : '已发布'}` : '—', mono: true },
-            { label: '执行环境', value: environment ? `v${environment.version_seq} · ${environment.model_config?.model || environment.model_config?.provider || '已配置'}` : '—' },
-            { label: '数据集', value: dataset ? `v${dataset.version_seq} · ${dataset.case_count ?? 0} 条案例` : '—', mono: true },
-            { label: '评分器', value: environment?.scorer_config?.scorer_version || 'score-v1', mono: true },
-          ]),
-          environment?.status === 'draft'
-            ? h('p.start-summary__note', { style: { marginTop: '8px' } }, '当前执行环境是草稿，建议先发布版本再运行。')
-            : null
-        ),
-        h(
-          'div.start-summary__section',
-          null,
-          h('h3', { text: '基线与复用' }),
-          baseline?.available
-            ? h(
-                'div',
-                null,
-                h(
-                  'div.row',
-                  null,
-                  chip(baseline.compatible ? '基线兼容' : '基线不兼容', baseline.compatible ? 'success' : 'warning', {
-                    iconName: baseline.compatible ? 'check' : 'alert',
-                  }),
-                  h('a', { href: `#/runs/${encodeURIComponent(baseline.run_id)}` }, `基线运行 ${shortenId(baseline.run_id, 14)}`)
-                ),
-                h('p.start-summary__note', { style: { marginTop: '6px' } }, baseline.reason || ''),
-                mode === 'optimize'
-                  ? h(
-                      'label.checkbox-line',
-                      { style: { marginTop: '10px' } },
-                      reuseInput,
-                      h('span', { text: '复用兼容基线结果（不重新执行基线评测）' })
-                    )
-                  : null
-              )
-            : h('p.start-summary__note', { text: '尚无兼容基线，本次会先执行基线评测。' })
-        ),
-        h(
-          'div.start-summary__section',
-          null,
-          h('h3', { text: '运行参数与预算' }),
-          kvList(
-            [
-              { label: '候选数量', value: mode === 'optimize' ? '1 个候选' : '—' },
-              { label: '验证重复', value: `${environment?.acceptance_config?.validation_repeats || runConfig.validation_repeats || 3} 次配对` },
-              { label: '并发', value: `${runConfig.concurrency || 3} 个案例` },
-              { label: '案例上限', value: `${runConfig.max_model_calls || 12} 次模型调用 / ${runConfig.case_timeout_s || 120} 秒` },
-              { label: 'Token 预算', value: budget.max_tokens ? `上限 ${formatTokens(budget.max_tokens)} Token` : '未设置（启动前必须设置）' },
-              { label: '金额预算', value: budget.max_cost ? `上限 ${budget.max_cost}` : '未配置价格，以 Token 硬限制为准' },
-            ],
-            { compact: true }
-          )
-        ),
-        h(
-          'details.start-summary__section',
-          null,
-          h('summary', { text: '查看完整接受条件' }),
-          h(
-            'ul',
-            { style: { paddingLeft: '1.1em', color: 'var(--text-2)', fontSize: '12.5px', lineHeight: '1.8' } },
-            ...acceptanceRules().map((label) => h('li', { text: label }))
-          )
-        ),
-        h(
-          'p.start-summary__note',
-          null,
-          '运行会产生模型调用费用；取消运行不会回退已经产生的费用。后台运行不依赖页面保持打开。'
-        ),
-        errorHost
-      ),
-      footer: h(
-        'div.btn-row',
-        null,
-        button({ label: '取消', variant: 'ghost', onClick: () => drawer.close() }),
-        startButton
-      ),
+      subtitle: '选择本轮使用的版本；草稿会先发布，再冻结版本启动。', size: 'md',
+      body: h('div.start-summary', null, body, stageHost, errorHost),
+      footer: h('div.btn-row', null, button({ label: '取消', variant: 'ghost', onClick: () => drawer.close() }), startButton),
     });
-
-    async function submit() {
-      if (submitting) return;
-      submitting = true;
-      startButton.disabled = true;
-      startButton.textContent = '正在创建运行…';
-      mount(errorHost);
-      try {
-        const response = await api.createRun({
-          project_id: project.id,
-          mode,
-          parent_run_id: mode === 'optimize' && baseline?.run_id ? baseline.run_id : undefined,
-          expected_current_version: project.current_skill_version_id,
-          reuse_baseline: mode === 'optimize' ? Boolean(reuseInput.checked) : undefined,
-        });
-        const runId = response?.run_id || response?.id;
-        drawer.close();
-        toast('运行已创建，正在跳转到运行详情', { type: 'success' });
-        if (runId) ctx.navigate(`#/runs/${encodeURIComponent(runId)}`);
-        else await ctx.reload();
-      } catch (err) {
-        submitting = false;
-        startButton.disabled = false;
-        startButton.textContent = mode === 'baseline' ? '开始基线评测' : '开始单轮优化';
-        const active = err.details?.run_id || overview?.active_run?.id;
-        mount(
-          errorHost,
-          h(
-            'div',
-            null,
-            h('div.inline-error', { role: 'alert' }, icon('alert', { size: 14 }), h('span', { text: err.message })),
-            active && err.code === 'run_in_progress'
-              ? h('p.small', { style: { marginTop: '8px' } }, h('a', { href: `#/runs/${encodeURIComponent(active)}` }, '查看正在进行的运行'))
-              : null
-          )
-        );
-      }
+    try {
+      const [fresh, skills, environments, datasets] = await Promise.all([
+        api.getProject(project.id), api.listSkillVersions(project.id),
+        api.listEnvironments(project.id), api.listDatasets(project.id),
+      ]);
+      const asItems = (value) => Array.isArray(value) ? value : (value?.items || []);
+      const groups = [
+        ['skill', 'Skill', asItems(skills), fresh.current_skill_version_id],
+        ['environment', '配置 Prompt', asItems(environments), fresh.current_environment_id],
+        ['dataset', '测试集', asItems(datasets), fresh.current_dataset_id],
+      ];
+      const selects = {};
+      const details = h('div');
+      const advanced = h('div');
+      const prepare = createRunPreparation(api);
+      let submitting = false;
+      const selection = () => Object.fromEntries(groups.map(([kind, , items]) => [kind, items.find((item) => item.id === selects[kind].value)]));
+      const changed = () => groups.some(([kind, , , current]) => selects[kind].value !== (current || ''));
+      const update = async () => {
+        const chosen = selection();
+        const valid = groups.every(([kind]) => chosen[kind]);
+        startButton.disabled = !valid || submitting;
+        startButton.textContent = groups.some(([kind]) => chosen[kind]?.status === 'draft') ? '发布并开始' : '开始运行';
+        mount(details, h('p.start-summary__note', { text: changed() && mode === 'optimize' ? '选择不同版本后将重新运行基线，再进行优化。' : '优化使用独立验证集；最终测试集保持隔离。' }));
+        mount(advanced);
+        if (chosen.environment) {
+          const id = chosen.environment.id;
+          const env = await api.getEnvironment(id).catch(() => chosen.environment);
+          if (selects.environment.value !== id) return;
+          const budget = env.budget_config || {}, config = env.run_config || {};
+          mount(advanced, kvList([
+            { label: '模型', value: env.model_config?.model || env.model_config?.provider || '未配置' },
+            { label: 'Token 预算', value: budget.max_tokens ? `上限 ${formatTokens(budget.max_tokens)} Token` : '未设置' },
+            { label: '金额预算', value: budget.max_cost ? `上限 ${budget.max_cost}` : '以 Token 限制为准' },
+          ]), h('details', null, h('summary', { text: '高级参数与接受条件' }),
+            kvList([{ label: '并发', value: `${config.concurrency || 3} 个案例` }, { label: '调用上限', value: `${config.max_model_calls || 12} 次` }, { label: '超时', value: `${config.case_timeout_s || 120} 秒` }]),
+            h('ul', null, ...acceptanceRules(env).map((label) => h('li', { text: label })))));
+        }
+      };
+      const controls = groups.map(([kind, label, items, current]) => {
+        const eligible = items.filter((item) => item.id === current || item.status === 'draft');
+        const select = h('select', { 'aria-label': label },
+          h('option', { value: '', text: '请选择已保存版本' }),
+          ...eligible.map((item) => h('option', { value: item.id, text: `${item.label || (item.version_seq ? `v${item.version_seq}` : shortenId(item.id, 14))} · ${item.id === current ? '当前版本' : '草稿'}` })));
+        select.value = eligible.some((item) => item.id === current) ? current : '';
+        select.addEventListener('change', update);
+        selects[kind] = select;
+        return h('label.form-field', null, h('span', { text: label }), select,
+          !eligible.length ? h('a', { href: `#/projects/${encodeURIComponent(project.id)}/${kind === 'environment' ? 'environment' : kind}`, onClick: () => drawer.close() }, '去配置') : null);
+      });
+      mount(body, h('div.start-summary__section', null, h('h3', { text: '本轮使用' }), ...controls),
+        details, h('div.start-summary__section', null, advanced),
+        h('p.start-summary__note', { text: '运行会产生模型调用费用；后台运行不依赖页面保持打开。' }));
+      startButton.addEventListener('click', async () => {
+        if (submitting) return;
+        const chosen = selection();
+        if (groups.some(([kind]) => !chosen[kind])) return;
+        submitting = true; startButton.disabled = true;
+        Object.values(selects).forEach((select) => { select.disabled = true; });
+        mount(errorHost);
+        try {
+          const result = await prepare({ projectId: project.id, selection: chosen, mode, expectedPointers: fresh,
+            baselineId: !changed() ? overview.baseline?.run_id : null,
+            reuseBaseline: !changed() && Boolean(overview.baseline?.compatible),
+            onStage: (stage) => { stageHost.textContent = `${stage}中…`; } });
+          const runId = result?.run_id || result?.id;
+          if (!runId) throw new Error('服务未返回运行 ID，请检查运行列表');
+          drawer.close(); toast('运行已创建', { type: 'success' }); ctx.navigate(`#/runs/${encodeURIComponent(runId)}`);
+        } catch (err) {
+          stageHost.textContent = '';
+          mount(errorHost, h('div.inline-error', { role: 'alert' }, icon('alert', { size: 14 }),
+            h('span', { text: `${err.preparationStage || '启动'}失败：${err.message}。已发布的版本会保留，可重试。` })));
+          submitting = false;
+          Object.values(selects).forEach((select) => { select.disabled = false; });
+          update();
+        }
+      });
+      update();
+    } catch (err) {
+      mount(body, errorState(err, { title: '无法加载版本', retry: () => { drawer.close(); openStartDrawer(mode); } }));
     }
   }
 
