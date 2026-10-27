@@ -4919,6 +4919,19 @@ pre,
 .compare-column--expected { border-color: var(--accent-line); }
 .case-more > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); padding: 4px 0 10px; }
 
+.execution-trace { display: grid; gap: 12px; margin-top: 14px; }
+.trace-group { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--surface-2); }
+.trace-group__title { margin: 0 0 8px; font-size: 14px; }
+.trace-step { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 9px 0; border-top: 1px solid var(--line-soft); }
+.trace-step:first-of-type { border-top: 0; }
+.trace-step__title { font-weight: 600; }
+.trace-step__status { color: var(--text-2); font-size: 12px; }
+.trace-step__detail { grid-column: 1 / -1; color: var(--text-2); font-size: 12px; word-break: break-word; }
+.trace-step__payload { grid-column: 1 / -1; font-size: 12px; }
+.trace-step__payload > summary { cursor: pointer; color: var(--text-2); }
+.trace-empty { color: var(--text-2); font-size: 12px; padding: 6px 0; }
+.trace-internal { margin-top: 2px; }
+
 @media (max-width: 900px) {
   .compare-columns--3 { grid-template-columns: 1fr; }
 }

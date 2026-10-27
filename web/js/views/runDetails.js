@@ -56,8 +56,8 @@ import {
   expectedColumn,
   judgmentsBlock,
   openTrialDrawer,
+  scopedExecutionTrace,
   sideBadge,
-  timelineDetails,
   verdictRows,
 } from './caseView.js';
 
@@ -1439,6 +1439,10 @@ export default async function runDetailsView(container, ctx) {
         ),
         verdictRows(sides)
       ),
+      scopedExecutionTrace(events, [
+        { label: baselineOnly ? '执行链路' : '基线执行链路', variant: 'baseline' },
+        ...(baselineOnly ? [] : [{ label: '候选执行链路', variant: 'candidate' }]),
+      ]),
       h(
         'div.case-section',
         null,
@@ -1452,7 +1456,6 @@ export default async function runDetailsView(container, ctx) {
         )
       ),
       judgmentsBlock(sides),
-      timelineDetails(events),
       jsonViewer(detail.expected || {}, { label: '预期结果 JSON', maxHeight: '240px', redact: false })
     );
   }

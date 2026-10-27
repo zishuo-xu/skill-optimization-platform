@@ -26,7 +26,8 @@ import {
   splitLabel,
   truncate,
 } from '../format.js';
-import { eventLabel } from '../eventTypes.js';
+import { eventLabel, STAGE_LABELS } from '../eventTypes.js';
+import { projectExecutionTrace, groupExecutionTrace } from '../executionTrace.js';
 
 export function sideBadge(side) {
   if (!side) return h('span.muted.xsmall', { text: '—' });
@@ -150,7 +151,9 @@ export function verdictRows(sides) {
         const message = protocol === 'missing_undetermined'
           ? '结束协议：未调用 finish，缺少明确动作证据，无法判定是否完成'
           : '结束协议：未调用 finish；业务结果单独评分';
-        detail = h('div', null, detail, h('span.case-verdict__basis', { text: message }));
+        detail = h('div', null, detail, h('details.case-more', null,
+          h('summary', { text: '结束协议详情' }),
+          h('span.case-verdict__basis', { text: message })));
       }
       return h(
         'div.case-verdict__row',
@@ -197,7 +200,7 @@ export function timelineBlock(events) {
   return h(
     'div.timeline',
     null,
-    ...events.slice(-60).map((event) =>
+    ...events.map((event) =>
       h(
         `div.timeline__item timeline__item--${event.level || 'info'}`,
         null,
@@ -222,7 +225,7 @@ export function timelineBlock(events) {
         (() => {
           const payload = event.payload || {};
           const detail = Object.fromEntries(['arguments', 'result', 'response', 'output'].filter((key) => payload[key] !== undefined).map((key) => [key, payload[key]]));
-          return !Object.keys(detail).length ? null : h('details.timeline__payload', null,
+          return !Object.keys(detail).length ? null : h('details.timeline__payload', { 'data-trace-key': `raw:${event.seq ?? `${event.call_id}:${event.type}`}` },
             h('summary', { text: '查看参数 / 返回' }),
             h('pre.code-block__pre', { text: safeJsonStringify(detail, 2), style: { maxHeight: '180px', whiteSpace: 'pre-wrap' } }));
         })()
@@ -233,6 +236,43 @@ export function timelineBlock(events) {
 
 export function timelineDetails(events, { open = false } = {}) {
   return h('details.case-more', open ? { open: true } : null, h('summary', { text: `执行过程（${events.length} 条事件）` }), timelineBlock(events));
+}
+
+export function scopedExecutionTrace(events, scopes = []) {
+  const groups = groupExecutionTrace(events);
+  if (!groups.length) return executionTraceView([], { complete: true });
+  return h('div.execution-trace-scopes', null, ...groups.map(({scope, events: records}) => {
+    const [variant, stage, repeat] = scope;
+    const label = scopes.find(item => item.variant === variant)?.label || ({baseline:'基线执行链路',candidate:'候选执行链路'}[variant]) || '执行链路';
+    const title = [label, stage ? (STAGE_LABELS[stage] || stage) : '', repeat !== '' ? `第 ${repeat} 次` : ''].filter(Boolean).join(' · ');
+    return h('section.trace-scope', null, h('h3.trace-group__title', {text:title}), executionTraceView(records, {complete:true}));
+  }));
+}
+
+function traceStatus(status) {
+  return { loaded: '已加载', pending: '加载中', unconfirmed: '未确认', running: '执行中', returned: '已返回', failed: '失败' }[status] || '未确认';
+}
+
+export function executionTraceView(events, { complete = false } = {}) {
+  const trace = projectExecutionTrace(events, { complete });
+  const skillRows = trace.skills.length ? trace.skills.map((item) => h('div.trace-step', null,
+    h('span.trace-step__title', { text: `加载子技能 · ${item.skillId || '—'}` }),
+    h('span.trace-step__status', { text: traceStatus(item.status) }),
+    item.path ? h('span.trace-step__detail', { text: `${item.path}${item.cached ? ' · 已缓存' : ''}` }) : null
+  )) : [h('div.trace-empty', { text: '尚未观察到子技能加载' })];
+  const callRows = trace.calls.length ? trace.calls.map((item) => h('div.trace-step', null,
+    h('span.trace-step__title', { text: `调用工具 · ${item.name}` }),
+    h('span.trace-step__status', { text: traceStatus(item.status) }),
+    item.error ? h('span.trace-step__detail', { text: item.error }) : null,
+    (item.arguments !== undefined || item.response !== undefined) ? h('details.trace-step__payload', { 'data-trace-key': `tool:${item.key}` },
+      h('summary', { text: '查看工具参数 / 返回' }),
+      h('pre.code-block__pre', { text: safeJsonStringify({ arguments: item.arguments, response: item.response }, 2), style: { maxHeight: '180px', whiteSpace: 'pre-wrap' } })) : null
+  )) : [h('div.trace-empty', { text: '尚未观察到业务工具调用' })];
+  return h('div.execution-trace', null,
+    h('section.trace-group', null, h('h3.trace-group__title', { text: '加载子技能' }), ...skillRows),
+    h('section.trace-group', null, h('h3.trace-group__title', { text: '调用工具' }), ...callRows),
+    h('details.case-more.trace-internal', { 'data-trace-key': 'internal' }, h('summary', { text: `内部协议与原始事件（${trace.internal.length} 条）` }), timelineBlock(trace.internal))
+  );
 }
 
 /* ---------------- single-case trial ---------------- */
@@ -257,6 +297,7 @@ function trialResultView(data) {
       verdictRows([['结果', side]]),
       errorText ? h('p.small.trial-error', { text: truncate(errorText, 400) }) : null
     ),
+    executionTraceView(data.events || [], { complete: true }),
     h(
       'div.case-section',
       null,
@@ -267,7 +308,6 @@ function trialResultView(data) {
     side.raw_output && side.action !== 'tool_call'
       ? h('details.case-more', null, h('summary', { text: '模型原始输出' }), codeBlock(side.raw_output, { wrap: true, maxHeight: '260px' }))
       : null,
-    timelineDetails(data.events || [], { open: true }),
     data.expected ? jsonViewer(data.expected, { label: '预期结果 JSON', maxHeight: '240px', redact: false }) : null
   );
 }
@@ -275,29 +315,39 @@ function trialResultView(data) {
 function createTrialLiveView(events, startedAt) {
   const elapsed = Math.max(0, Date.now() - startedAt);
   const latest = events[events.length - 1];
-  const timeline = events.length ? timelineBlock(events) : h('div.timeline');
-  let lastSeq = events.length ? events[events.length - 1].seq : -1;
-  const details = h('details.case-more', { open: true }, h('summary', { text: `实时执行链路（${events.length} 条）` }), timeline);
+  const details = h('div.trial-live__trace', null, executionTraceView(events));
+  const liveTitle = (items) => {
+    const trace = projectExecutionTrace(items);
+    const lastCall = trace.calls[trace.calls.length - 1];
+    if (lastCall?.status === 'running') return lastCall.name ? `调用工具 · ${lastCall.name}` : '调用工具';
+    if (items.some(item => item.type === 'scoring_started')) return '正在核对结果';
+    if (lastCall?.status === 'returned' || lastCall?.status === 'failed') return '等待后续执行结果';
+    const lastSkill = trace.skills[trace.skills.length - 1];
+    if (lastSkill?.status === 'pending') return `加载子技能 · ${lastSkill.skillId || '—'}`;
+    if (lastSkill) return '子技能已加载，等待后续执行';
+    return '准备执行';
+  };
   const root = h('div.trial-live', null,
     h('div.row', { style: { justifyContent: 'space-between', alignItems: 'center' } },
-      h('strong.trial-live__title', { text: latest?.payload?.title || (latest ? eventLabel(latest.type) : '正在连接模型…') }),
+      h('strong.trial-live__title', { text: liveTitle(events) }),
       h('span.xsmall.muted.trial-live__elapsed', { text: `已等待 ${formatDuration(elapsed)}` })),
-    h('p.xsmall.muted.trial-live__message', { text: latest?.payload?.message || '连接建立后，模型、技能和工具事件会实时出现。' }), details
+    h('p.xsmall.muted.trial-live__message', { text: latest?.payload?.message || '按实际事件更新技能加载和工具调用；完整记录可在详情中展开。' }), details
   );
   root._update = (nextEvents, nextStartedAt) => {
     const nextLatest = nextEvents[nextEvents.length - 1];
-    root.querySelector('.trial-live__title').textContent = nextLatest?.payload?.title || (nextLatest ? eventLabel(nextLatest.type) : '正在连接模型…');
+    root.querySelector('.trial-live__title').textContent = liveTitle(nextEvents);
     root.querySelector('.trial-live__elapsed').textContent = `已等待 ${formatDuration(Math.max(0, Date.now() - nextStartedAt))}`;
-    root.querySelector('.trial-live__message').textContent = nextLatest?.payload?.message || '连接建立后，模型、技能和工具事件会实时出现。';
-    const summary = details.querySelector('summary');
-    if (summary) summary.textContent = `实时执行链路（${nextEvents.length} 条）`;
-    const oldTimeline = details.querySelector('.timeline');
-    const newEvents = nextEvents.filter((event) => event.seq > lastSeq);
-    if (oldTimeline && newEvents.length) {
-      const additions = timelineBlock(newEvents);
-      while (additions.firstChild) oldTimeline.appendChild(additions.firstChild);
-      while (oldTimeline.children.length > 200) oldTimeline.firstChild.remove();
-      lastSeq = newEvents[newEvents.length - 1].seq;
+    root.querySelector('.trial-live__message').textContent = nextLatest?.payload?.message || '按实际事件更新技能加载和工具调用；完整记录可在详情中展开。';
+    if (nextEvents === events) return;
+    const nextTrace = executionTraceView(nextEvents);
+    const oldTrace = root.querySelector('.trial-live__trace .execution-trace');
+    if (oldTrace) {
+      const openDetails = new Map([...oldTrace.querySelectorAll('details')].map((item) => [item.dataset.traceKey || '', {open:item.open, scroll:item.querySelector('pre')?.scrollTop || 0}]));
+      oldTrace.replaceWith(nextTrace);
+      [...nextTrace.querySelectorAll('details')].forEach((item) => {
+        const state = openDetails.get(item.dataset.traceKey || '');
+        if (state) { item.open = state.open; const pre = item.querySelector('pre'); if (pre) pre.scrollTop = state.scroll; }
+      });
     }
     events = nextEvents;
   };
