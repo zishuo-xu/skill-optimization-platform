@@ -708,7 +708,7 @@ export function compareRuleSummary(compare) {
  */
 export function explainCaseSide(side) {
   if (!side) return null;
-  if (side.passed) return { passed: true, reasons: [] };
+  if (side.passed) return { passed: true, reasons: [], finishProtocol: side.finish_protocol || 'unknown' };
   const reasons = [];
   const seen = new Set();
   const diags = side.diagnostics || [];
@@ -746,5 +746,5 @@ export function explainCaseSide(side) {
       reasons.push({ group: 'error', text: '结果与预期不一致（评分没有给出明细）', basis: '' });
     }
   }
-  return { passed: false, reasons };
+  return { passed: false, reasons, finishProtocol: side.finish_protocol || 'unknown' };
 }

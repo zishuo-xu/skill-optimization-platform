@@ -579,7 +579,7 @@ def _actual_route(actual: Mapping[str, Any]) -> list[str]:
 def _actual_action(actual: Mapping[str, Any],
                    business_calls: Sequence[Mapping[str, Any]]) -> str:
     action = actual.get("action")
-    if isinstance(action, str) and action in ACTIONS:
+    if isinstance(action, str) and action in (*ACTIONS, "undetermined"):
         return action
     if business_calls:
         return "tool_call"
@@ -1652,6 +1652,7 @@ def _invalid_result(reason: str, case_id: str | None,
         },
         "action_ok": False,
         "joint": False,
+        "finish_protocol": "unknown",
         "diagnostics": [_diag("protocol_error", case_id=case_id,
                               field_path=field_path, expected_value=None,
                               actual_value=reason)],
@@ -1918,6 +1919,7 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
         "action_ok": bool(action_ok),
         "joint": bool(joint),
         "diagnostics": _dedupe_diagnostics(diagnostics),
+        "finish_protocol": actual.get("finish_protocol") or "unknown",
     }
     if pending and error_kind is None:
         result["pending_judgments"] = list(pending.values())

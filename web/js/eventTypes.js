@@ -185,6 +185,7 @@ export const SPLIT_META = {
 };
 
 export const ACTION_LABELS = {
+  undetermined: '无法判定',
   tool_call: '调用工具',
   clarify: '请求澄清',
   no_action: '无需操作',

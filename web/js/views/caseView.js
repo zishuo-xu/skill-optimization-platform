@@ -145,6 +145,13 @@ export function verdictRows(sides) {
       else if (!scored) detail = h('span.small.muted', { text: '自由输入没有预期，只展示模型的实际行为。' });
       else if (explained && !explained.passed) detail = reasonList(explained.reasons);
       else detail = h('span.small.muted', { text: '与预期一致' });
+      const protocol = side?.finish_protocol;
+      if (protocol === 'missing' || protocol === 'missing_undetermined') {
+        const message = protocol === 'missing_undetermined'
+          ? '结束协议：未调用 finish，缺少明确动作证据，无法判定是否完成'
+          : '结束协议：未调用 finish；业务结果单独评分';
+        detail = h('div', null, detail, h('span.case-verdict__basis', { text: message }));
+      }
       return h(
         'div.case-verdict__row',
         null,

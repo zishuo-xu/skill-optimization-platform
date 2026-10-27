@@ -332,6 +332,31 @@ def test_native_adapter_internal_tools_never_count_as_business_calls(package):
                for message in second_call_messages)
 
 
+def test_native_business_result_can_end_without_finish_in_relaxed_mode(package):
+    root, manifest = package
+    adapter = ScriptedAdapter([
+        {"tool_calls": [ScriptedAdapter.tool("select_skill", {"skill_id": "task_query"}, "s1")]},
+        {"tool_calls": [ScriptedAdapter.tool("list_tasks", {"project_id": "P123", "status": "in_progress"}, "b1")]},
+        {"content": "已完成查询"},
+    ], capabilities=NATIVE_CAPS)
+    result = run_case(make_request(root, manifest), adapter)
+    assert result["error"] is None
+    assert result["action"] == "tool_call"
+    assert result["finish_protocol"] == "missing"
+    assert result["tool_calls"][0]["name"] == "list_tasks"
+
+
+def test_native_missing_finish_can_be_strictly_rejected(package):
+    root, manifest = package
+    adapter = ScriptedAdapter([
+        {"tool_calls": [ScriptedAdapter.tool("list_tasks", {"project_id": "P123", "status": "in_progress"}, "b1")]},
+        {"content": "已完成查询"},
+    ], capabilities=NATIVE_CAPS)
+    result = run_case(make_request(root, manifest,
+                                   loader_config={"mode": "on_demand", "strict_finish": True}), adapter)
+    assert result["error"]["code"] == "protocol_error"
+
+
 def test_finish_summary_must_match_observed_selection_events(package):
     root, manifest = package
     adapter = ScriptedAdapter([
@@ -354,12 +379,14 @@ def test_unknown_native_tool_is_protocol_error(package):
     assert len(adapter.calls) == 1
 
 
-def test_native_model_stopping_without_finish_is_protocol_error(package):
+def test_native_model_stopping_without_finish_is_undetermined_in_relaxed_mode(package):
     root, manifest = package
     adapter = ScriptedAdapter([{"content": "我已经回答完了", "finish_reason": "stop"}],
                               capabilities=NATIVE_CAPS)
     result = run_case(make_request(root, manifest), adapter)
-    assert result["error"]["code"] == "protocol_error"
+    assert result["error"] is None
+    assert result["action"] == "undetermined"
+    assert result["finish_protocol"] == "missing_undetermined"
 
 
 def test_truncated_and_refused_finish_reasons_are_capability_failures(package):

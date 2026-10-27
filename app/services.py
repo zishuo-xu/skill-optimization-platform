@@ -236,7 +236,12 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
             raise ValidationError("优化模型 provider 不支持",
                                   field_path="optimizer_config.provider")
     tool_schema = normalize_tool_schema(payload.get("tool_schema"))
-    loader_config = payload.get("loader_config") or {}
+    loader_config = dict(payload.get("loader_config") or {})
+    strict_finish = loader_config.get("strict_finish", False)
+    if not isinstance(strict_finish, bool):
+        raise ValidationError("loader_config.strict_finish 必须是布尔值",
+                              field_path="loader_config.strict_finish")
+    loader_config["strict_finish"] = strict_finish
     run_config = dict(payload.get("run_config") or {})
     budget_config = dict(payload.get("budget_config") or {})
     scorer_config = dict(payload.get("scorer_config") or {})
@@ -807,6 +812,9 @@ def run_fingerprint(skill_version_id: str, environment_id: str, dataset_id: str,
         "dataset_id": dataset_id,
         "scorer_version": scorer_version,
         "repeats": repeats,
+        # Changing finish handling must invalidate cached baselines.  This is
+        # deliberately a frozen revision rather than inferred from old rows.
+        "finish_policy": "finish-v2-business-independent",
     })
 
 
@@ -1429,6 +1437,7 @@ def _side(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "missing_fields": row.get("missing_fields") or [],
         "passed": scores.get("passed"),
         "status": scores.get("status"),
+        "finish_protocol": scores.get("finish_protocol") or (row.get("actual") or {}).get("finish_protocol"),
         "error_code": row.get("error_code") or scores.get("error_code"),
         "reason": (scores.get("joint") or {}).get("reason") if isinstance(
             scores.get("joint"), dict) else scores.get("reason"),

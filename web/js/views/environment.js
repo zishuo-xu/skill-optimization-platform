@@ -215,6 +215,7 @@ function defaults() {
       max_model_calls: 12,
       max_context_chars: 60000,
       context_overflow: 'error',
+      strict_finish: false,
     },
     run_config: {
       concurrency: 3,
@@ -569,6 +570,7 @@ export default async function environmentView(container, ctx) {
       max_steps: num(form.loader_config.max_steps, 8),
       max_model_calls: num(form.loader_config.max_model_calls, 12),
       max_context_chars: num(form.loader_config.max_context_chars, 60000),
+      strict_finish: Boolean(form.loader_config.strict_finish),
     };
     const runConfig = {
       ...form.run_config,
@@ -1414,6 +1416,7 @@ export default async function environmentView(container, ctx) {
       { label: '每案例模型调用', value: String(loader.max_model_calls ?? 12) },
       { label: '最大上下文字符', value: Number(loader.max_context_chars || 60000).toLocaleString() },
       { label: '上下文超限', value: loader.context_overflow === 'frozen_strategy' ? '执行冻结加载策略' : '显式报错' },
+      { label: '结束协议', value: loader.strict_finish ? '必须调用 finish' : '缺少 finish 仍按业务评分' },
     ]);
   }
 
@@ -1450,6 +1453,9 @@ export default async function environmentView(container, ctx) {
                   { value: 'error', label: '显式报错' },
                   { value: 'frozen_strategy', label: '执行冻结加载策略' },
                 ],
+              }),
+              inputFor('loader_config.strict_finish', {
+                label: '严格结束协议', type: 'checkbox', hint: '缺少 finish 时将案例记为协议失败'
               })
             )
           )

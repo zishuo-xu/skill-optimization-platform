@@ -163,6 +163,10 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `status=="infra"` 的结果不计入任何分母，单独统计并阻止自动晋级。
 - capability 失败（format_error/refused/steps_exhausted/context_overflow/truncated/
   protocol_error/fixture_miss/parse_failed）计入分母并判 fail。
+- 缺少 `finish` 默认只记录执行结果中的 `finish_protocol=missing`，不再自动生成
+  `protocol_error`；若业务工具调用和参数正确，R/A/J 仍按业务结果评分。执行环境
+  `loader_config.strict_finish=true` 时恢复严格协议失败口径。没有业务调用且无法
+  从结构化结果确定 action 时使用 `action=undetermined`，不自动通过。
 - R 分母：`expected.action=="tool_call"` 且 `routes` 非空的案例；分母为 0 时
   `{"value": null, "status": "not_evaluated"}`。
 - A 分母：`expected.action=="tool_call"` 且 `expected.tool_calls` 非空的案例；

@@ -415,6 +415,10 @@ class _CaseRunner:
         self.model_calls = 0
         self.step_count = 0
         self.finish_reason: str | None = None
+        # finish is a protocol signal.  By default it is advisory so that
+        # business-tool correctness can be scored independently.
+        self.finish_protocol = "missing"
+        self.inferred_action: str | None = None
         self.last_content = ""
         self.usage_parts: list[dict[str, int] | None] = []
         self.tool_calls: list[dict[str, Any]] = []
@@ -642,6 +646,8 @@ class _CaseRunner:
         if tool_calls:
             self._dispatch_native_batch(tool_calls, content, call_id)
             if self.obs.is_finished():
+                self._raise_for_finish_reason()
+                self.finish_protocol = "ok"
                 return self._success()
             self._raise_for_finish_reason()
             return None
@@ -649,7 +655,26 @@ class _CaseRunner:
         # No structured tool calls: follow the frozen protocol for this adapter.
         if self.tool_protocol == "native" and self.capabilities.get("native_tools"):
             self._raise_for_finish_reason()
-            raise _Failure("protocol_error", "模型未通过 finish 工具结束案例")
+            if bool((self.request.get("loader_config") or {}).get("strict_finish")):
+                raise _Failure("protocol_error", "模型未通过 finish 工具结束案例")
+            # A normal terminal response is still useful evidence.  Infer the
+            # action only when business calls were observed; otherwise leave it
+            # indeterminate instead of silently passing a no-action case.
+            if self.tool_calls:
+                action = "tool_call"
+                self.finish_protocol = "missing"
+                return self._build_result(
+                    action=action,
+                    selected_skills=self.obs.result()["selected_skills"],
+                    tool_calls=self.tool_calls,
+                    missing_fields=[], raw_output=self.last_content,
+                )
+            self.finish_protocol = "missing_undetermined"
+            return self._build_result(
+                action="undetermined",
+                selected_skills=self.obs.result()["selected_skills"],
+                tool_calls=[], missing_fields=[], raw_output=self.last_content,
+            )
         self._raise_for_finish_reason()
         self._handle_text_response(content, call_id)
         if self.obs.is_finished():
@@ -816,9 +841,16 @@ class _CaseRunner:
                 }, call_id=call_id)
             except ObsToolError as exc:
                 raise _Failure(exc.code, exc.message, details=exc.details) from exc
+            self.finish_protocol = "ok"
         elif not business_calls:
+            if bool((self.request.get("loader_config") or {}).get("strict_finish")):
+                raise _Failure("protocol_error", "模型未通过 finish 协议结束案例")
+            self.finish_protocol = "missing"
             # Routing-only / plain text result: action inferred from observation.
             action = "tool_call" if self.tool_calls else "no_action"
+            if not self.tool_calls:
+                self.inferred_action = "undetermined"
+                self.finish_protocol = "missing_undetermined"
             try:
                 self.obs.finish({
                     "action": action,
@@ -923,7 +955,7 @@ class _CaseRunner:
                  raw_output: str | None = None) -> dict[str, Any]:
         obs_result = self.obs.result()
         return self._build_result(
-            action=action if action is not None else obs_result["action"],
+            action=action if action is not None else (self.inferred_action or obs_result["action"]),
             selected_skills=selected_skills if selected_skills is not None
             else obs_result["selected_skills"],
             tool_calls=tool_calls if tool_calls is not None else self.tool_calls,
@@ -940,8 +972,10 @@ class _CaseRunner:
             except (TypeError, ValueError):
                 error["details"] = str(failure.details)
         obs_result = self.obs.result()
+        if failure.code == "protocol_error":
+            self.finish_protocol = "error"
         return self._build_result(
-            action=obs_result["action"] if self.obs.finished else "no_action",
+            action=obs_result["action"] if self.obs.finished else ("tool_call" if self.tool_calls else "no_action"),
             selected_skills=obs_result["selected_skills"],
             tool_calls=list(self.tool_calls),
             missing_fields=obs_result["missing_fields"],
@@ -966,6 +1000,7 @@ class _CaseRunner:
             "error": error,
             "error_kind": error_kind,
             "finish_reason": self.finish_reason,
+            "finish_protocol": self.finish_protocol,
             "usage": sum_usage(self.usage_parts),
             "duration_ms": duration_ms,
             "result_source": self.result_source,

@@ -24,7 +24,8 @@
     "finish_tool": true,
     "max_steps": 8,
     "max_context_chars": 60000,
-    "context_overflow": "error"
+    "context_overflow": "error",
+    "strict_finish": false
   },
   "run_config": {
     "concurrency": 3,
