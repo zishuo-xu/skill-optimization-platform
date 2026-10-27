@@ -675,7 +675,19 @@ def _normalise_compact_case(raw: Mapping[str, Any]) -> Mapping[str, Any]:
 
     # ---- fixtures -----------------------------------------------------
     if "fixtures" not in data:
-        calls = exp.get("tool_calls")
+        # Variants are alternative valid executions.  Their business tools
+        # still need simulated returns when fixtures are auto-generated;
+        # otherwise a valid variant can reach execution and fail with an
+        # unexplained fixture_miss.  Explicit fixtures (including []) keep
+        # their intentional opt-out semantics below.
+        top_calls = exp.get("tool_calls")
+        calls = list(top_calls) if _is_sequence(top_calls) else []
+        variants = exp.get("variants")
+        for variant in variants if _is_sequence(variants) else []:
+            if isinstance(variant, Mapping):
+                variant_calls = variant.get("tool_calls")
+                if _is_sequence(variant_calls):
+                    calls.extend(variant_calls)
         if (isinstance(calls, list) and calls) or "mock" in data or "mocks" in data:
             data["fixtures"] = _auto_fixtures(calls, data)
     else:

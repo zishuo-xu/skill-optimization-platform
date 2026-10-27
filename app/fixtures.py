@@ -92,6 +92,29 @@ def arguments_match(condition: Mapping[str, Any] | None,
     return deep_match(condition, args)
 
 
+def _mismatch_paths(condition: Any, value: Any, path: str = "$") -> list[str]:
+    """Return a small, value-free list of paths that prevented a match."""
+    if isinstance(condition, Mapping):
+        if not isinstance(value, Mapping):
+            return [path]
+        paths: list[str] = []
+        for key, expected in condition.items():
+            child = f"{path}.{key}"
+            if key not in value:
+                paths.append(child)
+            else:
+                paths.extend(_mismatch_paths(expected, value[key], child))
+        return paths
+    if isinstance(condition, (list, tuple)):
+        if not isinstance(value, (list, tuple)) or len(condition) != len(value):
+            return [path]
+        paths: list[str] = []
+        for index, (expected, actual) in enumerate(zip(condition, value)):
+            paths.extend(_mismatch_paths(expected, actual, f"{path}[{index}]"))
+        return paths
+    return [] if json_deep_equal(condition, value) else [path]
+
+
 def _fixture_entry(raw: Mapping[str, Any], index: int) -> dict[str, Any]:
     name = raw.get("name")
     if not isinstance(name, str) or not name:
@@ -136,6 +159,42 @@ class FixtureMatcher:
     @property
     def consumed_indices(self) -> list[int]:
         return sorted(self._consumed)
+
+    def diagnose_miss(self, name: str,
+                      arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Explain a miss without consuming or exposing fixture responses."""
+        args = dict(arguments) if isinstance(arguments, Mapping) else {}
+        if not self._entries:
+            return {"reason": "empty_fixtures", "fixture_count": 0,
+                    "available_tools": [], "candidate_indices": []}
+        candidates = [entry for entry in self._entries
+                      if entry["name"] in (name, "*")]
+        available = sorted({entry["name"] for entry in self._entries
+                            if entry["name"] != "*"})
+        if not candidates:
+            return {"reason": "tool_name_mismatch", "fixture_count": len(self._entries),
+                    "available_tools": available, "candidate_indices": []}
+        active = [entry for entry in candidates if entry["index"] not in self._consumed]
+        matching_consumed = [entry for entry in candidates
+                             if entry["index"] in self._consumed
+                             and arguments_match(entry["match"], args)]
+        matching_active = [entry for entry in active
+                           if arguments_match(entry["match"], args)]
+        if matching_active:
+            return {"reason": "no_miss", "fixture_count": len(self._entries),
+                    "available_tools": available,
+                    "candidate_indices": [entry["index"] for entry in matching_active]}
+        if matching_consumed:
+            return {"reason": "fixtures_consumed", "fixture_count": len(self._entries),
+                    "available_tools": available,
+                    "candidate_indices": [entry["index"] for entry in matching_consumed],
+                    "consumed_matching_indices": [entry["index"] for entry in matching_consumed]}
+        mismatches = {str(entry["index"]): _mismatch_paths(entry["match"], args)
+                      for entry in active}
+        return {"reason": "arguments_mismatch", "fixture_count": len(self._entries),
+                "available_tools": available,
+                "candidate_indices": [entry["index"] for entry in active],
+                "mismatch_paths": mismatches}
 
     def match(self, name: str,
               arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:

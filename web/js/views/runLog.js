@@ -397,7 +397,11 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     );
     const groups = new Map();
     const ensureGroup = (issue) => {
-      const key = issue.errorCode || `title:${issue.title}`;
+      // Different fixture failures need different fixes; do not present the
+      // first case's cause as the explanation for every fixture_miss.
+      const key = issue.errorCode === 'fixture_miss'
+        ? `${issue.errorCode}:${issue.message}`
+        : issue.errorCode || `title:${issue.title}`;
       let group = groups.get(key);
       if (!group) {
         group = {

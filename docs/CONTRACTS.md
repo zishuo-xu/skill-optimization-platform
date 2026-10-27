@@ -78,8 +78,8 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 
 - **简化写法**：案例可直接写 `skill`（子技能 ID 或 reference 路径）、`tool`/`tools`
   （支持 `functionName`）、`arguments`、`mock`/`mocks`、`action`、`missing`，
-  导入时统一展开为下述 canonical `expected`/`fixtures`；不写 `fixtures` 会自动生成
-  通配模拟返回，显式 `fixtures: []` 表示不生成。
+  导入时统一展开为下述 canonical `expected`/`fixtures`；不写 `fixtures` 时会为顶层和
+  `expected.variants` 中声明的工具去重生成模拟返回，`mock` 会生成通配返回；显式 `fixtures: []` 表示不生成。
 - `action` ∈ `tool_call` / `clarify` / `no_action`（缺失视为 `tool_call`）。
 - clarify 案例可以携带 `routes`（记录本应发起澄清的子技能，仅供优化器上下文，
   不参与 R 指标），但不得携带业务 `tool_calls`；no_action 三者均不得携带。
@@ -94,9 +94,11 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `variants`: `[{"routes": ..., "tool_calls": ..., "call_match": ..., "route_ordered": ...}]`
   可选，用于多种有效调用序列，逐个完整匹配。
 - `fixtures[].consume` ∈ `always`（默认）/ `once`（按调用次序消费）。
+- 执行中的 `fixture_miss` 区分 `empty_fixtures`、`tool_name_mismatch`、`fixtures_consumed` 和 `arguments_mismatch`。日志直接原因展示分类，技术细节包含可用工具名、候选下标和不匹配字段路径，不包含模拟返回正文或匹配条件的期望值。诊断不消费 fixture，也不改变匹配、评分或失败处理。
+- 运行预检检查顶层与备选工具名是否有对应或通配 fixture；它不证明实际参数条件和消费次数一定匹配。
 - `fixtures[].name` 可以是具体业务工具名，也可以是 `"*"`：作为任意业务工具的通配回退。
   `mock` 简写会生成一条 `name: "*"` 的通配 fixture，避免每个案例重复堆叠所有工具的模拟返回；
-  显式工具名 fixture 优先级高于通配 fixture。
+  自动生成时，`mocks` 中的指定工具返回排在 `mock` 通配返回前；显式 fixture 数组按其原顺序匹配。
 - `split` ∈ `optimize` / `validation` / `final_test`。
 - `critical: true` 可出现在 case 顶层或 `expected` 内，表示关键案例（不得从通过变失败）。
 

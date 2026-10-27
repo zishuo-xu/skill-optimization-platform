@@ -236,6 +236,47 @@ class _FixtureHandle:
             return [dict(item) for item in misses if isinstance(item, Mapping)]
         return []
 
+    def diagnose_miss(self, name: str,
+                      arguments: Mapping[str, Any] | None) -> dict[str, Any]:
+        diagnose = getattr(self._runtime, "diagnose_miss", None)
+        if callable(diagnose):
+            try:
+                result = diagnose(name, dict(arguments or {}))
+                if isinstance(result, Mapping):
+                    return dict(result)
+            except Exception:
+                logger.exception("fixture miss diagnosis failed for tool %s", name)
+        return {"reason": "unknown", "fixture_count": None,
+                "available_tools": [], "candidate_indices": []}
+
+
+def _fixture_miss_message(name: str, diagnosis: Mapping[str, Any]) -> str:
+    reason = diagnosis.get("reason")
+    if reason == "empty_fixtures":
+        return f"工具 {name} 所在案例没有配置 fixtures"
+    if reason == "tool_name_mismatch":
+        tools = ", ".join(str(item) for item in diagnosis.get("available_tools") or [])
+        return f"工具 {name} 没有对应 fixture（已声明：{tools or '无'}）"
+    if reason == "fixtures_consumed":
+        return f"工具 {name} 的匹配 fixture 已被 consume=once 用尽"
+    if reason == "no_miss":
+        return f"工具 {name} 的 fixture 在诊断时仍可匹配；请检查并发或重复执行状态"
+    if reason == "arguments_mismatch":
+        paths = sorted({path for values in (diagnosis.get("mismatch_paths") or {}).values()
+                        for path in values})
+        return f"工具 {name} 有对应 fixture，但参数不匹配{('（字段：' + ', '.join(paths[:8]) + '）') if paths else ''}"
+    return f"工具 {name} 的调用没有匹配 fixture"
+
+
+def _fixture_miss_next_action(diagnosis: Mapping[str, Any]) -> str:
+    return {
+        "empty_fixtures": "为该案例添加与工具调用对应的 fixture。",
+        "tool_name_mismatch": "核对 Skill 声明、预期工具名与 fixture 名称，修正不一致的一方。",
+        "fixtures_consumed": "若预期允许重复调用，补足模拟返回次数；否则检查模型是否重复调用。",
+        "arguments_mismatch": "检查 fixture.match 的字段层级、值和数据类型。",
+        "no_miss": "检查重复调用或并发执行状态后重试。",
+    }.get(diagnosis.get("reason"), "检查工具调用与案例 fixture 配置。")
+
 
 # --------------------------------------------------------------------------- #
 # message assembly
@@ -838,19 +879,21 @@ class _CaseRunner:
         if hit is None:
             miss = {"tool": name, "arguments": dict(arguments)}
             self.fixture_misses.append(miss)
+            diagnosis = self.fixtures.diagnose_miss(name, arguments)
             self._emit(event_types.TOOL_CALL_FINISHED, level="warning", call_id=call_id,
                        payload={"tool": name, "ok": False, "duration_ms": duration_ms,
                                 "error": "fixture_miss"})
             issue = event_types.issue(
                 "fixture_miss", "工具调用没有匹配的模拟返回",
-                f"工具 {name} 的调用参数没有匹配任何 fixture",
+                _fixture_miss_message(name, diagnosis),
                 impact="案例按能力失败计分；不会访问真实业务服务，也不会重试猜测。",
-                next_action="为该调用补充 fixture，或修正工具参数/工具协议。",
-                technical_detail={"tool": name, "arguments": safe_arguments})
+                next_action=_fixture_miss_next_action(diagnosis),
+                technical_detail=redact({"tool": name, "arguments": safe_arguments,
+                                         "fixture_diagnosis": diagnosis}))
             self._emit(event_types.FIXTURE_MISS, level="error", call_id=call_id,
                        payload={"tool": name, "arguments": safe_arguments, "issue": issue})
             raise _Failure("fixture_miss",
-                           f"工具 {name} 的调用未匹配任何 fixture（未访问真实服务）")
+                           _fixture_miss_message(name, diagnosis) + "（未访问真实服务）")
         response = hit.get("response")
         try:
             payload_response = json.loads(json_dumps(response))
@@ -967,20 +1010,22 @@ class _CaseRunner:
         if hit is None:
             miss = {"tool": name, "arguments": dict(arguments)}
             self.fixture_misses.append(miss)
+            diagnosis = self.fixtures.diagnose_miss(name, arguments)
             self._emit(event_types.TOOL_CALL_FINISHED, level="warning", call_id=call_id,
                        payload={"tool": name, "ok": False,
                                 "duration_ms": duration_ms,
                                 "error": "fixture_miss"})
             issue = event_types.issue(
                 "fixture_miss", "工具调用没有匹配的模拟返回",
-                f"工具 {name} 的调用参数没有匹配任何 fixture",
+                _fixture_miss_message(name, diagnosis),
                 impact="案例按能力失败计分；不会访问真实业务服务。",
-                next_action="为该调用补充 fixture，或修正工具参数。",
-                technical_detail={"tool": name, "arguments": safe_arguments})
+                next_action=_fixture_miss_next_action(diagnosis),
+                technical_detail=redact({"tool": name, "arguments": safe_arguments,
+                                         "fixture_diagnosis": diagnosis}))
             self._emit(event_types.FIXTURE_MISS, level="error", call_id=call_id,
                        payload={"tool": name, "arguments": safe_arguments, "issue": issue})
             raise _Failure("fixture_miss",
-                           f"工具 {name} 的调用未匹配任何 fixture（未访问真实服务）")
+                           _fixture_miss_message(name, diagnosis) + "（未访问真实服务）")
         response = hit.get("response")
         self._emit(event_types.TOOL_CALL_FINISHED, call_id=call_id,
                    payload={"tool": name, "ok": True, "duration_ms": duration_ms,

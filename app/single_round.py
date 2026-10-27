@@ -555,7 +555,7 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                       level="warning", stage="preflight",
                       extra={"case_ids": fixture_cases[:20]})
     else:
-        check("fixture_coverage", True, "所有预期业务调用都有模拟返回")
+        check("fixture_coverage", True, "预期业务工具名均有模拟返回配置；参数条件与消费次数在执行时校验")
     compare = (env.get("scorer_config") or {}).get("compare") or {}
     semantic = compare.get("mode") == "semantic" or any(
         (item or {}).get("mode") == "semantic" for item in compare.get("field_rules") or [])
@@ -581,10 +581,15 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
 def _fixture_gap_cases(cases: Sequence[Mapping[str, Any]]) -> list[str]:
     missing: list[str] = []
     for case in cases:
-        expected_calls = (case.get("expected") or {}).get("tool_calls") or []
+        expected = case.get("expected") or {}
+        expected_calls = list(expected.get("tool_calls") or [])
+        for variant in expected.get("variants") or []:
+            expected_calls.extend(variant.get("tool_calls") or [])
         fixtures = case.get("fixtures") or []
         names = {fixture.get("name") for fixture in fixtures
                  if isinstance(fixture, Mapping)}
+        if "*" in names:
+            continue
         for call in expected_calls:
             if call.get("name") and call["name"] not in names:
                 missing.append(case["case_id"])
