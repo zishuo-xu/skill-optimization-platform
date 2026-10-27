@@ -70,6 +70,16 @@ _FORBIDDEN_KEYS = frozenset({
 
 _INTERNAL = frozenset(INTERNAL_TOOL_NAMES)
 
+
+def _message_context_chars(message: Mapping[str, Any]) -> int:
+    """Count prompt content plus serialized tool arguments consistently."""
+    total = len(str(message.get("content") or ""))
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        total += len(json.dumps(tool_calls, ensure_ascii=False,
+                                separators=(",", ":")))
+    return total
+
 #: Trigger values for the frozen "frozen_strategy" overflow behaviour.
 _OVERFLOW_STRATEGIES = ("index_only", "drop_preload", "preload_off", "drop_context")
 
@@ -81,6 +91,7 @@ TEXT_PROTOCOL_ADDENDUM = """
 子技能：<skill_id>[,<skill_id>...]
 工具：<工具名> {"参数": "值"}        （每次业务工具调用一行，按调用顺序排列）
 结束：{"action": "tool_call|clarify|no_action", "selected_skills": ["<skill_id>"], "missing_fields": [], "summary": "<简短摘要>"}
+首次选择子技能后，先等待平台返回子技能正文，再在下一轮输出业务工具调用或结束。
 """
 
 
@@ -304,6 +315,7 @@ NATIVE_PROTOCOL_ADDENDUM = (
     "平台只提供一个业务入口 call_tool。业务工具名称和参数格式来自已加载的子技能；"
     "调用时必须传入 JSON：{\"name\": \"<Skill 中的业务工具名>\", \"arguments\": {<工具参数>}}。"
     "不要直接调用业务工具名，也不要把 select_skill、read_skill、finish 或 call_tool 放入 name。"
+    "select_skill/read_skill 首次返回正文后必须等待下一轮模型推理；不要在同一批次继续调用依赖该正文的业务工具或 finish。"
 )
 
 
@@ -393,7 +405,7 @@ def build_messages(case_request: Mapping[str, Any], *,
     ]
 
     max_chars = int(limits.get("max_context_chars") or 0)
-    total_chars = sum(len(message["content"]) for message in messages)
+    total_chars = sum(_message_context_chars(message) for message in messages)
     if max_chars and total_chars > max_chars:
         overflow = str(limits.get("context_overflow") or "error").lower()
         strategy = str(loader.get("overflow_strategy") or "index_only").lower()
@@ -678,6 +690,7 @@ class _CaseRunner:
                 return result
 
     def _model_turn(self) -> dict[str, Any] | None:
+        self._check_context_budget()
         self.model_calls += 1
         call_id = f"call_{uuid.uuid4().hex[:12]}"
         self._current_call_id = call_id
@@ -762,6 +775,27 @@ class _CaseRunner:
             return self._success()
         return None
 
+    def _check_context_budget(self) -> None:
+        """Reject a growing runtime transcript before sending it to the model.
+
+        Initial loading may use the frozen overflow strategy in ``build_messages``.
+        Once the loop has started, silently dropping tool history would make the
+        simulated conversation non-causal, so runtime growth is an explicit error.
+        """
+        max_chars = int(self.limits.get("max_context_chars") or 0)
+        if not max_chars:
+            return
+        total_chars = sum(_message_context_chars(message) for message in self.messages)
+        if total_chars > max_chars:
+            raise _Failure(
+                "context_overflow",
+                f"运行中上下文超过 {max_chars} 字符上限（当前 {total_chars}），"
+                "不会静默截断工具历史",
+                details={"max_context_chars": max_chars,
+                         "actual_chars": total_chars,
+                         "phase": "runtime"},
+            )
+
     def _normalize_tool_calls(self, raw_calls: Sequence[Any]) -> list[dict[str, Any]]:
         calls: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_calls):
@@ -797,6 +831,14 @@ class _CaseRunner:
             for call in tool_calls
         ]
         self.messages.append(assistant_message)
+        # A model batch is generated before any tool result is visible.  If it
+        # contains a first-time loader call, every business/finish call in the
+        # batch must wait for a new model turn, regardless of ordering.
+        fresh_skill_loaded = any(
+            call["name"] in ("select_skill", "read_skill")
+            and self.obs.would_load_new_file(call["name"], call["arguments"])
+            for call in tool_calls
+        )
         for call in tool_calls:
             self._check_cancel()
             self._check_timeout()
@@ -827,6 +869,19 @@ class _CaseRunner:
                 name = business_name
                 arguments = dict(business_arguments)
                 wrapped_business = True
+            if fresh_skill_loaded and name not in ("select_skill", "read_skill"):
+                self.messages.append({
+                    "role": "tool", "tool_call_id": call["id"],
+                    "name": protocol_name,
+                    "content": json_dumps({
+                        "ok": False,
+                        "error": "skill_loaded_requires_new_model_turn",
+                        "message": "子技能刚刚加载，需下一轮模型推理后再调用业务工具或 finish。",
+                    }),
+                })
+                # Every call needs a reply, including skipped calls before the
+                # loader. Nothing generated in this batch has seen its body.
+                continue
             if name in _INTERNAL:
                 self._count_step(name)
                 try:
@@ -929,16 +984,32 @@ class _CaseRunner:
         except text_parse.TextParseError as exc:
             raise _Failure("parse_failed", exc.message, details=exc.detail) from exc
 
+        fresh_skill_loaded = False
+        loaded_messages: list[str] = []
         for skill_id in parsed["skills"]:
             if skill_id not in self.obs.selected_skills:
                 try:
-                    self.obs.record_text_selection(skill_id, basis=parsed["basis"],
-                                                   call_id=call_id)
+                    outcome = self.obs.record_text_selection(
+                        skill_id, basis=parsed["basis"], call_id=call_id)
+                    if not outcome.get("cached"):
+                        fresh_skill_loaded = True
+                        loaded_messages.append(self._internal_tool_message(
+                            "select_skill", outcome))
                 except ObsToolError as exc:
                     raise _Failure(exc.code, exc.message, details=exc.details) from exc
 
         finish = parsed["finish"]
         business_calls = list(parsed["tool_calls"])
+        if fresh_skill_loaded:
+            self.messages.append({"role": "assistant", "content": content})
+            self.messages.append({
+                "role": "user",
+                "content": "\n\n".join(loaded_messages) +
+                "\n\n【加载结果】正文已加载。本轮工具调用和结束声明未执行；"
+                "请根据正文，在下一轮重新输出所需的工具调用或结束声明。",
+            })
+            self.result_source = "text_parse"
+            return
         if finish is not None:
             declared = finish.get("selected_skills")
             if declared is not None and set(declared) != set(self.obs.selected_skills):

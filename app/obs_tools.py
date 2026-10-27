@@ -263,7 +263,7 @@ class ObsToolRuntime:
 
     def record_text_selection(self, skill_id: str, *, basis: str | None = None,
                               call_id: str | None = None) -> dict[str, Any]:
-        """Record a routing selection produced by the frozen text parser."""
+        """Record and load a routing selection produced by the text parser."""
         if self.finished is not None:
             raise ObsToolError("案例已结束，不能继续记录子技能选择")
         if not isinstance(skill_id, str) or not skill_id.strip():
@@ -272,7 +272,13 @@ class ObsToolRuntime:
         self._validate_skill_id(skill_id)
         self._record_selection(skill_id, source="text_parse", basis=basis,
                                call_id=call_id)
-        return {"ok": True, "skill_id": skill_id, "path": self._skill_paths.get(skill_id)}
+        path = self._skill_paths.get(skill_id)
+        loaded = self._cached_read(path, call_id=call_id, source="select_skill") \
+            if path in self._loaded_files else self._read_mapped_file(
+                path, call_id=call_id, source="select_skill")
+        return {"ok": True, "tool": "select_skill", "skill_id": skill_id,
+                "path": path, "content": loaded.get("content"),
+                "chars": loaded.get("chars"), "cached": loaded.get("cached", False)}
 
     def _validate_skill_id(self, skill_id: str) -> None:
         if skill_id not in self._skill_paths:
@@ -280,6 +286,22 @@ class ObsToolRuntime:
                 f"未知的子技能 ID: {skill_id}",
                 details={"skill_id": skill_id,
                          "allowed": list(self._skill_paths)})
+
+    def would_load_new_file(self, name: str, arguments: Mapping[str, Any]) -> bool:
+        """Return whether an internal loader call would add new body content."""
+        if name == "select_skill":
+            skill_id = arguments.get("skill_id")
+            if not isinstance(skill_id, str) or not skill_id.strip():
+                return False
+            path = self._skill_paths.get(skill_id.strip())
+        elif name == "read_skill":
+            try:
+                path = _normalize_relpath(arguments.get("path"))
+            except ObsToolError:
+                return False
+        else:
+            return False
+        return bool(path and path not in self._loaded_files)
 
     def _record_selection(self, skill_id: str, *, source: str,
                           basis: Any, call_id: str | None) -> None:

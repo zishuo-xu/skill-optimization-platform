@@ -151,6 +151,10 @@ def test_actual_preloading_and_overflow_do_not_duplicate_or_lose_body(package, l
         return finish_response(action="no_action")
     adapter = ScriptedAdapter([select_response("task_query"), after_select], capabilities=NATIVE_CAPS)
     actual = execution.run_case(request, adapter)
+    if "overflow_strategy" in loader:
+        assert actual["error"]["code"] == "context_overflow"
+        assert actual["error"]["details"]["phase"] == "runtime"
+        return
     assert actual["error"] is None, actual["error"]
     reads = [e for e in actual["events"] if e["type"] == "skill_read"]
     assert reads[0]["payload"]["cached"] is expected_cached
@@ -202,3 +206,87 @@ def test_finish_policy_revision_invalidates_legacy_fingerprint():
                              "dataset_id": "ds", "scorer_version": "score-v1",
                              "repeats": 1, "finish_policy": "finish-v2-business-independent"})
     assert old != services.run_fingerprint("sv", "env", "ds", "score-v1", 1)
+
+
+def test_same_batch_business_call_waits_for_next_turn_after_fresh_load(package):
+    root, manifest = package
+    adapter = ScriptedAdapter([
+        {"tool_calls": [
+            ScriptedAdapter.tool("select_skill", {"skill_id": "task_query"}, "s1"),
+            ScriptedAdapter.tool("call_tool", {"name": "list_tasks",
+                                                  "arguments": {"project_id": "P123",
+                                                                "status": "in_progress"}}, "b1"),
+        ]},
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", {
+            "name": "list_tasks", "arguments": {"project_id": "P123",
+                                                    "status": "in_progress"}}, "b2")]},
+        finish_response(),
+    ], capabilities=NATIVE_CAPS)
+    result = execution.run_case(make_request(root, manifest), adapter)
+    assert result["error"] is None, result["error"]
+    assert len(adapter.calls) == 3
+    assert result["tool_calls"] == [{"name": "list_tasks", "arguments": {
+        "project_id": "P123", "status": "in_progress"}}]
+    assert "skill_loaded_requires_new_model_turn" in adapter.calls[1]["messages"][-1]["content"]
+
+
+def test_runtime_context_budget_fails_before_next_model_call(package):
+    root, manifest = package
+    request = make_request(root, manifest,
+                           limits={"max_model_calls": 4, "max_steps": 4,
+                                   "case_timeout_s": 5, "max_context_chars": 900})
+    adapter = ScriptedAdapter([select_response("task_query"), finish_response()],
+                              capabilities=NATIVE_CAPS)
+    result = execution.run_case(request, adapter)
+    assert result["error"]["code"] == "context_overflow"
+    assert result["error"]["details"]["phase"] == "runtime"
+    assert len(adapter.calls) == 1
+
+
+def test_loader_barrier_covers_business_and_finish_in_any_batch_order(package):
+    root, manifest = package
+    first = {"tool_calls": [
+        ScriptedAdapter.tool("call_tool", {"name": "list_tasks",
+                                             "arguments": {"project_id": "P123",
+                                                           "status": "in_progress"}}, "b0"),
+        ScriptedAdapter.tool("select_skill", {"skill_id": "task_query"}, "s0"),
+        ScriptedAdapter.tool("finish", {"action": "tool_call",
+                                         "selected_skills": ["task_query"],
+                                         "missing_fields": [], "summary": "old"}, "f0"),
+    ]}
+    second = {"tool_calls": [ScriptedAdapter.tool("call_tool", {
+        "name": "list_tasks", "arguments": {"project_id": "P123",
+                                                "status": "in_progress"}}, "b1")]}
+    adapter = ScriptedAdapter([first, second, finish_response()], capabilities=NATIVE_CAPS)
+    result = execution.run_case(make_request(root, manifest), adapter)
+    assert result["error"] is None, result["error"]
+    assert result["tool_calls"] == [{"name": "list_tasks", "arguments": {
+        "project_id": "P123", "status": "in_progress"}}]
+    first_followup = adapter.calls[1]["messages"]
+    tool_replies = [m for m in first_followup if m.get("role") == "tool"]
+    assert len(tool_replies) == 3
+    assert sum("skill_loaded_requires_new_model_turn" in m.get("content", "")
+               for m in tool_replies) == 2
+
+
+def test_text_loader_returns_body_before_tool_execution(package):
+    root, manifest = package
+    first = {"content": (
+        "依据：查询任务\n子技能：task_query\n"
+        "工具：list_tasks {\"project_id\":\"P123\",\"status\":\"in_progress\"}\n"
+        "结束：{\"action\":\"tool_call\",\"selected_skills\":[\"task_query\"],"
+        "\"missing_fields\":[],\"summary\":\"old\"}")}
+    second = {"content": (
+        "依据：已读取技能\n子技能：task_query\n"
+        "工具：list_tasks {\"project_id\":\"P123\",\"status\":\"in_progress\"}\n"
+        "结束：{\"action\":\"tool_call\",\"selected_skills\":[\"task_query\"],"
+        "\"missing_fields\":[],\"summary\":\"done\"}")}
+    adapter = ScriptedAdapter([first, second], capabilities={
+        "routing": True, "tool_arguments": True, "native_tools": False,
+        "usage": False, "streaming": False})
+    result = execution.run_case(make_request(root, manifest), adapter)
+    assert result["error"] is None, result["error"]
+    assert result["tool_calls"] == [{"name": "list_tasks", "arguments": {
+        "project_id": "P123", "status": "in_progress"}}]
+    assert any("任务查询：查询项目任务。" in m.get("content", "")
+               for m in adapter.calls[1]["messages"] if m.get("role") == "user")
