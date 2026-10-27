@@ -89,6 +89,8 @@ data/
 
 恢复：停服务 → 还原 `data/` → 启动。数据库与服务代码版本需匹配；升级前建议先备份。
 
+旧环境表如果仍含 `tool_schema_json NOT NULL`，新版服务启动时会自动备份数据库并删除该废弃列，解决创建环境草稿时报 `NOT NULL constraint failed: environments.tool_schema_json`。备份位于数据库同目录，文件名为 `app.db.pre-tool-schema.<唯一标识>.bak`（自定义数据库名随之变化）。保留该备份直到确认升级正常；迁移需要 SQLite 3.35 或更新版本。升级只改变表结构，不删除项目、其他环境配置或运行记录；无需使用 `--reset`。
+
 重置示例：`rm -rf data` 后执行 `python -m app.seed`（或 `--reset`）。
 
 ## 5. 反向代理与 SSE

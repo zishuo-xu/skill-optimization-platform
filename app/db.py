@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from contextlib import contextmanager
+import os
+import tempfile
+import uuid
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -281,6 +284,50 @@ def init_db(db_path: Path | str | None = None) -> None:
     config.ensure_dirs()
     conn = get_connection(db_path)
     conn.executescript(SCHEMA_SQL)
+    _migrate_removed_tool_schema(conn, db_path)
+
+
+def _migrate_removed_tool_schema(conn: sqlite3.Connection,
+                                 db_path: Path | str | None = None) -> None:
+    """Remove the pre-Prompt+Skill environment column from an existing DB.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot change an already-created table. Older
+    development databases therefore still have a NOT NULL ``tool_schema_json``
+    column, which makes new environment inserts fail once the application stops
+    supplying that obsolete field. Keep one SQLite backup beside the database,
+    then perform the supported SQLite DROP COLUMN migration exactly once.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    temp_backup: Path | None = None
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(environments)")}
+        if "tool_schema_json" not in columns:
+            conn.execute("COMMIT")
+            return
+        path = Path(db_path) if db_path is not None else config.DB_PATH
+        backup_path = path.with_name(
+            f"{path.name}.pre-tool-schema.{uuid.uuid4().hex}.bak")
+        if not path.is_file():
+            raise RuntimeError(f"Cannot back up database before schema upgrade: {path}")
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.pre-tool-schema.", suffix=".tmp", dir=path.parent)
+        os.close(fd)
+        temp_backup = Path(temp_name)
+        os.chmod(temp_backup, 0o600)
+        with closing(sqlite3.connect(str(path), timeout=30)) as source:
+            with closing(sqlite3.connect(str(temp_backup), timeout=30)) as destination:
+                source.backup(destination)
+                destination.commit()
+        os.replace(temp_backup, backup_path)
+        temp_backup = None
+        conn.execute("ALTER TABLE environments DROP COLUMN tool_schema_json")
+    except Exception:
+        conn.execute("ROLLBACK")
+        if temp_backup is not None:
+            temp_backup.unlink(missing_ok=True)
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 @contextmanager
