@@ -161,7 +161,10 @@ def test_three_operations_load_only_the_required_references_before_business_call
     expected_ids = case['expected']['routes'][0]
     reads = [(i, e['payload']['path']) for i, e in enumerate(actual['events']) if e['type'] == 'skill_read']
     first_business = next(i for i, e in enumerate(actual['events']) if e['type'] == 'tool_call_started')
-    assert [path for _, path in reads] == [paths[sid] for sid in expected_ids]
+    loaded_paths = [e['payload']['path'] for e in actual['events']
+                    if e['type'] == 'skill_read' and not e['payload'].get('cached')]
+    assert loaded_paths == [paths[sid] for sid in expected_ids]
+    assert {path for _, path in reads} == set(loaded_paths)
     assert all(i < first_business for i, _ in reads)
     assert [event['skill_id'] for event in actual['route_events']] == expected_ids
 

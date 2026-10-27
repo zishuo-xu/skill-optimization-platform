@@ -815,6 +815,7 @@ def run_fingerprint(skill_version_id: str, environment_id: str, dataset_id: str,
         # Changing finish handling must invalidate cached baselines.  This is
         # deliberately a frozen revision rather than inferred from old rows.
         "finish_policy": "finish-v2-business-independent",
+        "skill_load_policy": "select-load-v1",
     })
 
 

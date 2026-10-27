@@ -29,7 +29,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from . import event_types
 from .model_output import capture_model_response, response_summary
@@ -255,10 +255,18 @@ def _safe_read(root: Path, relpath: str) -> str:
         raise _Failure("platform_error", f"Skill 文件不是 UTF-8 文本: {relpath}") from exc
 
 
+NATIVE_PROTOCOL_ADDENDUM = (
+    "\n\n【内部工具协议补充】\n"
+    "调用 select_skill 后，所选技能正文已在当前上下文中：首次加载直接返回正文，预加载或重复选择不重复注入；"
+    "无需再调用 read_skill 读取同一路径。read_skill 仅用于读取尚未加载的其他引用文件。"
+)
+
+
 def build_messages(case_request: Mapping[str, Any], *,
                    loader_config: Mapping[str, Any] | None = None,
                    limits: Mapping[str, Any] | None = None,
-                   text_protocol: bool = False) -> list[dict[str, Any]]:
+                   text_protocol: bool = False,
+                   loaded_files: MutableMapping[str, str] | None = None) -> list[dict[str, Any]]:
     """Assemble the frozen messages (system prompt + main skill + query/context).
 
     Markers are part of the frozen protocol consumed by adapters/demo scripts:
@@ -267,6 +275,8 @@ def build_messages(case_request: Mapping[str, Any], *,
     * user   = ``"用户请求：" + query [+ "\\n上下文：" + canonical json]``
     """
     request = dict(case_request)
+    if loaded_files is not None:
+        loaded_files.clear()
     limits = {**DEFAULT_LIMITS, **(request.get("limits") or {}), **(limits or {})}
     loader = dict(loader_config if loader_config is not None
                   else (request.get("loader_config") or {}))
@@ -305,6 +315,8 @@ def build_messages(case_request: Mapping[str, Any], *,
                              json.dumps(manifest_for_prompt, ensure_ascii=False)])
     if text_protocol:
         system_parts.append(TEXT_PROTOCOL_ADDENDUM)
+    else:
+        system_parts.append(NATIVE_PROTOCOL_ADDENDUM)
 
     mode = str(loader.get("mode") or loader.get("strategy") or "on_demand").lower()
     preload_ids = loader.get("preload_skill_ids")
@@ -322,6 +334,8 @@ def build_messages(case_request: Mapping[str, Any], *,
                 continue
             text = _safe_read(snapshot, path)
             preloaded.append(f"\n\n【子技能内容 {path}】\n" + text)
+            if loaded_files is not None:
+                loaded_files[path] = text
         system_parts.extend(preloaded)
 
     user_parts = ["用户请求：" + str(request.get("query") or "")]
@@ -351,7 +365,8 @@ def build_messages(case_request: Mapping[str, Any], *,
             retry_limits = dict(limits)
             retry_limits["context_overflow"] = "error"
             return build_messages(request_for_retry, loader_config=loader,
-                                  limits=retry_limits)
+                                  limits=retry_limits, text_protocol=text_protocol,
+                                  loaded_files=loaded_files)
         raise _Failure(
             "context_overflow",
             f"上下文超过 {max_chars} 字符上限（当前 {total_chars}），"
@@ -560,11 +575,15 @@ class _CaseRunner:
         try:
             if not self.request.get("skill_snapshot_path"):
                 raise _Failure("platform_error", "缺少 skill_snapshot_path")
+            loaded_files: dict[str, str] = {}
             self.messages = build_messages(
                 self.request,
                 loader_config=self.request.get("loader_config") or {},
                 limits=self.limits,
-                text_protocol=self.tool_protocol != "native")
+                text_protocol=self.tool_protocol != "native",
+                loaded_files=loaded_files)
+            for path, content in loaded_files.items():
+                self.obs.prime_loaded_file(path, content)
             return self._run_model_loop()
         except _Failure as failure:
             return self._failure_result(failure)
@@ -747,11 +766,20 @@ class _CaseRunner:
     @staticmethod
     def _internal_tool_message(name: str, outcome: Mapping[str, Any]) -> str:
         if name == "read_skill":
+            if outcome.get("cached"):
+                return json_dumps({"ok": True, "tool": "read_skill",
+                                   "path": outcome.get("path"), "cached": True,
+                                   "message": "技能正文已加载，未重复读取磁盘。"})
             path = outcome.get("path") or ""
             return f"【文件 {path}】\n{outcome.get('content') or ''}"
         if name == "select_skill":
-            return json_dumps({"ok": True, "skill_id": outcome.get("skill_id"),
-                               "path": outcome.get("path")})
+            path = outcome.get("path") or ""
+            if outcome.get("cached"):
+                return json_dumps({"ok": True, "tool": "select_skill",
+                                   "skill_id": outcome.get("skill_id"),
+                                   "path": path, "cached": True,
+                                   "message": "技能正文已在上下文中提供。"})
+            return f"【文件 {path}】\n{outcome.get('content') or ''}"
         return json_dumps({"ok": True, "action": outcome.get("action")})
 
     def _execute_business_tool(self, name: str, arguments: Mapping[str, Any], *,

@@ -209,6 +209,9 @@ export function timelineBlock(events) {
           [
             event.payload?.skill_id,
             event.payload?.tool,
+            event.payload?.path || event.payload?.skill_path,
+            event.payload?.source === 'select_skill' ? '选择时自动加载' : null,
+            event.payload?.cached ? '已缓存' : null,
             event.payload?.finish_reason,
             event.payload?.passed !== undefined ? (event.payload.passed ? '通过' : '未通过') : null,
             event.payload?.issue?.message || event.payload?.message,

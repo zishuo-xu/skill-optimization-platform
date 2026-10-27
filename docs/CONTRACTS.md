@@ -423,3 +423,9 @@ candidate:{...}, case_stats, created_at/started_at/finished_at`。
   集成测试，T1 负责 A03/A04/A05，T2 负责 A11/A12/A13，T3 负责 A06/A07/A10
   （A10 涉及执行器与预算，可与 Lead 合测），T4 负责 A15/A16/A17/A18 的前端
   可验证部分（可用 DOM 快照/接口断言），集成断言由 Lead 补。
+
+### 原生技能选择与自动加载（select-load-v1）
+
+`select_skill` 记录路由后自动读取其 manifest 映射文件，首次工具返回携带正文；同时产生 `skill_selected` 与 `skill_read`（`source=select_skill`）事件。预加载的正文和同一案例内已读取的正文不重复注入。显式 `read_skill` 仍受支持，重复读取产生 `cached=true` 的审计事件，并返回已加载确认。文本路由协议保持独立，不借读取补记选择。
+
+自动加载复用原有路径、文件大小和编码校验；运行时协议说明参与初始上下文预算。新加载策略进入运行缓存指纹，旧基线不会被自动复用。

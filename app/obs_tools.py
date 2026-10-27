@@ -71,7 +71,7 @@ def internal_tool_definitions(*, need_finish: bool = True) -> list[dict[str, Any
     tools = [
         _schema(
             "select_skill",
-            "选择要使用的子技能。传入 manifest 中的稳定 skill_id；可多次调用以选择多个子技能。",
+            "选择要使用的子技能。首次加载时直接返回文件正文；已在上下文中的正文不重复返回，无需再次 read_skill 读取同一文件。传入 manifest 中的稳定 skill_id；可多次调用以选择多个子技能。",
             {"skill_id": {"type": "string", "description": "子技能稳定 ID"}},
             ["skill_id"],
         ),
@@ -155,6 +155,7 @@ class ObsToolRuntime:
         self._known_ids: list[str] = []
         self._skill_paths: dict[str, str] = {}
         self._mapped_files: list[str] = []
+        self._loaded_files: dict[str, str] = {}
         self._parse_manifest(allowed_skill_ids)
 
     # -- manifest mapping -------------------------------------------------- #
@@ -203,6 +204,20 @@ class ObsToolRuntime:
     def resolve_skill_alias(self, name: str) -> str:
         return self.aliases.get(name, name)
 
+    def prime_loaded_file(self, relpath: str, content: str) -> None:
+        """Remember content already present in the built context.
+
+        This is deliberately called only when the message builder emitted a
+        concrete ``子技能内容`` marker; configured preloading that was removed
+        by context overflow therefore cannot suppress the automatic load.
+        """
+        normalized = _normalize_relpath(relpath)
+        if normalized not in self._mapped_files:
+            return
+        if not isinstance(content, str) or len(content.encode("utf-8")) > self.max_read_chars:
+            return
+        self._loaded_files[normalized] = content
+
     def is_finished(self) -> bool:
         return self.finished is not None
 
@@ -232,11 +247,18 @@ class ObsToolRuntime:
         self._validate_skill_id(skill_id)
         self._record_selection(skill_id, source="native_tool",
                                basis=arguments.get("basis"), call_id=call_id)
+        path = self._skill_paths.get(skill_id)
+        loaded = self._cached_read(path, call_id=call_id, source="select_skill") \
+            if path in self._loaded_files else self._read_mapped_file(
+                path, call_id=call_id, source="select_skill")
         return {
             "ok": True,
             "tool": "select_skill",
             "skill_id": skill_id,
-            "path": self._skill_paths.get(skill_id),
+            "path": path,
+            "content": loaded.get("content"),
+            "chars": loaded.get("chars"),
+            "cached": loaded.get("cached", False),
         }
 
     def record_text_selection(self, skill_id: str, *, basis: str | None = None,
@@ -293,6 +315,32 @@ class ObsToolRuntime:
             raise ObsToolError("拒绝读取包外路径（路径穿越）", details={"path": relpath})
         if not target.is_file():
             raise ObsToolError("映射的包内文件不存在", details={"path": relpath})
+        if relpath in self._loaded_files:
+            return self._cached_read(relpath, call_id=call_id, source="read_skill")
+        return self._read_mapped_file(relpath, call_id=call_id, source="read_skill")
+
+    def _cached_read(self, relpath: str, *, call_id: str | None,
+                     source: str) -> dict[str, Any]:
+        text = self._loaded_files[relpath]
+        payload = {"path": relpath, "chars": len(text),
+                   "cached": True, "source": source}
+        event = emit_event(self.emit, event_types.SKILL_READ, payload=payload,
+                           call_id=call_id)
+        self.events.append(event)
+        if relpath not in self.read_files:
+            self.read_files.append(relpath)
+        return {"ok": True, "tool": "read_skill", "path": relpath,
+                "content": text, "chars": len(text), "cached": True}
+
+    def _read_mapped_file(self, relpath: str | None, *, call_id: str | None,
+                          source: str) -> dict[str, Any]:
+        if not isinstance(relpath, str) or not relpath:
+            raise ObsToolError("映射的 Skill 文件路径为空")
+        target = (self.root / relpath).resolve()
+        if self.root not in target.parents and target != self.root:
+            raise ObsToolError("拒绝读取包外路径（路径穿越）", details={"path": relpath})
+        if not target.is_file():
+            raise ObsToolError("映射的包内文件不存在", details={"path": relpath})
         size = target.stat().st_size
         if size > self.max_read_chars:
             raise ObsToolError("Skill 文件过大，超过单次读取上限",
@@ -307,17 +355,21 @@ class ObsToolRuntime:
             "path": relpath,
             "chars": len(text),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "source": source,
+            "cached": False,
         }
         event = emit_event(self.emit, event_types.SKILL_READ, payload=payload,
                            call_id=call_id)
         self.events.append(event)
         self.read_files.append(relpath)
+        self._loaded_files[relpath] = text
         return {
             "ok": True,
             "tool": "read_skill",
             "path": relpath,
             "content": text,
             "chars": len(text),
+            "cached": False,
         }
 
     # -- finish ------------------------------------------------------------ #
