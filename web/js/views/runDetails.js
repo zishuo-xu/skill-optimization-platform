@@ -10,8 +10,6 @@ import {
   pageHeader,
   sectionCard,
   tabsBar,
-  callout,
-  metricCard,
   emptyState,
   errorState,
   loadingState,
@@ -34,15 +32,14 @@ import {
   formatPercent,
   formatCost,
   formatTokens,
-  formatToolCall,
-  formatRoutes,
   relativeTime,
   shortenId,
   splitLabel,
   truncate,
-  jsonPathDiffs,
   actionLabel,
   safeJsonStringify,
+  explainCaseSide,
+  FAILURE_GROUPS,
 } from '../format.js';
 import {
   ACTIVE_STATUSES,
@@ -101,7 +98,7 @@ export default async function runDetailsView(container, ctx) {
       loading: false,
       error: null,
       items: [],
-      onlyFailed: false,
+      filter: 'all',
       search: '',
     },
     diff: { loaded: false, loading: false, error: null, changes: [], hypotheses: [], selected: 0, mode: 'unified' },
@@ -376,9 +373,9 @@ export default async function runDetailsView(container, ctx) {
 
   function metricsTable(metrics, temporary) {
     const rows = [
-      ['routing', '分发准确率 R', '允许路线命中率'],
-      ['tool_args', '工具入参准确率 A', '业务工具序列与参数正确率'],
-      ['joint', '联合通过率 J', '分发、动作、工具与参数全部正确'],
+      ['routing', '选对技能 R', '分发准确率：选中了允许的子技能'],
+      ['tool_args', '参数正确 A', '工具入参准确率：业务工具与参数都对'],
+      ['joint', '整体通过 J', '联合通过率：技能、动作、工具、参数全部正确'],
     ];
     const body = rows.map(([key, label, hint]) => {
       const base = metrics?.baseline?.[key];
@@ -477,84 +474,113 @@ export default async function runDetailsView(container, ctx) {
     );
   }
 
-  function validationSummary() {
+  /** The three core metrics, named for what they mean rather than by letter. */
+  const CORE_METRICS = [
+    { key: 'routing', label: '选对技能', letter: 'R', hint: '分发准确率 R：模型选中了允许的子技能' },
+    { key: 'tool_args', label: '参数正确', letter: 'A', hint: '工具入参准确率 A：业务工具与参数都对' },
+    { key: 'joint', label: '整体通过', letter: 'J', hint: '联合通过率 J：技能、动作、工具、参数全部正确' },
+  ];
+
+  /** Acceptance rules that failed, rephrased as what went wrong. */
+  const RULE_FAILURE_TEXT = {
+    R_no_decrease: '选对技能的比例下降了',
+    routing_not_decreased: '选对技能的比例下降了',
+    A_no_decrease: '参数正确的比例下降了',
+    tool_args_not_decreased: '参数正确的比例下降了',
+    J_no_decrease: '整体通过率下降了',
+    joint_not_decreased: '整体通过率下降了',
+    metrics_evaluable: '有指标无法评估（数据集缺少对应案例）',
+    strict_improvement: '选对技能、参数正确都没有提高',
+    at_least_one_improved: '选对技能、参数正确都没有提高',
+    critical_no_regression: '有关键案例从通过变成了失败',
+    critical_cases_no_regression: '有关键案例从通过变成了失败',
+    repeats_sufficient: '重复验证次数不够',
+    no_infra_errors: '有案例因模型调用出错没能评分',
+    package_integrity: '候选 Skill 包检查没有通过',
+    validation_complete: '验证没有跑完',
+    baseline_paired: '基线和候选的验证方式不一致',
+  };
+
+  function isBaselineRun() {
+    return state.run.mode === 'baseline' || !candidateVersionId();
+  }
+
+  /**
+   * Which numbers the headline shows: the validation split decides acceptance,
+   * so an optimize run shows it; a baseline run shows the whole dataset.
+   */
+  function headlineMetrics() {
     const metrics = state.run.metrics || {};
     const validation = metrics.validation;
-    if (!validation || !validation.baseline || !validation.candidate) return null;
-    const validationItems = state.cases.items.filter((item) => item.split === 'validation' && (item.repeat_index || 1) === 1);
-    const validationTransitions = { fixed: 0, regressed: 0 };
-    for (const item of validationItems) {
-      if (item.changeType === 'fixed') validationTransitions.fixed += 1;
-      else if (item.changeType === 'regressed') validationTransitions.regressed += 1;
+    if (!isBaselineRun() && validation?.baseline && validation?.candidate) {
+      const repeats = Number(validation.repeats ?? state.run.acceptance?.validation_repeats ?? 0) || null;
+      const total = validation.baseline?.joint?.total_cases;
+      const unique = total && repeats ? Math.round(total / repeats) : null;
+      return {
+        baseline: validation.baseline,
+        candidate: validation.candidate,
+        delta: validation.delta || {},
+        note: unique
+          ? `按验证集统计：${unique} 个没参与优化的案例，每个跑 ${repeats} 次`
+          : '按验证集（没参与优化的案例）统计',
+      };
     }
-    const snapshot = state.run.snapshot || {};
-    const repeats = validation.repeats ?? state.run.acceptance?.validation_repeats ?? snapshot.validation_repeats ?? snapshot.base_repeats ?? '—';
-    const validationPlanned = validation.baseline?.execution?.planned ?? validation.candidate?.execution?.planned;
-    const independentCases = validation.independent_cases
-      ?? validation.case_count
-      ?? (validationPlanned && Number(repeats) > 0 ? Math.ceil(validationPlanned / Number(repeats)) : null)
-      ?? (validationItems.length || null);
-    const baselineJoint = validation.baseline?.joint?.value;
-    const candidateJoint = validation.candidate?.joint?.value;
-    const jointDelta = validation.delta?.joint;
-    return sectionCard({
-      title: '验证结果',
-      description: '联合通过率来自完整配对复测；案例变化取首轮，重复执行不等于新增案例。',
-      body: h(
-        'div.validation-summary',
-        null,
-        h(
-          'div.validation-summary__headline',
-          null,
-          h('strong', { text: baselineJoint === null || baselineJoint === undefined || candidateJoint === null || candidateJoint === undefined ? '验证集联合通过率未评估' : `验证集联合通过率 ${formatPercent(baselineJoint)} → ${formatPercent(candidateJoint)}（${formatDelta(jointDelta)}）` }),
-          validationTransitions.regressed
-            ? chip(`验证集首轮仍有 ${validationTransitions.regressed} 条回归`, 'warning', { iconName: 'alert' })
-            : null
-        ),
-        h(
-          'div.validation-summary__grid',
-          null,
-          h('div', null, h('span.xsmall.muted', { text: '新增通过（验证集首轮）' }), h('strong', { text: String(validationTransitions.fixed) })),
-          h('div', null, h('span.xsmall.muted', { text: '新增失败 / 回归（验证集首轮）' }), h('strong', { text: String(validationTransitions.regressed) })),
-          h('div', null, h('span.xsmall.muted', { text: '独立案例' }), h('strong', { text: independentCases ? formatNumber(independentCases) : '—' })),
-          h('div', null, h('span.xsmall.muted', { text: '重复次数' }), h('strong', { text: formatNumber(repeats) }))
-        ),
-        h('p.xsmall.muted', { text: validation.complete === false ? '验证尚未完整，当前结果可能继续变化。' : '验证集计数取首轮案例；重复执行用于检查稳定性。' })
-      ),
-    });
+    return {
+      baseline: metrics.baseline,
+      candidate: isBaselineRun() ? null : metrics.candidate,
+      delta: metrics.delta || {},
+      note: isBaselineRun() ? '当前版本在全部案例上的表现' : '按优化集统计',
+    };
   }
 
-  function candidateRationaleSection() {
-    const candidate = state.run.candidate || {};
-    const diagnosis = candidate.diagnosis || {};
-    const hypotheses = candidate.hypotheses || [];
-    const expectedEffect = candidate.expected_effect || state.diff.expectedEffect || '';
-    const why = diagnosis.summary || diagnosis.reason || (typeof diagnosis === 'string' ? diagnosis : '');
-    const scope = candidate.changed_files?.length ? `修改范围：${candidate.changed_files.join('、')}` : '';
-    const hypothesisText = hypotheses
-      .slice(0, 3)
-      .map((item) => (typeof item === 'string' ? item : item.summary || item.text || ''))
-      .filter(Boolean);
-    if (!why && !scope && !expectedEffect && !hypothesisText.length) return null;
-    return sectionCard({
-      title: '为什么改',
-      description: '候选诊断、修改范围与预期效果的简短摘要。',
-      body: h(
-        'div.stack',
-        null,
-        why ? h('p.small', { text: why }) : null,
-        scope ? h('p.small.muted', { text: scope }) : null,
-        hypothesisText.length ? h('ul.small', { style: { margin: 0, paddingLeft: '1.1em' } }, ...hypothesisText.map((text) => h('li', { text }))) : null,
-        expectedEffect ? h('p.small', null, h('span.muted', { text: '预期效果：' }), expectedEffect) : null
-      ),
-    });
+  function metricValue(block) {
+    if (!block || block.status === 'not_evaluated' || block.value === null || block.value === undefined) return null;
+    return block.value;
   }
 
-  function conclusionSection() {
+  function metricStrip() {
+    const { baseline, candidate, delta, note } = headlineMetrics();
+    if (!baseline && !candidate) return null;
+    const temporary = !isTerminalStatus(state.run.status);
+    const tiles = CORE_METRICS.map((metric) => {
+      const before = metricValue(baseline?.[metric.key]);
+      const after = metricValue(candidate?.[metric.key]);
+      const shown = candidate ? after : before;
+      const counts = (candidate || baseline)?.[metric.key];
+      const given = candidate ? delta?.[metric.key] : null;
+      const diff = given ?? (candidate && before !== null && after !== null ? after - before : null);
+      const tone = diff === null || diff === undefined ? '' : diff > 0.0001 ? ' is-up' : diff < -0.0001 ? ' is-down' : '';
+      return h(
+        `div.result-metric${tone}`,
+        { title: metric.hint },
+        h('div.result-metric__label', null, h('span', { text: metric.label }), h('span.result-metric__letter', { text: metric.letter })),
+        h('div.result-metric__value', { text: shown === null ? '未评估' : formatPercent(shown) }),
+        candidate
+          ? h(
+              'div.result-metric__change',
+              null,
+              h('span', { text: `原来 ${before === null ? '未评估' : formatPercent(before)}` }),
+              diff !== null && diff !== undefined ? h('span.result-metric__delta', { text: formatDelta(diff) }) : null
+            )
+          : h('div.result-metric__change', { text: counts?.evaluated ? `${counts.passed ?? 0} / ${counts.evaluated} 个案例` : '—' })
+      );
+    });
+    return h(
+      'div.result-metrics',
+      null,
+      h('div.result-metrics__grid', null, ...tiles),
+      h('p.result-metrics__note', null, note, temporary ? '（运行未结束，数值可能变化）' : '', coverageHint())
+    );
+  }
+
+  function failedRuleTexts() {
+    return acceptanceRules()
+      .filter((rule) => rule.ok === false)
+      .map((rule) => ({ text: RULE_FAILURE_TEXT[rule.rule] || RULE_LABELS[rule.rule] || rule.rule, detail: rule.detail || '' }));
+  }
+
+  function applyState() {
     const run = state.run;
-    const terminal = isTerminalStatus(run.status);
-    const decision = run.decision;
-    const transitions = computeTransitions();
     const candVersion = candidateVersionId();
     const applied = Boolean(
       candVersion &&
@@ -562,193 +588,210 @@ export default async function runDetailsView(container, ctx) {
           (!run.current_skill_version_id && state.project?.current_skill_version_id === candVersion))
     );
     const appliedAt = run.acceptance?.applied_at || run.decision_record?.applied_at;
-    const appliedElsewhere = Boolean(appliedAt && candVersion && !applied);
     const applicability = run.applicability || {};
     const isCurrent = applicability.current !== false && !(applicability.stale_reasons || []).length;
-    const canApply = run.can_apply !== false && isCurrent && !applied;
-    const changedFiles = run.candidate?.changed_files || [];
+    return {
+      candVersion,
+      applied,
+      appliedElsewhere: Boolean(appliedAt && candVersion && !applied),
+      isCurrent,
+      canApply: run.can_apply !== false && isCurrent && !applied,
+      staleMessage: applicability.message || '评测之后项目配置有变化，需要重新评测。',
+    };
+  }
 
-    if (!terminal) {
-      return sectionCard({
-        title: '结论与应用',
-        description: '运行完成后按冻结规则给出达标 / 未达标 / 证据不足的结论。',
-        body: callout({
-          tone: 'info',
-          title: '运行尚未结束',
-          body: '当前显示的指标如标注“临时值”表示结果尚未最终确定；不会提前给出成功结论，也不支持应用候选。',
-        }),
-      });
-    }
-
+  /** Headline: what happened, in one sentence, plus what to do next. */
+  function verdict() {
+    const run = state.run;
+    const counts = computeTransitions();
+    const base = baselineCounts();
+    const { baseline, candidate } = headlineMetrics();
+    const jointBefore = metricValue(baseline?.joint);
+    const jointAfter = metricValue(candidate?.joint);
+    const jointText = jointBefore !== null && jointAfter !== null ? `整体通过率 ${formatPercent(jointBefore)} → ${formatPercent(jointAfter)}` : '';
     const decisionErrorCode = run.decision_record?.rationale?.error_code || run.acceptance?.error_code;
-    if (decisionErrorCode === 'no_failures' || (run.mode === 'baseline' && run.status === 'completed' && !candVersion)) {
-      return sectionCard({
-        title: '结论与下一步',
-        body: h(
-          'div.decision-block',
-          null,
-          h('div.decision-headline', null, h('h3', { text: run.mode === 'baseline' ? '基线结果已记录' : '当前测试未发现可改进问题' })),
-          h('p.decision-reason', { text: run.decision_reason || '当前测试范围内没有足够的失败证据生成候选修改。平台运行本身已完成。' }),
-          h(
-            'div.btn-row.btn-row--start',
-            { style: { marginTop: '14px' } },
-            button({ label: '返回项目概览', variant: 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
-            button({ label: '查看运行记录', variant: 'ghost', iconName: 'run', onClick: () => switchTab('log') })
-          )
-        ),
-      });
-    }
 
-    if (decision === 'accept') {
-      return sectionCard({
-        title: '结论与应用',
-        body: h(
-          'div.decision-block',
-          null,
-          h(
-            'div.decision-headline',
-            null,
-            h('h3', { text: applied ? '评测达标，候选已应用' : appliedElsewhere ? '候选曾应用，当前已切换版本' : '评测有改善' })
-          ),
-          h('p.decision-reason', { text: `${run.decision_reason || run.decision_record?.rationale?.reason || run.acceptance?.reason || '候选满足接受规则，等待人工应用。'}${transitions.regressed ? ` 当前仍有 ${transitions.regressed} 条回归；相对改善不代表所有案例通过。` : ' 相对改善不代表所有案例通过。'}` }),
-          h(
-            'div.btn-row.btn-row--start',
-            { style: { marginTop: '14px' } },
-            candVersion && !applied
-              ? button({ label: canApply ? (state.applyBusy ? '正在应用…' : '应用候选') : '需重新评测后应用', variant: canApply ? 'primary' : 'secondary', iconName: canApply ? 'check' : 'lock', disabled: state.applyBusy || !canApply, onClick: applyCandidate })
-              : null,
-            !isCurrent && !applied ? h('span.small.muted', { text: applicability.message || '当前评测条件已变化，需要重新评测。' }) : null,
-            applied ? button({ label: '继续下一轮', variant: 'primary', iconName: 'play', onClick: continueNextRound }) : null,
-            applied ? button({ label: '恢复应用前版本', variant: 'danger', iconName: 'refresh', onClick: restoreAppliedVersion }) : null,
-            appliedElsewhere ? h('span.small.muted', { text: '当前版本已变化，不能从本轮候选重复恢复。' }) : null,
-            candVersion
-              ? button({
-                  label: '导出候选包',
-                  variant: 'secondary',
-                  iconName: 'download',
-                  onClick: () => download(api.exportSkillVersionUrl(candVersion), `${candVersion}.zip`),
-                })
-              : null,
-            button({ label: '查看变更文件', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') })
-          ),
-          kvList(
-            [
-              { label: '修改范围', value: `${changedFiles.length} 个文件` },
-            ],
-            { compact: true }
-          ),
-          h('p.small.muted', { style: { marginTop: '8px' }, text: '应用后仅切换项目当前版本指针；旧版本保留，可从版本记录恢复。' })
-        ),
-      });
+    if (!isTerminalStatus(run.status)) {
+      return { tone: 'info', title: '正在运行', text: '运行结束后给出结论；下面的数字会随进度更新。' };
     }
-
-    if (decision === 'reject') {
-      const failedRules = acceptanceRules().filter((rule) => rule.ok === false);
-      return sectionCard({
-        title: '结论与应用',
-        body: h(
-          'div.decision-block',
-          null,
-          h('div.decision-headline', null, h('h3', { text: '评测未达标' }), chip('不可直接应用', 'danger', { iconName: 'lock' })),
-          h('p.decision-reason', { text: run.decision_reason || run.acceptance?.reason || '候选未满足接受规则，本次运行已完成，不是系统运行失败。' }),
-          h(
-            'div.callout.callout--danger',
-            null,
-            h('div.callout__icon', null, icon('alert', { size: 18 })),
-            h(
-              'div.callout__content',
-              null,
-              h('h3.callout__title', { text: '触发规则' }),
-              h(
-                'ul.small',
-                { style: { paddingLeft: '1.1em', marginTop: '4px' } },
-                ...(failedRules.length ? failedRules : [{ rule: 'at_least_one_improved', detail: '指标未达到接受条件' }]).map((rule) =>
-                  h('li', { text: `${RULE_LABELS[rule.rule] || rule.rule}${rule.detail ? `：${rule.detail}` : ''}` })
-                )
-              )
-            )
-          ),
-          h(
-            'div.btn-row.btn-row--start',
-            { style: { marginTop: '14px' } },
-            button({
-              label: '查看回归案例',
-              variant: 'primary',
-              iconName: 'versions',
-              onClick: () => {
-                state.cases.onlyFailed = true;
-                switchTab('cases');
-                loadCases({ force: true });
-              },
-            }),
-            candVersion
-              ? button({
-                  label: '导出候选',
-                  variant: 'secondary',
-                  iconName: 'download',
-                  onClick: () => download(api.exportSkillVersionUrl(candVersion), `${candVersion}.zip`),
-                })
-              : null,
-            button({ label: '运行记录', variant: 'ghost', iconName: 'run', onClick: () => switchTab('log') })
-          )
-        ),
-      });
-    }
-
-    if (decision === 'inconclusive') {
-      const failedRules = acceptanceRules().filter((rule) => rule.ok === false);
-      return sectionCard({
-        title: '结论与应用',
-        body: h(
-          'div.decision-block',
-          null,
-          h('div.decision-headline', null, h('h3', { text: '证据不足' }), chip('需要新一轮验证', 'warning', { iconName: 'info' })),
-          h('p.decision-reason', { text: run.decision_reason || run.acceptance?.reason || '候选未生成或验证不完整，本轮无法给出接受结论。' }),
-          failedRules.length
-            ? h(
-                'ul.small',
-                { style: { paddingLeft: '1.1em', color: 'var(--text-2)' } },
-                ...failedRules.map((rule) => h('li', { text: `${RULE_LABELS[rule.rule] || rule.rule}：${rule.detail || '未满足'}` }))
-              )
-            : null,
-          h(
-            'div.btn-row.btn-row--start',
-            { style: { marginTop: '14px' } },
-            button({ label: '返回概览重新验证', variant: 'primary', iconName: 'play', onClick: createVerificationRun }),
-            button({ label: '查看运行记录', variant: 'secondary', iconName: 'run', onClick: () => switchTab('log') })
-          )
-        ),
-      });
-    }
-
-    const statusLabel = {
-      failed: '运行失败',
-      cancelled: '运行已取消',
-      interrupted: '运行已中断',
-    }[run.status] || '运行结束';
-    return sectionCard({
-      title: '结论与应用',
-      body: callout({
+    if (['failed', 'cancelled', 'interrupted'].includes(run.status)) {
+      return {
         tone: run.status === 'failed' ? 'danger' : 'warning',
-        title: statusLabel,
-        body:
-          run.error_message ||
-          run.decision_reason ||
-          (run.status === 'cancelled'
-            ? '运行已取消；已产生的模型调用费用不会回退。可以回到项目概览重新启动运行。'
-            : '运行没有产生可应用的候选。可查看运行记录定位原因后重新运行。'),
-        actions: h(
-          'div',
-          null,
-          button({
-            label: '返回项目概览',
-            variant: 'secondary',
-            iconName: 'arrowLeft',
-            href: `#/projects/${encodeURIComponent(run.project_id)}/overview`,
-          }),
-          state.log ? null : button({ label: '查看运行记录', variant: 'ghost', iconName: 'run', onClick: () => switchTab('log') })
-        ),
-      }),
+        title: { failed: '运行失败', cancelled: '运行已取消', interrupted: '运行已中断' }[run.status],
+        text: run.error_message || run.decision_reason || '运行没有产生可应用的候选，可在运行记录里查看原因。',
+      };
+    }
+    if (decisionErrorCode === 'no_failures') {
+      return { tone: 'success', title: '没有发现需要改进的问题', text: run.decision_reason || '当前案例都已通过，优化器没有可依据的失败案例。' };
+    }
+    if (isBaselineRun()) {
+      const total = base.passed + base.failed;
+      return {
+        tone: base.failed ? 'neutral' : 'success',
+        title: base.failed ? `${total} 个案例中 ${base.failed} 个没通过` : `全部 ${total} 个案例都通过了`,
+        text: base.failed ? '可以启动单轮优化，让优化器根据这些失败案例修改 Skill。' : '当前版本在这个数据集上没有失败案例。',
+      };
+    }
+    if (run.decision === 'accept') {
+      const { applied, appliedElsewhere } = applyState();
+      const regress = counts.regressed ? `，但有 ${counts.regressed} 个案例变差，建议先看一下` : '，没有案例变差';
+      return {
+        tone: 'success',
+        title: applied ? '候选已应用' : appliedElsewhere ? '候选曾应用，当前已换成其他版本' : '候选更好，建议应用',
+        text: `${jointText || '核心指标提升'}${regress}。`,
+      };
+    }
+    if (run.decision === 'reject') {
+      const failed = failedRuleTexts();
+      return {
+        tone: 'danger',
+        title: '候选没有变好，不建议应用',
+        text: failed.length ? `${failed.map((item) => item.text).join('；')}。` : run.decision_reason || '候选未满足接受规则。',
+      };
+    }
+    if (run.decision === 'inconclusive') {
+      const failed = failedRuleTexts();
+      return {
+        tone: 'warning',
+        title: '暂时无法判断',
+        text: failed.length ? `${failed.map((item) => item.text).join('；')}。` : run.decision_reason || '候选没有生成或验证不完整。',
+      };
+    }
+    return { tone: 'neutral', title: '运行结束', text: run.decision_reason || '' };
+  }
+
+  function verdictActions() {
+    const run = state.run;
+    if (!isTerminalStatus(run.status)) return [];
+    const { candVersion, applied, appliedElsewhere, isCurrent, canApply, staleMessage } = applyState();
+    const exportBtn = candVersion
+      ? button({ label: '导出候选包', variant: 'ghost', iconName: 'download', onClick: () => download(api.exportSkillVersionUrl(candVersion), `${candVersion}.zip`) })
+      : null;
+    if (run.decision === 'accept') {
+      return [
+        candVersion && !applied
+          ? button({ label: canApply ? (state.applyBusy ? '正在应用…' : '应用候选') : '需重新评测后应用', variant: canApply ? 'primary' : 'secondary', iconName: canApply ? 'check' : 'lock', disabled: state.applyBusy || !canApply, onClick: applyCandidate })
+          : null,
+        applied ? button({ label: '继续下一轮', variant: 'primary', iconName: 'play', onClick: continueNextRound }) : null,
+        button({ label: '看改了什么', variant: 'secondary', iconName: 'versions', onClick: () => switchTab('diff') }),
+        exportBtn,
+        applied ? button({ label: '恢复应用前版本', variant: 'ghost', iconName: 'refresh', onClick: restoreAppliedVersion }) : null,
+        !isCurrent && !applied ? h('span.small.muted', { text: staleMessage }) : null,
+        appliedElsewhere ? h('span.small.muted', { text: '当前版本已变化，不能从本轮候选重复恢复。' }) : null,
+      ];
+    }
+    if (run.decision === 'reject' || run.decision === 'inconclusive') {
+      const counts = computeTransitions();
+      return [
+        counts.regressed
+          ? button({ label: `看变差的 ${counts.regressed} 个案例`, variant: 'primary', iconName: 'alert', onClick: () => openCases('regressed') })
+          : button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }),
+        run.decision === 'inconclusive' ? button({ label: '回概览重新验证', variant: 'secondary', iconName: 'play', onClick: createVerificationRun }) : null,
+        candVersion ? button({ label: '看改了什么', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') }) : null,
+      ];
+    }
+    if (isBaselineRun() && run.status === 'completed') {
+      return [
+        baselineCounts().failed ? button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }) : null,
+        button({ label: '回项目概览', variant: baselineCounts().failed ? 'secondary' : 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+      ];
+    }
+    return [
+      button({ label: '查看运行记录', variant: 'primary', iconName: 'run', onClick: () => switchTab('log') }),
+      button({ label: '回项目概览', variant: 'ghost', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+    ];
+  }
+
+  function verdictCard() {
+    const v = verdict();
+    const actions = verdictActions().filter(Boolean);
+    return h(
+      `section.result-verdict.result-verdict--${v.tone}`,
+      null,
+      h('h2.result-verdict__title', { text: v.title }),
+      v.text ? h('p.result-verdict__text', { text: v.text }) : null,
+      metricStrip(),
+      actions.length ? h('div.btn-row.btn-row--start.result-verdict__actions', null, ...actions) : null
+    );
+  }
+
+  function openCases(filter) {
+    state.cases.filter = filter;
+    switchTab('cases');
+  }
+
+  /** Clickable case-change tiles; every tile opens the case list filtered. */
+  function caseChangeCard() {
+    const hasCaseData = state.cases.loaded && state.cases.items.length > 0;
+    let body;
+    if (!hasCaseData) {
+      body = h('p.muted.small', { text: state.cases.loading ? '正在统计案例结果…' : '暂时没有可统计的案例结果。' });
+    } else {
+      const tiles = caseFilterOptions().filter((option) => option.id !== 'all');
+      body = h(
+        'div.change-tiles',
+        null,
+        ...tiles.map((option) =>
+          h(
+            `button.change-tile.change-tile--${option.tone}${option.count ? '' : ' is-empty'}`,
+            { type: 'button', onclick: () => openCases(option.id), disabled: !option.count },
+            h('span.change-tile__value', { text: String(option.count) }),
+            h('span.change-tile__label', { text: option.label }),
+            h('span.change-tile__hint', { text: option.hint })
+          )
+        )
+      );
+    }
+    return sectionCard({
+      title: '案例结果',
+      description: isBaselineRun() ? '点击数字查看对应案例和失败原因。' : '基线 → 候选，每个案例只算一次（验证集取第一次）。点击数字查看。',
+      body: h('div.stack', null, body, hasCaseData ? failureBreakdown() : null),
+    });
+  }
+
+  /** Top failure reasons among the cases that still fail. */
+  function failureBreakdown() {
+    const sideKey = isBaselineRun() ? 'baseline' : 'candidate';
+    const counts = new Map();
+    for (const item of state.cases.items) {
+      const explained = explainCaseSide(item[sideKey]);
+      if (!explained || explained.passed) continue;
+      // Count each case once, by its most decisive reason.
+      const group = explained.reasons[0]?.group || 'error';
+      counts.set(group, (counts.get(group) || 0) + 1);
+    }
+    if (!counts.size) return null;
+    const rows = Object.keys(FAILURE_GROUPS)
+      .filter((group) => counts.get(group))
+      .map((group) => h('li', null, h('span', { text: FAILURE_GROUPS[group] }), h('strong', { text: `${counts.get(group)} 个` })));
+    return h(
+      'div.failure-breakdown',
+      null,
+      h('div.failure-breakdown__title', { text: isBaselineRun() ? '没通过的主要原因（每个案例按最主要的一条计）' : '候选仍没通过的主要原因' }),
+      h('ul.failure-breakdown__list', null, ...rows)
+    );
+  }
+
+  /** What the optimizer changed and why, one paragraph; details live in 文件差异. */
+  function changeSummaryCard() {
+    if (isBaselineRun()) return null;
+    const candidate = state.run.candidate || {};
+    const diagnosis = candidate.diagnosis || {};
+    const why = diagnosis.summary || diagnosis.reason || (typeof diagnosis === 'string' ? diagnosis : '');
+    const files = candidate.changed_files || [];
+    const hypotheses = (candidate.hypotheses || []).length;
+    if (!why && !files.length) return null;
+    return sectionCard({
+      title: '改了什么',
+      actions: [button({ label: '查看文件差异', variant: 'ghost', size: 'sm', iconName: 'versions', onClick: () => switchTab('diff') })],
+      body: h(
+        'div.stack.stack--sm',
+        null,
+        why ? h('p.small', { text: why }) : null,
+        files.length
+          ? h('p.small.muted', { text: `改了 ${files.length} 个文件${hypotheses ? `、${hypotheses} 处` : ''}：${files.join('、')}` })
+          : null
+      ),
     });
   }
 
@@ -768,14 +811,6 @@ export default async function runDetailsView(container, ctx) {
     renderResult();
   }
 
-  function failedCaseCount() {
-    return state.cases.items.filter((item) =>
-      item.baseline?.passed === false
-      || item.candidate?.passed === false
-      || item.passed === false
-    ).length;
-  }
-
   function baselineCounts() {
     const passed = state.cases.items.filter((item) => item.baseline?.passed === true).length;
     const failed = state.cases.items.filter((item) => item.baseline?.passed === false).length;
@@ -792,10 +827,9 @@ export default async function runDetailsView(container, ctx) {
     const notEvaluated = blocks.some((block) => block && block.status === 'not_evaluated');
     if (!notEvaluated) return null;
     return h(
-      'p.coverage-hint',
-      { style: { marginTop: '10px' } },
-      '存在“未评估”的指标：数据集中缺少对应子技能或工具的有效案例，未覆盖项不会记为满分。',
-      ' ',
+      'span.coverage-hint',
+      null,
+      '「未评估」表示数据集里没有对应的有效案例，不会按满分计。',
       h('a', { href: `#/projects/${encodeURIComponent(state.run.project_id)}/dataset` }, '检查数据集覆盖')
     );
   }
@@ -808,74 +842,34 @@ export default async function runDetailsView(container, ctx) {
     const run = state.run;
     const metrics = run.metrics || {};
     const temporary = Boolean(metrics.temporary) || !isTerminalStatus(run.status);
-    const transitions = computeTransitions();
-    const hasCaseData = state.cases.loaded && state.cases.items.length > 0;
-    const isBaselineMode = run.mode === 'baseline' || !candidateVersionId();
-
+    const reason = run.decision_reason || run.decision_record?.rationale?.reason || '';
+    const validation = metrics.validation;
     const metricDetails = h(
       'details.result-details',
       null,
-      h('summary', { text: '查看完整指标、接受规则与成本明细' }),
+      h('summary', { text: '更多：完整指标、判定规则、成本' }),
       h(
         'div.stack',
         null,
+        reason ? h('p.small.muted', null, h('span', { text: '判定说明：' }), reason) : null,
         h(
           'div.overview-grid',
           null,
           sectionCard({
-            title: '指标对比',
-            description: temporary ? '运行尚未结束，候选指标为临时值。' : '基线、候选与差值的最终结果。',
+            title: validation?.baseline ? '优化集指标' : '指标',
+            description: temporary ? '运行尚未结束，候选指标为临时值。' : '优化器看得到的案例上的结果。',
             actions: temporary ? [chip('临时值', 'warning', { iconName: 'clock' })] : [],
-            body: h('div', null, metricsTable(metrics, temporary), coverageHint()),
+            body: metricsTable(metrics, temporary),
           }),
-          sectionCard({ title: '接受规则', description: '阈值在运行前冻结，不能为当前候选临时调低。', body: ruleList() })
+          validation?.baseline
+            ? sectionCard({ title: '验证集指标', description: '没参与优化的案例，重复执行后汇总；结论按这一组判定。', body: metricsTable(validation, false) })
+            : null
         ),
-        sectionCard({ title: '执行与成本', description: '计划数、完成数、有效数、基础设施错误、耗时与 Token。', body: executionStats() })
+        isBaselineRun() ? null : sectionCard({ title: '判定规则', description: '规则在运行前冻结，不会为当前候选临时调整。', body: ruleList() }),
+        sectionCard({ title: '执行与成本', body: executionStats() })
       )
     );
-    const caseSection = sectionCard({
-      title: isBaselineMode ? '当前版本案例结果' : '案例变化',
-      description: isBaselineMode ? '本次只运行了基线，可直接筛选失败案例查看具体参数差异。' : '新增通过与新增失败反映候选的实际影响；案例列表包含优化集与验证集首轮结果。',
-      actions: hasCaseData
-        ? [
-            failedCaseCount()
-              ? button({
-                  label: `查看失败记录（含基线 ${failedCaseCount()}）`,
-                  variant: 'primary',
-                  size: 'sm',
-                  iconName: 'alert',
-                  onClick: () => {
-                    state.cases.onlyFailed = true;
-                    switchTab('cases');
-                  },
-                })
-              : null,
-            button({ label: '查看全部案例', variant: 'ghost', size: 'sm', onClick: () => switchTab('cases') }),
-          ].filter(Boolean)
-        : [],
-      body: !hasCaseData
-        ? h('p.muted.small', { text: state.cases.loading ? '正在统计案例结果…' : '暂时没有可统计的案例结果。' })
-        : isBaselineMode
-          ? h(
-              'div.case-transition',
-              null,
-              h('div.transition-card transition-card--good', null, h('div.transition-card__label', { text: '基线通过' }), h('div.transition-card__value', { text: String(baselineCounts().passed) }), h('div.xsmall.muted', { text: '实际结果与数据集预期一致' })),
-              h('div.transition-card transition-card--bad', null, h('div.transition-card__label', { text: '基线失败' }), h('div.transition-card__value', { text: String(baselineCounts().failed) }), h('div.xsmall.muted', { text: '点击上方按钮查看失败字段' })),
-              h('div.transition-card', null, h('div.transition-card__label', { text: '未执行/无结果' }), h('div.transition-card__value', { text: String(Math.max(0, state.cases.items.length - baselineCounts().passed - baselineCounts().failed)) }), h('div.xsmall.muted', { text: '案例尚未返回结果' }))
-            )
-          : h(
-              'div.case-transition',
-              null,
-              h(`div.transition-card${transitions.fixed ? ' transition-card--good' : ''}`, null, h('div.transition-card__label', { text: '新增通过' }), h('div.transition-card__value', { text: String(transitions.fixed) }), h('div.xsmall.muted', { text: '基线失败 → 候选通过' })),
-              h(`div.transition-card${transitions.regressed ? ' transition-card--bad' : ''}`, null, h('div.transition-card__label', { text: '新增失败（回归）' }), h('div.transition-card__value', { text: String(transitions.regressed) }), h('div.xsmall.muted', { text: '基线通过 → 候选失败' })),
-              h('div.transition-card', null, h('div.transition-card__label', { text: '仍然失败' }), h('div.transition-card__value', { text: String(transitions.unchangedFail) }), h('div.xsmall.muted', { text: '基线失败 → 候选仍失败' }))
-            ),
-    });
-    const rationale = candidateRationaleSection();
-    mount(
-      resultHost,
-      h('div.stack', null, conclusionSection(), validationSummary(), rationale, caseSection, metricDetails)
-    );
+    mount(resultHost, h('div.stack', null, verdictCard(), caseChangeCard(), changeSummaryCard(), metricDetails));
   }
 
   async function applyCandidate() {
@@ -1045,55 +1039,81 @@ export default async function runDetailsView(container, ctx) {
 
   /* ---------------- cases tab ---------------- */
 
-  function filteredCases() {
-    let items = state.cases.items.slice();
-    if (state.cases.onlyFailed) {
-      items = items.filter(
-        (item) =>
-          item.changeType === 'regressed' ||
-          item.changeType === 'unchanged_fail' ||
-          item.baseline?.passed === false ||
-          item.candidate?.passed === false
-      );
+  /** Filter chips for the case list, with counts; also used by the result tiles. */
+  function caseFilterOptions() {
+    const items = state.cases.items;
+    const count = (predicate) => items.filter(predicate).length;
+    if (isBaselineRun()) {
+      return [
+        { id: 'all', label: '全部', count: items.length, tone: 'neutral', hint: '' },
+        { id: 'failed', label: '没通过', count: count((item) => item.baseline?.passed === false), tone: 'bad', hint: '点开看失败原因' },
+        { id: 'pass', label: '通过', count: count((item) => item.baseline?.passed === true), tone: 'good', hint: '结果与预期一致' },
+      ];
     }
+    return [
+      { id: 'all', label: '全部', count: items.length, tone: 'neutral', hint: '' },
+      { id: 'fixed', label: '修好了', count: count((item) => item.changeType === 'fixed'), tone: 'good', hint: '基线失败 → 候选通过' },
+      { id: 'regressed', label: '变差了', count: count((item) => item.changeType === 'regressed'), tone: 'bad', hint: '基线通过 → 候选失败' },
+      { id: 'still_fail', label: '仍然失败', count: count((item) => item.changeType === 'unchanged_fail'), tone: 'warn', hint: '两边都没通过' },
+      { id: 'pass', label: '一直通过', count: count((item) => item.changeType === 'unchanged_pass'), tone: 'neutral', hint: '两边都通过' },
+    ];
+  }
+
+  function matchesFilter(item, filter) {
+    switch (filter) {
+      case 'fixed': return item.changeType === 'fixed';
+      case 'regressed': return item.changeType === 'regressed';
+      case 'still_fail': return item.changeType === 'unchanged_fail';
+      case 'pass': return isBaselineRun() ? item.baseline?.passed === true : item.changeType === 'unchanged_pass';
+      case 'failed':
+        return isBaselineRun()
+          ? item.baseline?.passed === false
+          : item.changeType === 'regressed' || item.changeType === 'unchanged_fail' || item.candidate?.passed === false;
+      default: return true;
+    }
+  }
+
+  function filteredCases() {
+    const filter = state.cases.filter || 'all';
+    let items = state.cases.items.filter((item) => matchesFilter(item, filter));
     const needle = state.cases.search.trim().toLowerCase();
     if (needle) {
       items = items.filter((item) => (item.case_id || '').toLowerCase().includes(needle) || (item.query || '').toLowerCase().includes(needle));
     }
-    items.sort((a, b) => changeRank(a.changeType) - changeRank(b.changeType) || String(a.case_id).localeCompare(String(b.case_id)));
+    const rank = (item) => (isBaselineRun() ? (item.baseline?.passed === false ? 0 : 1) : changeRank(item.changeType));
+    items.sort((a, b) => rank(a) - rank(b) || String(a.case_id).localeCompare(String(b.case_id)));
     return items;
   }
 
-  function sideCell(side, { label }) {
-    if (!side) {
-      return h('div.case-result-cell', null, h('span.muted.small', { text: state.run.mode === 'baseline' ? '仅基线运行' : '无结果' }));
+  /** One-line "why" for a case row: the failing side's first reason in plain words. */
+  function reasonCell(item) {
+    const baseline = explainCaseSide(item.baseline);
+    const candidate = explainCaseSide(item.candidate);
+    let prefix = '';
+    let explained = null;
+    if (isBaselineRun()) {
+      explained = baseline;
+    } else if (item.changeType === 'fixed') {
+      prefix = '原来：';
+      explained = baseline;
+    } else {
+      explained = candidate && !candidate.passed ? candidate : null;
     }
-    const status = side.status || (side.passed ? 'pass' : 'fail');
+    if (!explained || explained.passed || !explained.reasons.length) {
+      return h('td.case-reason.muted', { text: item.changeType === 'pending' ? '等待结果' : '—' });
+    }
+    const [first, ...rest] = explained.reasons;
     return h(
-      'div.case-result-cell',
+      `td.case-reason${item.changeType === 'fixed' ? ' is-fixed' : ''}`,
       null,
-      h(
-        'div.case-result-line',
-        null,
-        h('span.case-result-line__label', { text: label }),
-        statusBadge(status, 'case')
-      ),
-      h(
-        'div.case-result-line',
-        null,
-        h('span.case-result-line__label', { text: '路线' }),
-        h('span.case-result-line__text', { text: formatRoutes(side.selected_skills ? [side.selected_skills] : []) })
-      ),
-      h(
-        'div.case-result-line',
-        null,
-        h('span.case-result-line__label', { text: '调用' }),
-        h(
-          `span.case-result-line__text${side.passed ? ' is-pass' : ' is-fail'}`,
-          { text: (side.tool_calls || []).length ? formatToolCall(side.tool_calls[0]) : side.action === 'clarify' ? '请求澄清' : '无工具调用' }
-        )
-      )
+      h('span', { text: `${prefix}${first.text}` }),
+      rest.length ? h('span.case-reason__more', { text: ` 等 ${explained.reasons.length} 处` }) : null
     );
+  }
+
+  function sideBadge(side) {
+    if (!side) return h('span.muted.xsmall', { text: '—' });
+    return statusBadge(side.status || (side.passed ? 'pass' : 'fail'), 'case');
   }
 
   function renderCases() {
@@ -1105,11 +1125,11 @@ export default async function runDetailsView(container, ctx) {
       mount(casesHost, errorState(state.cases.error, { title: '无法加载案例对比', retry: () => loadCases({ force: true }) }));
       return;
     }
-    const items = filteredCases();
-    const allCount = state.cases.items.length;
+    const options = caseFilterOptions();
+    if (!options.some((option) => option.id === state.cases.filter)) state.cases.filter = 'all';
     const searchInput = h('input.input', {
       type: 'search',
-      placeholder: '搜索 case_id 或 query',
+      placeholder: '搜索案例编号或问题',
       value: state.cases.search,
       'aria-label': '搜索案例',
       oninput: (event) => {
@@ -1117,18 +1137,25 @@ export default async function runDetailsView(container, ctx) {
         renderCasesTable();
       },
     });
-    const onlyFailed = h(
-      'label.checkbox-line',
-      null,
-      h('input', {
-        type: 'checkbox',
-        checked: state.cases.onlyFailed,
-        onchange: (event) => {
-          state.cases.onlyFailed = event.target.checked;
-          renderCases();
-        },
-      }),
-      h('span', { text: '只看失败 / 回归' })
+    const filterBar = h(
+      'div.segmented.case-filter',
+      { role: 'tablist', 'aria-label': '筛选案例' },
+      ...options.map((option) =>
+        h(
+          `button.segmented__btn${state.cases.filter === option.id ? ' is-active' : ''}`,
+          {
+            type: 'button',
+            role: 'tab',
+            'aria-selected': String(state.cases.filter === option.id),
+            onclick: () => {
+              state.cases.filter = option.id;
+              renderCases();
+            },
+          },
+          option.label,
+          h(`span.case-filter__count.case-filter__count--${option.tone}`, { text: String(option.count) })
+        )
+      )
     );
 
     mount(
@@ -1139,12 +1166,10 @@ export default async function runDetailsView(container, ctx) {
         h(
           'div.case-toolbar',
           null,
-          h('div.search-field', null, icon('search', { size: 15 }), searchInput),
-          onlyFailed,
-          !isTerminalStatus(state.run.status) ? chip('结果可能仍会变化', 'warning', { iconName: 'clock' }) : null,
+          filterBar,
           h('span.case-toolbar__spacer'),
-          h('span.muted.xsmall', { text: `显示 ${items.length} / ${allCount} 条，回归优先排序` }),
-          // Results only change while the run is still in progress.
+          !isTerminalStatus(state.run.status) ? chip('结果可能仍会变化', 'warning', { iconName: 'clock' }) : null,
+          h('div.search-field', null, icon('search', { size: 15 }), searchInput),
           !isTerminalStatus(state.run.status)
             ? button({ label: '刷新', variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => loadCases({ force: true }) })
             : null
@@ -1152,7 +1177,7 @@ export default async function runDetailsView(container, ctx) {
         h('div', { id: 'cases-table-host' })
       )
     );
-    renderCasesTable(items);
+    renderCasesTable();
   }
 
   function renderCasesTable(items = filteredCases()) {
@@ -1178,13 +1203,13 @@ export default async function runDetailsView(container, ctx) {
         emptyState({
           iconName: 'search',
           title: '没有匹配的案例',
-          description: '当前筛选条件下没有案例，可清除“只看失败”或修改搜索词。',
+          description: '换一个筛选，或清空搜索词。',
           actions: [
             {
-              label: '清除筛选',
+              label: '显示全部',
               variant: 'secondary',
               onClick: () => {
-                state.cases.onlyFailed = false;
+                state.cases.filter = 'all';
                 state.cases.search = '';
                 renderCases();
               },
@@ -1194,13 +1219,15 @@ export default async function runDetailsView(container, ctx) {
       );
       return;
     }
+    const baselineOnly = isBaselineRun();
+    const open = (item) => openCaseDrawer(item.case_id);
     mount(
       host,
       h(
         'div.table-wrap',
         null,
         h(
-          'table.data-table',
+          'table.data-table.case-table',
           null,
           h(
             'thead',
@@ -1208,11 +1235,10 @@ export default async function runDetailsView(container, ctx) {
             h(
               'tr',
               null,
-              h('th', { text: 'ID' }),
-              h('th', { text: 'query' }),
-              h('th', { text: '基线结果' }),
-              h('th', { text: '候选结果' }),
-              h('th', { text: '变化' })
+              h('th', { text: '案例' }),
+              baselineOnly ? h('th.case-table__status', { text: '结果' }) : h('th.case-table__status', { text: '基线' }),
+              baselineOnly ? null : h('th.case-table__status', { text: '候选' }),
+              h('th', { text: '原因' })
             )
           ),
           h(
@@ -1223,46 +1249,29 @@ export default async function runDetailsView(container, ctx) {
                 'tr.is-clickable',
                 {
                   tabindex: '0',
-                  onclick: () => openCaseDrawer(item.case_id),
+                  onclick: () => open(item),
                   onkeydown: (event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
-                      openCaseDrawer(item.case_id);
+                      open(item);
                     }
                   },
                 },
-                h('td.cell-mono.nowrap', null, item.case_id, item.critical ? chip('关键', 'warning') : null),
                 h(
-                  'td',
-                  { style: { maxWidth: '300px' } },
-                  h('div.cell-strong', { text: truncate(item.query || '', 72) }),
-                  h('div.xsmall.muted', { text: `${splitLabel(item.split)}${item.repeat_index ? ` · 重复 #${item.repeat_index}` : ''}` })
-                ),
-                h('td', null, sideCell(item.baseline, { label: '基线' })),
-                h('td', null, sideCell(item.candidate, { label: '候选' })),
-                h(
-                  'td',
+                  'td.case-table__case',
                   null,
+                  h('div.cell-strong', { text: truncate(item.query || '', 90) }),
                   h(
-                    'div.row',
-                    { style: { gap: '6px' } },
-                    state.run.mode === 'baseline' && item.baseline
-                      ? statusBadge(item.baseline.passed ? 'pass' : 'fail', 'case')
-                      : statusBadge(item.changeType, 'change'),
-                    state.run.mode === 'baseline' && item.baseline
-                      ? h('span.xsmall.muted', { text: '基线结果' })
-                      : null,
-                    (item.diagnostics || []).length
-                      ? h('span.xsmall.muted', { text: `${item.diagnostics.length} 项差异` })
-                      : null
-                  ),
-                  (item.diagnostics || []).length
-                    ? h('div.xsmall.muted.cell-mono', {
-                        style: { marginTop: '4px', maxWidth: '220px' },
-                        text: item.diagnostics[0].field_path || item.diagnostics[0].category || '查看差异',
-                      })
-                    : null
-                )
+                    'div.case-table__meta',
+                    null,
+                    h('span.mono', { text: item.case_id }),
+                    item.split === 'validation' ? h('span', { text: '验证集' }) : null,
+                    item.critical ? chip('关键', 'warning') : null
+                  )
+                ),
+                h('td.case-table__status', null, sideBadge(item.baseline)),
+                baselineOnly ? null : h('td.case-table__status', null, sideBadge(item.candidate)),
+                reasonCell(item)
               )
             )
           )
@@ -1360,7 +1369,7 @@ export default async function runDetailsView(container, ctx) {
   async function openCaseDrawer(caseId) {
     const drawer = openDrawer({
       title: `案例 ${caseId}`,
-      subtitle: '并排查看基线与候选的实际路线、工具调用与参数差异。',
+      subtitle: '为什么通过或没通过，以及预期与实际的对照。',
       size: 'xl',
       body: loadingState('正在加载案例详情…'),
       footer: h(
@@ -1401,19 +1410,6 @@ export default async function runDetailsView(container, ctx) {
     }
   }
 
-  function _scopedCallArguments(call) {
-    const args = call && typeof call.arguments === 'object' && call.arguments
-      ? call.arguments
-      : {};
-    if (args && typeof args === 'object' && Object.prototype.hasOwnProperty.call(args, 'args')
-        && (Object.prototype.hasOwnProperty.call(args, 'method')
-          || Object.prototype.hasOwnProperty.call(args, 'script')
-          || Object.prototype.hasOwnProperty.call(args, 'request'))) {
-      return args.args || {};
-    }
-    return args;
-  }
-
   function expectedCallBlock(call, index) {
     const path = call.arguments_path;
     const args = call.arguments || {};
@@ -1423,8 +1419,8 @@ export default async function runDetailsView(container, ctx) {
       h(
         'div.row',
         { style: { gap: '6px', alignItems: 'center' } },
-        h('span.mono.xsmall', { text: `#${index + 1} ${call.name || '—'}` }),
-        path ? chip(`仅比较 arguments.${path}`, 'neutral') : chip('完整 arguments', 'neutral')
+        h('span.mono.xsmall', { text: `${call.name || '—'}${args && typeof args === 'object' && args.method ? ` · ${args.method}` : ''}` }),
+        path ? chip(`只比较 ${path}`, 'neutral') : null
       ),
       h('pre.code-block__pre.expected-call__args', {
         text: safeJsonStringify(args, 2),
@@ -1438,7 +1434,7 @@ export default async function runDetailsView(container, ctx) {
     const args = call && typeof call.arguments === 'object' && call.arguments
       ? call.arguments
       : {};
-    const scoped = _scopedCallArguments(call);
+    // Full arguments, same as the expected column, so the two can be compared.
     const method = args && typeof args === 'object' ? args.method : null;
     return h(
       'div.actual-call',
@@ -1447,41 +1443,74 @@ export default async function runDetailsView(container, ctx) {
         text: `${call.name || '—'}${method ? ` · ${method}` : ''}`,
       }),
       h('pre.code-block__pre.actual-call__args', {
-        text: safeJsonStringify(scoped, 2),
+        text: safeJsonStringify(args, 2),
         style: { maxHeight: '200px', whiteSpace: 'pre-wrap', margin: '6px 0 0' },
       })
     );
   }
 
-  function sideResultBlock(side, label) {
-    if (!side) return h('div.compare-column', null, h('div.compare-column__head', null, h('span', { text: label })), h('div.compare-column__body', null, h('p.muted.small', { text: '无结果' })));
+  /** One column of the expected / baseline / candidate comparison. */
+  function compareColumn({ label, badge = null, routes, action, calls, missing = null, footer = null, expected = false }) {
     return h(
-      'div.compare-column',
+      `div.compare-column${expected ? ' compare-column--expected' : ''}`,
       null,
-      h(
-        'div.compare-column__head',
-        null,
-        h('span', { text: label }),
-        side.status ? statusBadge(side.status, 'case') : side.passed ? statusBadge('pass', 'case') : statusBadge('fail', 'case')
-      ),
+      h('div.compare-column__head', null, h('span', { text: label }), badge),
       h(
         'div.compare-column__body',
         null,
-        h('div', null, h('span.xsmall.muted', { text: '实际路线' }), h('div', null, ...(side.selected_skills || []).map((skill) => h('span.route-pill', { text: skill })))),
-        h('div', null, h('span.xsmall.muted', { text: '动作' }), h('div.small', { text: actionLabel(side.action) })),
+        h('div', null, h('span.xsmall.muted', { text: '技能' }), h('div', null, routes.length ? routes.map((route) => h('span.route-pill', { text: route })) : h('span.small.muted', { text: '无' }))),
+        h('div', null, h('span.xsmall.muted', { text: '动作' }), h('div.small', { text: actionLabel(action) })),
+        missing && missing.length ? h('div', null, h('span.xsmall.muted', { text: '应澄清的字段' }), h('div.small', { text: missing.join('、') })) : null,
         h(
           'div',
           null,
           h('span.xsmall.muted', { text: '工具调用' }),
-          (side.tool_calls || []).length
-            ? h('div.stack', null, ...side.tool_calls.map(actualCallBlock))
-            : h('div.small.muted', { text: '无业务工具调用' })
+          calls.length ? h('div.stack.stack--sm', null, ...calls) : h('div.small.muted', { text: '无' })
         ),
-        side.error_code || side.reason
-          ? h('div', null, h('span.xsmall.muted', { text: '失败原因' }), h('div.small', { text: side.reason || side.error_code }))
-          : null,
-        h('div.xsmall.muted', { text: `耗时 ${formatDuration(side.duration_ms)} · Token ${formatNumber(side.usage?.input_tokens ? (side.usage.input_tokens + (side.usage.output_tokens || 0)) : undefined)}` })
+        footer
       )
+    );
+  }
+
+  function actualColumn(side, label) {
+    if (!side) {
+      return h(
+        'div.compare-column',
+        null,
+        h('div.compare-column__head', null, h('span', { text: label })),
+        h('div.compare-column__body', null, h('p.muted.small', { text: '本次没有运行' }))
+      );
+    }
+    const tokens = side.usage?.total_tokens ?? (side.usage?.input_tokens ? side.usage.input_tokens + (side.usage.output_tokens || 0) : undefined);
+    return compareColumn({
+      label,
+      badge: sideBadge(side),
+      routes: side.selected_skills || [],
+      action: side.action,
+      calls: (side.tool_calls || []).map(actualCallBlock),
+      missing: side.action === 'clarify' ? side.missing_fields : null,
+      footer: h('div.xsmall.muted', { text: `耗时 ${formatDuration(side.duration_ms)} · Token ${formatNumber(tokens)}` }),
+    });
+  }
+
+  /** Plain-language verdict per side: passed, or the list of what went wrong. */
+  function verdictRows(detail) {
+    const sides = isBaselineRun() ? [['结果', detail.baseline]] : [['基线', detail.baseline], ['候选', detail.candidate]];
+    return h(
+      'div.case-verdict',
+      null,
+      ...sides.map(([label, side]) => {
+        const explained = explainCaseSide(side);
+        return h(
+          'div.case-verdict__row',
+          null,
+          h('span.case-verdict__label', { text: label }),
+          side ? sideBadge(side) : h('span.muted.small', { text: '未运行' }),
+          explained && !explained.passed
+            ? h('ul.case-verdict__reasons', null, ...explained.reasons.map((reason) => h('li', { text: reason.text })))
+            : h('span.small.muted', { text: explained ? '与预期一致' : '' })
+        );
+      })
     );
   }
 
@@ -1508,51 +1537,6 @@ export default async function runDetailsView(container, ctx) {
                 h('span.param-diff__value', { text: `${typeof item.expected === 'string' ? item.expected : safeJsonStringify(item.expected, 0)} → ${typeof item.actual === 'string' ? item.actual : safeJsonStringify(item.actual, 0)}` })),
               h('div.param-diff__cell', null, h('span.param-diff__label', { text: '理由' }), h('span.param-diff__value', { text: item.reason || '—' }))
             )
-          )
-        )
-      )
-    );
-  }
-
-  function paramDiffBlock(detail) {
-    const diagnostics = detail.diagnostics || [];
-    const diffs = [];
-    const seen = new Set();
-    for (const diff of diagnostics) {
-      const key = `${diff.field_path}|${safeJsonStringify(diff.expected_value)}|${safeJsonStringify(diff.actual_value)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      diffs.push({ path: diff.field_path || '$', expected: diff.expected_value, actual: diff.actual_value, category: diff.category, note: diff.note });
-    }
-    if (!diffs.length) {
-      for (const path of ['routing', 'tool_args']) {
-        const before = detail.baseline?.[path];
-        const after = detail.candidate?.[path];
-        if (before?.reason || after?.reason) {
-          diffs.push({ path: `$.${path}`, expected: before?.reason || '通过', actual: after?.reason || '通过', category: '评分' });
-        }
-      }
-    }
-    if (!diffs.length) return h('p.muted.small', { text: '没有参数差异记录。' });
-    return h(
-      'div.param-diff-list',
-      null,
-      ...diffs.map((diff) =>
-        h(
-          'div.param-diff',
-          null,
-          h('div.param-diff__path', null, h('div', { text: diff.path }), diff.category ? h('div.xsmall.muted', { text: diff.category }) : null, diff.note ? h('div.xsmall.param-diff__note', { text: diff.note }) : null),
-          h(
-            'div.param-diff__cell',
-            null,
-            h('span.param-diff__label', { text: '预期（数据集）' }),
-            h('span.param-diff__value.is-expected', { text: diff.expected === undefined ? '（缺失）' : typeof diff.expected === 'string' ? diff.expected : safeJsonStringify(diff.expected, 0) })
-          ),
-          h(
-            'div.param-diff__cell',
-            null,
-            h('span.param-diff__label', { text: '实际（运行结果）' }),
-            h('span.param-diff__value.is-actual', { text: diff.actual === undefined ? '（缺失）' : typeof diff.actual === 'string' ? diff.actual : safeJsonStringify(diff.actual, 0) })
           )
         )
       )
@@ -1590,62 +1574,49 @@ export default async function runDetailsView(container, ctx) {
 
   function buildCaseDetail(detail, events) {
     const expected = detail.expected || {};
-    const routes = expected.routes || [];
+    const routes = (expected.routes || []).map((route) => (Array.isArray(route) ? route.join(' → ') : String(route)));
     const expectedCalls = expected.tool_calls || [];
-    const baselineOnly = state.run.mode === 'baseline';
+    const baselineOnly = isBaselineRun();
     return h(
       'div.case-detail',
       null,
       h(
         'div.case-section',
         null,
-        h(
-          'div.case-section__title',
-          null,
-          h('span', { text: '数据集预期（评分依据）' }),
-          expected.action ? chip(actionLabel(expected.action), 'accent') : null
-        ),
         h('div.case-detail__query', { text: detail.query || '—' }),
         h(
           'div.row',
           { style: { marginTop: '8px', gap: '6px' } },
           chip(splitLabel(detail.split), 'neutral'),
           detail.critical ? chip('关键案例', 'warning', { iconName: 'alert' }) : null,
-          routes.length ? h('span.route-pill', { text: formatRoutes(routes) }) : null,
-          detail.changeType ? statusBadge(detail.changeType, 'change') : null
+          !baselineOnly && detail.changeType ? statusBadge(detail.changeType, 'change') : null
         ),
-        expected.missing_fields?.length
-          ? h('p.small', null, h('span.muted', { text: '缺少字段：' }), expected.missing_fields.join('、'))
-          : null,
-        expectedCalls.length
-          ? h('div.stack', { style: { marginTop: '10px' } },
-              ...expectedCalls.map((call, index) => expectedCallBlock(call, index)))
-          : h('p.muted.small', { style: { marginTop: '8px' }, text: '该案例不期望业务工具调用。' })
+        verdictRows(detail)
       ),
       h(
         'div.case-section',
         null,
+        h('div.case-section__title', null, h('span', { text: '预期与实际' })),
         h(
-          'div.case-section__title',
+          `div.compare-columns${baselineOnly ? '' : ' compare-columns--3'}`,
           null,
-          h('span', { text: baselineOnly ? '实际结果（本次基线运行）' : '实际结果（基线与候选）' }),
-          baselineOnly ? chip('无候选结果', 'neutral') : null
-        ),
-        h('div.compare-columns', null,
-          sideResultBlock(detail.baseline, '基线实际'),
-          sideResultBlock(detail.candidate, baselineOnly ? '候选（本次未运行）' : '候选实际'))
-      ),
-      h(
-        'div.case-section',
-        null,
-        h('div.case-section__title', null, h('span', { text: '参数差异（预期 vs 实际）' })),
-        paramDiffBlock(detail)
+          compareColumn({
+            label: '预期（数据集）',
+            routes: routes.length > 1 ? routes.map((route, index) => (index ? `或 ${route}` : route)) : routes,
+            action: expected.action,
+            calls: expectedCalls.map((call, index) => expectedCallBlock(call, index)),
+            missing: expected.action === 'clarify' ? expected.missing_fields : null,
+            expected: true,
+          }),
+          actualColumn(detail.baseline, baselineOnly ? '实际' : '基线'),
+          baselineOnly ? null : actualColumn(detail.candidate, '候选')
+        )
       ),
       judgmentsBlock(detail),
       h(
-        'div',
+        'details.case-more',
         null,
-        h('div.case-section__title', null, h('span', { text: '时间轨迹' })),
+        h('summary', { text: `执行过程（${events.length} 条事件）` }),
         timelineBlock(events)
       ),
       jsonViewer(detail.expected || {}, { label: '预期结果 JSON', maxHeight: '240px', redact: false })

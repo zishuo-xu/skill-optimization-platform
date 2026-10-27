@@ -189,9 +189,9 @@ export default async function overviewView(container, ctx) {
 
     const cards = [];
     for (const [key, label, hint] of [
-      ['joint', '联合通过率 J', '分发、动作与工具参数全部正确'],
-      ['routing', '分发准确率 R', '子技能分发是否正确'],
-      ['tool_args', '工具入参准确率 A', '工具选择与完整参数是否正确'],
+      ['joint', '整体通过 J', '技能、动作、工具、参数全部正确'],
+      ['routing', '选对技能 R', '模型选中了允许的子技能'],
+      ['tool_args', '参数正确 A', '业务工具与参数都对'],
     ]) {
       const block = metrics[key];
       if (!block) continue;

@@ -200,9 +200,9 @@ export const CASE_STATUS_META = {
 };
 
 export const CHANGE_TYPE_META = {
-  fixed: { label: '修复', icon: 'check', tone: 'success', rank: 2 },
-  regressed: { label: '回归', icon: 'alert', tone: 'danger', rank: 0 },
-  unchanged_pass: { label: '保持通过', icon: 'check', tone: 'success', rank: 3 },
+  fixed: { label: '修好了', icon: 'check', tone: 'success', rank: 2 },
+  regressed: { label: '变差了', icon: 'alert', tone: 'danger', rank: 0 },
+  unchanged_pass: { label: '一直通过', icon: 'check', tone: 'success', rank: 3 },
   unchanged_fail: { label: '仍然失败', icon: 'x', tone: 'danger', rank: 1 },
   invalid: { label: '无效', icon: 'cancel', tone: 'neutral', rank: 4 },
   pending: { label: '进行中', icon: 'clock', tone: 'neutral', rank: 5 },

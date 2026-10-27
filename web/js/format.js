@@ -540,3 +540,131 @@ export function metricsSummary(metrics) {
 export function labelledValue(label, value) {
   return h('div.kv', null, h('span.kv-key', { text: label }), h('span.kv-value', { text: value }));
 }
+
+/* ---------------- plain-language case results ---------------- */
+
+const CASE_ERROR_LABELS = {
+  format_error: '模型输出格式错误',
+  refused: '模型拒绝回答',
+  steps_exhausted: '步数用尽仍未完成',
+  context_overflow: '上下文超长',
+  truncated: '模型输出被截断',
+  protocol_error: '模型输出不符合协议',
+  fixture_miss: '缺少模拟工具返回',
+  parse_failed: '模型输出无法解析',
+  auth_failed: '模型鉴权失败',
+  network_error: '网络错误',
+  timeout: '模型调用超时',
+  rate_limited: '模型调用被限流',
+  platform_error: '模型平台错误',
+  stream_interrupted: '流式输出中断',
+  judge_failed: '评分模型调用失败',
+  judge_parse_failed: '评分模型输出无法解析',
+  cancelled: '已取消',
+};
+
+/** Failure group shown in "主要失败原因"; order is the display order. */
+export const FAILURE_GROUPS = {
+  action: '动作不对（该调用工具 / 该澄清 / 不该动作）',
+  route: '技能选错',
+  tool: '工具调用不对',
+  arg: '参数不对',
+  error: '执行出错',
+};
+
+const FAILURE_GROUPS_ORDER = { action: 1, route: 2, tool: 3, arg: 4, error: 5 };
+
+const DIAG_GROUP = {
+  wrong_route: 'route', missing_route: 'route', extra_route: 'route',
+  action_mismatch: 'action', clarify_mismatch: 'action', unexpected_call: 'action',
+  missing_tool: 'tool', extra_tool: 'tool', wrong_tool: 'tool',
+  missing_arg: 'arg', extra_arg: 'arg', value_error: 'arg', type_error: 'arg',
+  fixture_miss: 'error', protocol_error: 'error',
+};
+
+function plainField(path) {
+  const text = String(path || '').replace(/^\$\.?/, '');
+  return text || '参数';
+}
+
+function plainValue(value) {
+  if (value === null || value === undefined || value === '') return '空';
+  if (typeof value === 'string') return truncate(value, 40);
+  if (Array.isArray(value)) {
+    if (!value.length) return '无';
+    return truncate(value.map((item) => (Array.isArray(item) ? item.join(' → ') : plainValue(item))).join('、'), 60);
+  }
+  if (typeof value === 'object') return truncate(JSON.stringify(value), 60);
+  return String(value);
+}
+
+/** One scorer diagnostic → `{ group, text }` in plain Chinese. */
+export function describeDiagnostic(diag) {
+  const d = diag || {};
+  const exp = plainValue(d.expected_value);
+  const act = plainValue(d.actual_value);
+  const field = plainField(d.field_path);
+  const routeField = d.field_path === 'selected_skills';
+  let text;
+  switch (d.category) {
+    case 'wrong_route': text = `选错技能：选了 ${act}，应为 ${exp}`; break;
+    case 'missing_route': text = `没有选中技能 ${plainValue(d.expected_value ?? d.skill_id)}`; break;
+    case 'extra_route': text = `多选了技能 ${plainValue(d.actual_value ?? d.skill_id)}`; break;
+    case 'wrong_order': text = routeField ? `技能顺序不对：${act}，应为 ${exp}` : `工具调用顺序不对：${act}，应为 ${exp}`; break;
+    case 'action_mismatch': text = `应该${ACTION_LABELS[d.expected_value] || exp}，实际${ACTION_LABELS[d.actual_value] || act}`; break;
+    case 'clarify_mismatch': text = `澄清的字段不对：问了 ${act}，应问 ${exp}`; break;
+    case 'unexpected_call': text = `不该调用工具 ${act}`; break;
+    case 'missing_tool': text = `没有调用工具 ${exp}`; break;
+    case 'extra_tool': text = `多调用了工具 ${act}`; break;
+    case 'wrong_tool': text = `工具用错：调了 ${act}，应为 ${exp}`; break;
+    case 'missing_arg': text = d.expected_value === 'required' ? `缺少必填参数 ${field}` : `缺少参数 ${field}（应为 ${exp}）`; break;
+    case 'extra_arg': text = `多了参数 ${field}`; break;
+    case 'value_error': text = `参数 ${field} 不对：给了 ${act}，应为 ${exp}`; break;
+    case 'type_error': text = `参数 ${field} 类型不对：给了 ${act}，应为 ${exp}`; break;
+    case 'fixture_miss': text = `工具 ${d.tool || ''} 缺少模拟返回`.replace('  ', ' '); break;
+    case 'protocol_error': text = `模型输出不符合协议${d.actual_value ? `（${act}）` : ''}`; break;
+    default: text = `${d.category || '不匹配'}${d.field_path ? `：${field}` : ''}`;
+  }
+  if (d.note && d.category === 'value_error') text += `（${truncate(d.note, 60)}）`;
+  return { group: DIAG_GROUP[d.category] || 'error', text };
+}
+
+/**
+ * Why one side (baseline / candidate run of a case) failed, as plain sentences.
+ * Returns `{ passed, reasons: [{group, text}] }`; `reasons` is empty on a pass.
+ */
+export function explainCaseSide(side) {
+  if (!side) return null;
+  if (side.passed) return { passed: true, reasons: [] };
+  const reasons = [];
+  const seen = new Set();
+  const diags = side.diagnostics || [];
+  const missing = diags.filter((diag) => diag.category === 'missing_arg');
+  for (const diag of diags) {
+    let item;
+    if (diag.category === 'missing_arg' && missing.length > 1) {
+      if (diag !== missing[0]) continue;
+      const names = missing.map((one) => (one.expected_value === 'required' || one.expected_value === undefined || one.expected_value === null
+        ? plainField(one.field_path)
+        : `${plainField(one.field_path)}（应为 ${plainValue(one.expected_value)}）`));
+      item = { group: 'arg', text: `缺少参数 ${names.join('、')}` };
+    } else {
+      item = describeDiagnostic(diag);
+    }
+    if (seen.has(item.text)) continue;
+    seen.add(item.text);
+    reasons.push(item);
+  }
+  // Most decisive first: wrong action explains everything after it.
+  const order = Object.keys(FAILURE_GROUPS_ORDER);
+  reasons.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+  if (!reasons.length) {
+    const code = side.error_code;
+    const label = CASE_ERROR_LABELS[code] || side.reason || code;
+    if (label) reasons.push({ group: 'error', text: side.reason && CASE_ERROR_LABELS[code] ? `${CASE_ERROR_LABELS[code]}：${truncate(side.reason, 60)}` : label });
+    else if (side.routing && side.routing.passed === false) reasons.push({ group: 'route', text: side.routing.reason || '技能选择不对' });
+    else if (side.tool_args && side.tool_args.passed === false) reasons.push({ group: 'arg', text: side.tool_args.reason || '工具调用或参数不对' });
+    else reasons.push({ group: 'error', text: '与预期不一致' });
+  }
+  return { passed: false, reasons };
+}
