@@ -105,7 +105,11 @@ def _execute(run: Mapping[str, Any], emitter: EventEmitter) -> None:
         "baseline_cache_hit": bool(run.get("baseline_cache_hit")),
         "budget": budget.describe(),
     })
-    if run["mode"] == "baseline":
+    if run["mode"] == "validate":
+        _run_validate(run, env, dataset, cases, adapter, emitter, budget, cancel, started)
+    elif run["mode"] == "evaluate":
+        _run_evaluate(run, env, dataset, cases, adapter, emitter, budget, cancel, started)
+    elif run["mode"] == "baseline":
         _run_baseline(run, env, dataset, cases, adapter, emitter, budget, cancel, started)
     elif run["mode"] == "final_test":
         _run_final_test(run, env, dataset, cases, adapter, emitter, budget, cancel,
@@ -118,6 +122,31 @@ def _execute(run: Mapping[str, Any], emitter: EventEmitter) -> None:
 # --------------------------------------------------------------------------- #
 # baseline-only run
 # --------------------------------------------------------------------------- #
+def _run_evaluate(run: Mapping[str, Any], env: Mapping[str, Any],
+                  dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
+                  adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                  cancel: "_CancellationToken", started: float) -> None:
+    evaluation_cases = [case for case in cases
+                        if (case.get("split") or "optimize") == "optimize"]
+    if not evaluation_cases:
+        raise AppError("没有可用于普通评测的案例，请使用最终测试")
+    _preflight(run, env, dataset, cases, emitter, mode="evaluate")
+    _stage(emitter, "baseline_eval", "执行普通评测")
+    metrics = _evaluate_split(
+        run, env, evaluation_cases, phase="baseline", repeats=1, adapter=adapter,
+        emitter=emitter, budget=budget, cancel=cancel)
+    persistence.finish_run(
+        run["id"], status="completed", decision=None, decision_reason="普通评测完成",
+        metrics={"baseline": metrics, "candidate": None, "delta": None,
+                 "validation": None, "final": None},
+        cost=_cost(metrics), stage="decision")
+    emitter.set_stage("decision", message="普通评测完成")
+    emitter.emit(event_types.RUN_COMPLETED, {
+        "mode": "evaluate", "metrics": _metric_summary(metrics),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }, level="info")
+
+
 def _run_baseline(run: Mapping[str, Any], env: Mapping[str, Any],
                   dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
                   adapter: Any, emitter: EventEmitter, budget: "_Budget",
@@ -186,10 +215,8 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     run_id = run["id"]
     optimize_cases = [case for case in cases
                       if (case.get("split") or "optimize") == "optimize"]
-    validation_cases = [case for case in cases
-                        if (case.get("split") or "optimize") == "validation"]
-    if not optimize_cases or not validation_cases:
-        raise AppError("优化运行需要优化集与验证集")
+    if not optimize_cases:
+        raise AppError("优化运行需要测试集")
     _preflight(run, env, dataset, cases, emitter, mode="optimize")
 
     # -- baseline ---------------------------------------------------------
@@ -311,7 +338,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                      "delta": None, "validation": None, "final": None})
         _record_candidate(run_id, None, outcome, checks=static_result)
         return
-    all_case_ids = [case["case_id"] for case in cases]
+    all_case_ids = [case["case_id"] for case in optimize_cases]
     static_result = patch.static_check(files, patched_files, manifest, all_case_ids)
     emitter.emit(event_types.STATIC_CHECK_STARTED, {"checks": static_result.get("checks")},
                  stage="static_check")
@@ -350,11 +377,61 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     run = persistence.get_run(run_id)
 
     # -- retest -----------------------------------------------------------
-    _stage(emitter, "retest", "复测候选并执行配对验证")
+    _stage(emitter, "retest", "在测试集重跑候选")
     candidate_optimize = _evaluate_split(
         run, env, optimize_cases, phase="candidate", repeats=1,
         adapter=adapter, emitter=emitter, budget=budget, cancel=cancel,
         skill_version_id=candidate_version["id"])
+    metrics = {"baseline": baseline_metrics, "candidate": candidate_optimize,
+               "delta": services.delta_metrics(baseline_metrics, candidate_optimize),
+               "validation": None, "final": None}
+    persistence.finish_run(
+        run_id, status="completed", decision=None,
+        decision_reason="候选已完成测试集重跑，待独立验收",
+        metrics=metrics, cost={"tokens": budget.tokens_used, "amount": None,
+                               "duration_ms": int((time.monotonic() - started) * 1000)},
+        candidate_skill_version_id=candidate_version["id"], stage="decision")
+    emitter.emit(event_types.RUN_COMPLETED, {
+        "mode": "optimize", "decision": None, "pending_validation": True,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }, level="info")
+
+
+def _run_validate(run: Mapping[str, Any], env: Mapping[str, Any],
+                  dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
+                  adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                  cancel: "_CancellationToken", started: float) -> None:
+    run_id = run["id"]
+    validation_cases = [case for case in cases
+                        if (case.get("split") or "optimize") == "validation"]
+    if not validation_cases:
+        raise AppError("正式验收需要独立验收集")
+    _preflight(run, env, dataset, cases, emitter, mode="validate")
+    source = persistence.get_run(run["parent_run_id"])
+    candidate_version = persistence.get_skill_version(run["candidate_skill_version_id"])
+    candidate = persistence.get_candidate_for_run(run_id)
+    source_candidate = persistence.get_candidate_for_run(source["id"])
+    static_result = (candidate or {}).get("checks") or {}
+    integrity = persistence.skill_version_integrity(candidate_version["id"])
+    baseline_integrity = persistence.skill_version_integrity(run["baseline_skill_version_id"])
+    frozen = (run.get("snapshot") or {}).get("candidate_skill_version") or {}
+    consistent = (source.get("project_id") == run["project_id"]
+                  and source.get("mode") == "optimize" and source.get("status") == "completed"
+                  and source.get("decision") is None
+                  and source.get("baseline_skill_version_id") == run["baseline_skill_version_id"]
+                  and source.get("environment_id") == run["environment_id"]
+                  and source.get("candidate_skill_version_id") == candidate_version["id"]
+                  and candidate_version.get("source_run_id") == source["id"]
+                  and candidate_version.get("project_id") == run["project_id"]
+                  and (candidate or {}).get("skill_version_id") == candidate_version["id"]
+                  and (source_candidate or {}).get("skill_version_id") == candidate_version["id"]
+                  and static_result.get("ok") and static_result == (source_candidate or {}).get("checks")
+                  and frozen.get("id") == candidate_version["id"]
+                  and frozen.get("content_hash") == candidate_version.get("content_hash"))
+    if not (consistent and integrity.get("ok") and baseline_integrity.get("ok")):
+        raise AppError("正式验收预检失败：来源或冻结的基线、候选版本已变化")
+    services._check_validation_independence(source, cases)
+    _stage(emitter, "retest", "在独立验收集配对评测基线与候选")
     repeats = _validation_repeats(env)
     validation_complete = True
     for repeat in range(1, repeats + 1):
@@ -396,7 +473,9 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         validation_cases, validation_baseline_rows, validation_candidate_rows)
     infra_errors = _infra_errors(validation_baseline_rows) + \
         _infra_errors(validation_candidate_rows)
-    package_ok = bool(static_result.get("ok") and integrity.get("ok"))
+    package_ok = bool(static_result.get("ok")
+                      and persistence.skill_version_integrity(candidate_version["id"]).get("ok")
+                      and persistence.skill_version_integrity(run["baseline_skill_version_id"]).get("ok"))
 
     # -- decision ---------------------------------------------------------
     _stage(emitter, "decision", "按冻结规则判定候选")
@@ -428,9 +507,9 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         "rules": result.get("rules"),
     }, level="info" if decision == "accept" else "warning", stage="decision")
     metrics = {
-        "baseline": baseline_metrics,
-        "candidate": candidate_optimize,
-        "delta": services.delta_metrics(baseline_metrics, candidate_optimize),
+        "baseline": validation_baseline,
+        "candidate": validation_candidate,
+        "delta": services.delta_metrics(validation_baseline, validation_candidate),
         "validation": {
             "baseline": validation_baseline,
             "candidate": validation_candidate,
@@ -445,13 +524,14 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     persistence.finish_run(
         run_id, status="completed", decision=decision,
         decision_reason=result.get("reason") or "",
-        metrics=metrics, cost=_cost(candidate_optimize),
+        metrics=metrics, cost={"tokens": _cost(validation_baseline)["tokens"] + _cost(validation_candidate)["tokens"],
+              "amount": None, "duration_ms": int((time.monotonic() - started) * 1000)},
         candidate_skill_version_id=candidate_version["id"], stage="decision")
     emitter.emit(event_types.RUN_COMPLETED, {
         "decision": decision,
         "metrics": {
-            "baseline": _metric_summary(baseline_metrics),
-            "candidate": _metric_summary(candidate_optimize),
+            "baseline": _metric_summary(validation_baseline),
+            "candidate": _metric_summary(validation_candidate),
             "validation": {
                 "baseline": _metric_summary(validation_baseline),
                 "candidate": _metric_summary(validation_candidate),
@@ -529,9 +609,10 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
           else "；".join(integrity["errors"]), level="error",
           next_action="重新导入或发布 Skill 包版本。")
     splits = {case.get("split") or "optimize" for case in cases}
-    required = {"optimize"} if mode == "baseline" else (
-        {"final_test"} if mode == "final_test" else {"optimize", "validation"})
-    check("dataset_splits", required <= splits,
+    required = ({"validation"} if mode == "validate" else
+                {"final_test"} if mode == "final_test" else {"optimize"})
+    split_ok = required <= splits
+    check("dataset_splits", split_ok,
           f"数据划分: {', '.join(sorted(splits))}", level="error",
           next_action="补充缺少的数据划分并发布新数据集版本。")
     budget_config = env.get("budget_config") or {}
@@ -540,8 +621,7 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                or budget_config.get("max_seconds")),
           "预算上限已冻结" if budget_config else "未设置预算上限", level="error",
           next_action="在执行环境配置 Token/金额/时长上限。")
-    relevant_splits = {"optimize"} if mode == "baseline" else (
-        {"final_test"} if mode == "final_test" else {"optimize", "validation"})
+    relevant_splits = required
     fixture_cases = _fixture_gap_cases(
         [case for case in cases
          if (case.get("split") or "optimize") in relevant_splits])

@@ -129,9 +129,9 @@ def test_connection_environment_id_uses_server_config_without_returning_it():
     assert "SERVER_ONLY" not in repr(result)
 
 
-def test_changed_environment_or_dataset_blocks_apply_and_marks_run_stale(client, optimize_run):
-    run_id = optimize_run["id"]
-    demo_project = persistence.get_project(optimize_run["project_id"])
+def test_changed_environment_or_dataset_blocks_apply_and_marks_run_stale(client, accepted_run):
+    run_id = accepted_run["id"]
+    demo_project = persistence.get_project(accepted_run["project_id"])
     child_env = services.create_environment(
         demo_project["id"], environment_payload(), status="published", set_current=True)
     view = services.run_view(run_id)
@@ -140,32 +140,34 @@ def test_changed_environment_or_dataset_blocks_apply_and_marks_run_stale(client,
     response = client.post(f"/api/v3/runs/{run_id}/apply",
                            json={"expected_current_version": demo_project["current_skill_version_id"]})
     assert response.status_code == 409
-    assert child_env["id"] != optimize_run["environment_id"]
+    assert response.json()["error"]["code"] == "version_conflict"
+    assert child_env["id"] != accepted_run["environment_id"]
 
 
-def test_changed_dataset_blocks_apply(client, optimize_run):
-    project = persistence.get_project(optimize_run["project_id"])
+def test_changed_dataset_blocks_apply(client, accepted_run):
+    project = persistence.get_project(accepted_run["project_id"])
     baseline = project["current_skill_version_id"]
     changed = services.create_dataset(
         project["id"], dataset_payload(filename="replacement.jsonl"))
-    view = services.run_view(optimize_run["id"])
+    view = services.run_view(accepted_run["id"])
     assert view["applicability"]["current"] is False
     assert "数据集已变更" in view["applicability"]["stale_reasons"]
-    response = client.post(f"/api/v3/runs/{optimize_run['id']}/apply",
+    response = client.post(f"/api/v3/runs/{accepted_run['id']}/apply",
                            json={"expected_current_version": baseline})
     assert response.status_code == 409
-    assert changed["id"] != optimize_run["dataset_id"]
+    assert response.json()["error"]["code"] == "version_conflict"
+    assert changed["id"] != accepted_run["dataset_id"]
 
 
-def test_correct_conditions_apply_once_and_old_version_remains_recoverable(client, optimize_run):
-    candidate = persistence.get_candidate_for_run(optimize_run["id"])
-    project = persistence.get_project(optimize_run["project_id"])
+def test_correct_conditions_apply_once_and_old_version_remains_recoverable(client, accepted_run):
+    candidate = persistence.get_candidate_for_run(accepted_run["id"])
+    project = persistence.get_project(accepted_run["project_id"])
     baseline = project["current_skill_version_id"]
-    response = client.post(f"/api/v3/runs/{optimize_run['id']}/apply",
+    response = client.post(f"/api/v3/runs/{accepted_run['id']}/apply",
                            json={"expected_current_version": baseline})
     assert response.status_code == 200
     assert response.json()["project"]["current_skill_version_id"] == candidate["skill_version_id"]
-    second = client.post(f"/api/v3/runs/{optimize_run['id']}/apply",
+    second = client.post(f"/api/v3/runs/{accepted_run['id']}/apply",
                          json={"expected_current_version": baseline})
     assert second.status_code == 409
     restored = client.post(f"/api/v3/skill-versions/{baseline}/activate",
@@ -174,11 +176,11 @@ def test_correct_conditions_apply_once_and_old_version_remains_recoverable(clien
     assert persistence.get_project(project["id"])["current_skill_version_id"] == baseline
 
 
-def test_activate_skill_version_uses_atomic_expected_version(client, optimize_run):
-    candidate = persistence.get_candidate_for_run(optimize_run["id"])
-    project = persistence.get_project(optimize_run["project_id"])
+def test_activate_skill_version_uses_atomic_expected_version(client, accepted_run):
+    candidate = persistence.get_candidate_for_run(accepted_run["id"])
+    project = persistence.get_project(accepted_run["project_id"])
     baseline = project["current_skill_version_id"]
-    applied = client.post(f"/api/v3/runs/{optimize_run['id']}/apply",
+    applied = client.post(f"/api/v3/runs/{accepted_run['id']}/apply",
                           json={"expected_current_version": baseline})
     assert applied.status_code == 200
     current = candidate["skill_version_id"]
@@ -188,15 +190,34 @@ def test_activate_skill_version_uses_atomic_expected_version(client, optimize_ru
     assert persistence.get_project(project["id"])["current_skill_version_id"] == current
 
 
-def test_changed_candidate_files_cannot_be_applied(client, optimize_run):
-    candidate = persistence.get_candidate_for_run(optimize_run["id"])
+def test_changed_candidate_files_cannot_be_applied(client, accepted_run):
+    candidate = persistence.get_candidate_for_run(accepted_run["id"])
     version_id = candidate["skill_version_id"]
-    baseline = persistence.get_project(optimize_run["project_id"])["current_skill_version_id"]
+    baseline = persistence.get_project(accepted_run["project_id"])["current_skill_version_id"]
     (persistence.skill_files_dir(version_id) / "SKILL.md").write_text("changed after evaluation")
-    response = client.post(f"/api/v3/runs/{optimize_run['id']}/apply",
+    response = client.post(f"/api/v3/runs/{accepted_run['id']}/apply",
                            json={"expected_current_version": baseline})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "candidate_changed"
-    assert persistence.get_project(optimize_run["project_id"])["current_skill_version_id"] == baseline
-    assert not persistence.get_decision_for_run(optimize_run["id"]).get("applied_at")
+    assert persistence.get_project(accepted_run["project_id"])["current_skill_version_id"] == baseline
+    assert not persistence.get_decision_for_run(accepted_run["id"]).get("applied_at")
     assert persistence.get_skill_version(version_id)["status"] == "candidate"
+
+
+def test_apply_cas_detects_dataset_change_after_precheck(client, accepted_run, monkeypatch):
+    """A change after service validation must still fail the atomic write."""
+    original_cas = persistence.apply_candidate_cas
+    project_id = accepted_run['project_id']
+    baseline = accepted_run['baseline_skill_version_id']
+
+    def race(*args, **kwargs):
+        services.create_dataset(project_id, dataset_payload(filename='raced.jsonl'))
+        return original_cas(*args, **kwargs)
+
+    monkeypatch.setattr(persistence, 'apply_candidate_cas', race)
+    response = client.post(f"/api/v3/runs/{accepted_run['id']}/apply",
+                           json={'expected_current_version': baseline})
+    assert response.status_code == 409
+    assert response.json()['error']['code'] == 'version_conflict'
+    assert persistence.get_project(project_id)['current_skill_version_id'] == baseline
+    assert not persistence.get_decision_for_run(accepted_run['id'])['applied_at']

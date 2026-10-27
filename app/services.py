@@ -548,7 +548,7 @@ def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dic
     project = persistence.get_project(project_id) if project_id else {}
     skill_ids = _active_skill_ids(project)
     split_config = payload.get("split_config") or {
-        "optimize": 0.7, "validation": 0.2, "final_test": 0.1}
+        "optimize": 1, "validation": 0, "final_test": 0}
     seed = int(payload.get("seed") or 42)
     manifest = {}
     if project:
@@ -589,7 +589,7 @@ def create_dataset(project_id: str, payload: Mapping[str, Any]) -> dict[str, Any
         raise ValidationError("没有有效案例可发布", code="dataset_invalid",
                               details=errors)
     split_config = payload.get("split_config") or {
-        "optimize": 0.7, "validation": 0.2, "final_test": 0.1}
+        "optimize": 1, "validation": 0, "final_test": 0}
     dataset = persistence.create_dataset(
         project_id, cases, split_config,
         source_name=str(payload.get("source_name") or payload.get("filename") or ""),
@@ -677,7 +677,7 @@ def publish_dataset_version(dataset_id: str, payload: Mapping[str, Any]) -> dict
             if previous != str(row.get("split")):
                 raise ValidationError("同 group 不能跨 split", code="group_split_conflict")
     report = preflight_dataset(dataset["project_id"], {"cases": cases,
-        "split_config": dataset.get("split_config") or {"optimize": .7, "validation": .2, "final_test": .1}})
+        "split_config": dataset.get("split_config") or {"optimize": 1, "validation": 0, "final_test": 0}})
     if report.get("errors"):
         raise ValidationError("数据集校验未通过", code="dataset_invalid", details=report["errors"])
     result = persistence.publish_dataset_cas(dataset_id, payload["expected_hash"],
@@ -784,14 +784,53 @@ def _validation_repeats(env: Mapping[str, Any]) -> int:
                or run_config.get("validation_repeats") or 3)
 
 
+def _validate_source(project: Mapping[str, Any], source_run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    source = persistence.get_run(source_run_id)
+    if (source.get("project_id") != project["id"] or source.get("mode") != "optimize"
+            or source.get("status") != "completed" or source.get("decision") is not None):
+        raise ConflictError("验收来源必须是本项目已完成测试集重跑的优化运行", code="invalid_source_run")
+    if (project.get("current_skill_version_id") != source.get("baseline_skill_version_id")
+            or project.get("current_environment_id") != source.get("environment_id")):
+        raise ConflictError("当前 Skill 或环境与优化运行不一致，请重新优化", code="version_conflict")
+    candidate = persistence.get_candidate_for_run(source_run_id)
+    version_id = source.get("candidate_skill_version_id")
+    if not candidate or not version_id or candidate.get("skill_version_id") != version_id:
+        raise ConflictError("来源运行没有可验收的候选", code="no_candidate")
+    version = persistence.get_skill_version(version_id)
+    if (version.get("project_id") != project["id"] or version.get("source_run_id") != source_run_id
+            or not (candidate.get("checks") or {}).get("ok")
+            or not persistence.skill_version_integrity(version_id).get("ok")):
+        raise ConflictError("候选版本无效或已变化，请重新优化", code="candidate_changed")
+    return source, candidate
+
+
+def _check_validation_independence(source: Mapping[str, Any], cases: Sequence[Mapping[str, Any]]) -> None:
+    validation = [case for case in cases if case.get("split") == "validation"]
+    if not validation:
+        raise ValidationError("正式验收需要独立验收集，请先补充验收案例", code="dataset_incomplete")
+    source_cases = persistence.all_cases(source["dataset_id"])
+    others = [case for case in source_cases if (case.get("split") or "optimize") != "validation"]
+    others += [case for case in cases if (case.get("split") or "optimize") != "validation"]
+    ids = {case.get("case_id") for case in others}
+    queries = {" ".join((case.get("query") or "").casefold().split()) for case in others}
+    groups = {case.get("group_id") for case in others if case.get("group_id")}
+    overlap = [case["case_id"] for case in validation
+               if case.get("case_id") in ids
+               or " ".join((case.get("query") or "").casefold().split()) in queries
+               or (case.get("group_id") and case.get("group_id") in groups)]
+    if overlap:
+        raise ValidationError("独立验收集与测试集或最终测试集存在重复案例、内容或分组，请调整后再验收",
+                              code="dataset_leakage", details={"case_ids": overlap})
+
+
 def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     project_id = payload.get("project_id")
     if not project_id:
         raise ValidationError("缺少 project_id", field_path="project_id")
     project = persistence.get_project(project_id)
     mode = payload.get("mode") or "baseline"
-    if mode not in ("baseline", "optimize", "final_test"):
-        raise ValidationError("mode 只能是 baseline/optimize/final_test",
+    if mode not in ("evaluate", "baseline", "optimize", "validate", "final_test"):
+        raise ValidationError("mode 只能是 evaluate/baseline/optimize/validate/final_test",
                               field_path="mode")
     idempotency_key = payload.get("idempotency_key")
     if idempotency_key:
@@ -824,12 +863,15 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     splits = dataset.get("split_counts") or {}
     cases = persistence.all_cases(dataset_id)
     split_names = {case.get("split") or "optimize" for case in cases}
-    if mode == "optimize" and not ({"optimize"} <= split_names and
-                                   {"validation"} <= split_names):
-        raise ValidationError("优化运行需要优化集与验证集", code="dataset_incomplete",
-                              details={"splits": sorted(split_names)})
-    if mode == "baseline" and "optimize" not in split_names:
-        raise ValidationError("基线运行需要优化集", code="dataset_incomplete")
+    if mode in ("optimize", "baseline", "evaluate") and "optimize" not in split_names:
+        raise ValidationError("日常评测和优化需要测试集案例", code="dataset_incomplete")
+    source = candidate = None
+    if mode == "validate":
+        source_run_id = payload.get("source_run_id")
+        if not source_run_id:
+            raise ValidationError("正式验收需要 source_run_id", field_path="source_run_id")
+        source, candidate = _validate_source(project, source_run_id)
+        _check_validation_independence(source, cases)
     if mode == "final_test" and "final_test" not in split_names:
         raise ValidationError("最终测试运行需要最终测试集", code="dataset_incomplete")
     scorer_version = (env.get("scorer_config") or {}).get("version") or config.SCORER_VERSION
@@ -845,7 +887,7 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         "scorer_version": scorer_version,
         "base_repeats": repeats,
     }
-    parent_run_id = payload.get("parent_run_id")
+    parent_run_id = source["id"] if source else payload.get("parent_run_id")
     baseline_run_id = None
     baseline_cache_hit = False
     if mode == "optimize":
@@ -876,14 +918,24 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         "adapter_hash": env.get("adapter_hash"),
         "reproducibility_note": env.get("reproducibility_note") or "",
     }
+    if source:
+        snapshot["source_run_id"] = source["id"]
+        snapshot["candidate_skill_version"] = _version_snapshot(source["candidate_skill_version_id"])
     run = persistence.create_run(
         project_id, mode=mode, baseline_skill_version_id=skill_version_id,
         environment_id=environment_id, dataset_id=dataset_id,
-        candidate_skill_version_id=None, parent_run_id=parent_run_id,
+        candidate_skill_version_id=(source.get("candidate_skill_version_id") if source else None), parent_run_id=parent_run_id,
         baseline_run_id=baseline_run_id, budget=budget, acceptance=acceptance,
         snapshot=snapshot, idempotency_key=idempotency_key,
         fingerprint=fingerprint)
     persistence.update_run(run["id"], rules_version=acceptance["rules_version"])
+    if candidate:
+        persistence.create_candidate(
+            run["id"], skill_version_id=candidate["skill_version_id"],
+            diagnosis=candidate.get("diagnosis") or {}, hypotheses=candidate.get("hypotheses") or [],
+            changed_files=candidate.get("changed_files") or [], patch=candidate.get("patch") or {},
+            expected_effect=candidate.get("expected_effect") or "", risk_cases=candidate.get("risk_cases") or [],
+            checks=candidate.get("checks") or {})
     if baseline_cache_hit and baseline_run_id:
         _copy_baseline_results(baseline_run_id, run["id"])
         persistence.update_run(run["id"], baseline_cache_hit=1,
@@ -1041,7 +1093,7 @@ def overview(project_id: str) -> dict[str, Any]:
     for item in recent["items"]:
         item["decision_code"] = run_decision_code(item)
     pending_candidate = (_pending_candidate(project, recent["items"])
-                         if ready and compatible else None)
+                         if ready else None)
     no_failures = bool(ready and compatible and _baseline_has_no_failures(metrics))
     if pending_candidate:
         primary_action = {
@@ -1058,18 +1110,21 @@ def overview(project_id: str) -> dict[str, Any]:
             "enabled": True,
             "reason": "当前基线在优化集上已全部通过，没有可改进的失败案例。",
         }
+    latest_evaluation = (persistence.find_latest_evaluation(project_id, fingerprint)
+                         if fingerprint else None)
+    display_run = latest_evaluation or baseline
+    display_metrics = ((display_run.get("metrics") or {}).get("baseline") or {}) if display_run else {}
     return {
         "project": project,
         "completeness": {"ready": ready, "missing": missing, "items": items},
-        "metrics": (None if not baseline else {
-            "routing": (metrics or {}).get("routing"),
-            "tool_args": (metrics or {}).get("tool_args"),
-            "joint": (metrics or {}).get("joint"),
+        "metrics": (None if not display_run else {
+            "routing": display_metrics.get("routing"),
+            "tool_args": display_metrics.get("tool_args"),
+            "joint": display_metrics.get("joint"),
             "dataset": {"id": dataset["id"], "version_seq": dataset.get("version_seq"),
                         "case_count": dataset.get("case_count")},
-            "evaluated_at": evaluated_at,
-            "run_id": baseline["id"],
-            "stale": stale,
+            "evaluated_at": display_run.get("finished_at") or display_run.get("created_at"),
+            "run_id": display_run["id"], "mode": display_run["mode"], "stale": False,
         }),
         "recent_runs": recent,
         "baseline": {
@@ -1112,7 +1167,7 @@ def _pending_candidate(project: Mapping[str, Any],
                        runs: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Latest accepted, still-applicable candidate of the project (if any)."""
     for run in runs:
-        if run.get("mode") != "optimize":
+        if run.get("mode") not in ("optimize", "validate"):
             continue
         if run.get("status") != "completed" or run.get("decision") != "accept":
             # Only the most recent finished optimize run counts; an older
@@ -1229,6 +1284,14 @@ def run_view(run_id: str) -> dict[str, Any]:
         "valid": execution.get("valid") or stats.get("scored"),
         "errors": execution.get("infra_errors") or 0,
     }
+    run["source_run_id"] = run.get("parent_run_id") if run.get("mode") == "validate" else None
+    run["can_validate"] = False
+    if project and run.get("mode") == "optimize":
+        try:
+            _validate_source(project, run_id)
+            run["can_validate"] = True
+        except (ConflictError, NotFoundError):
+            pass
     run["can_apply"] = (
         run["status"] == "completed" and run.get("decision") == "accept"
         and candidate is not None and candidate.get("skill_version_id") is not None

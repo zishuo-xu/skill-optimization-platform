@@ -182,8 +182,8 @@ export default async function datasetView(container, ctx) {
         'div.dataset-summary',
         null,
         h('span', null, h('strong', { text: '案例总数' }), ` ${dataset.case_count ?? state.total ?? 0}`),
-        h('span', null, h('strong', { text: '优化集' }), ` ${splitCounts.optimize ?? 0}`),
-        h('span', null, h('strong', { text: '验证集' }), ` ${splitCounts.validation ?? 0}`),
+        h('span', null, h('strong', { text: '测试集' }), ` ${splitCounts.optimize ?? 0}`),
+        h('span', null, h('strong', { text: '独立验收集' }), ` ${splitCounts.validation ?? 0}`),
         h('span', null, h('strong', { text: '最终测试集' }), ` ${splitCounts.final_test ?? 0}`),
         report.invalid ? h('span', null, h('strong', { text: '导入时剔除' }), ` ${report.invalid} 条无效记录`) : null,
         h('span', null, h('strong', { text: '标签' }), ` ${(state.filterOptions.tags || []).length} 个`)
@@ -417,7 +417,7 @@ export default async function datasetView(container, ctx) {
           { style: { marginTop: '10px' } },
           `共 ${state.total} 条匹配案例。${state.dataset?.status === 'draft'
             ? '点击案例即可编辑 JSON；保存后发布为新版本。'
-            : '已发布版本不可原地修改；修正案例请创建编辑草稿并在发布后重跑基线。'}`
+            : '已发布版本不可原地修改；修正案例请创建编辑草稿并在发布后重新评测。'}`
         )
       )
     );
@@ -814,9 +814,17 @@ export default async function datasetView(container, ctx) {
       fileInput
     );
 
-    const optimizeInput = h('input.input', { type: 'number', value: '70', min: '0', max: '100' });
-    const validationInput = h('input.input', { type: 'number', value: '20', min: '0', max: '100' });
-    const finalInput = h('input.input', { type: 'number', value: '10', min: '0', max: '100' });
+    const optimizeInput = h('input.input', { type: 'number', value: '100', min: '0', max: '100' });
+    const validationInput = h('input.input', { type: 'number', value: '0', min: '0', max: '100' });
+    const finalInput = h('input.input', { type: 'number', value: '0', min: '0', max: '100' });
+    const purposeInput = h('select.input', { 'aria-label': '导入用途' },
+      h('option', { value: 'optimize', text: '日常测试集' }),
+      h('option', { value: 'validation', text: '独立验收集' }));
+    purposeInput.addEventListener('change', () => {
+      optimizeInput.value = purposeInput.value === 'optimize' ? '100' : '0';
+      validationInput.value = purposeInput.value === 'validation' ? '100' : '0';
+      finalInput.value = '0';
+    });
     const seedInput = h('input.input', { type: 'number', value: '42', min: '0' });
     const sourceInput = h('input.input', { type: 'text', placeholder: '例如 customer_service_cases_v2.jsonl' });
     const errorHost = h('div');
@@ -908,10 +916,13 @@ export default async function datasetView(container, ctx) {
         null,
         h('div.import-steps', null, h('span.import-step.is-active', null, h('span.import-step__num', { text: '1' }), h('span', { text: '上传文件' })), h('span.import-step', null, h('span.import-step__num', { text: '2' }), h('span', { text: '校验与划分预览' }))),
         zone,
-        h('div.form-grid.form-grid--3', null, formField({ label: '优化集 %', control: optimizeInput }), formField({ label: '验证集 %', control: validationInput }), formField({ label: '最终测试集 %', control: finalInput })),
-        h('div.form-grid', null, formField({ label: '随机种子', control: seedInput, hint: '固定种子保证划分可复现；按 group_id 分组，不跨集合。' }), formField({ label: '来源文件名', control: sourceInput, hint: '仅用于版本记录展示。' })),
+        formField({ label: '导入用途', control: purposeInput, hint: '文件中未指定 split 的案例按此用途划分；已指定 split 的案例保留原值。发布会切换当前数据集。' }),
+        formField({ label: '来源文件名', control: sourceInput, hint: '仅用于版本记录展示。' }),
+        h('details', null, h('summary', { text: '高级划分设置' }),
+          h('div.form-grid.form-grid--3', null, formField({ label: '测试集 %', control: optimizeInput }), formField({ label: '独立验收集 %', control: validationInput }), formField({ label: '最终测试集 %', control: finalInput })),
+          formField({ label: '随机种子', control: seedInput, hint: '固定种子保证划分可复现；按 group_id 分组，不跨集合。' })),
         errorHost,
-        h('p.xsmall.muted', { text: '小数据集允许只有优化集与验证集；没有最终测试集时会提示，但可以继续。' })
+        h('p.xsmall.muted', { text: '日常评测与优化只使用测试集；正式验收需要独立验收集。最终测试集继续保持隔离。' })
       )
     );
     modal.setFooter(
@@ -1034,7 +1045,7 @@ export default async function datasetView(container, ctx) {
           ),
           splitCounts.final_test
             ? null
-            : h('p.xsmall', { style: { color: 'var(--warning)', marginTop: '6px' }, text: '没有最终测试集样本；可继续，但阶段验收前需要补充独立留出集。' })
+            : h('p.xsmall', { style: { color: 'var(--warning)', marginTop: '6px' }, text: '未配置最终测试集；不影响日常测试或使用独立验收集进行正式验收。' })
         ),
         coverage.skills
           ? h(
@@ -1050,7 +1061,7 @@ export default async function datasetView(container, ctx) {
                     null,
                     h('span.mono', { text: skillId }),
                     h('span.coverage-row__value', {
-                      text: counts.total ? `优化 ${counts.optimize} / 验证 ${counts.validation} / 最终 ${counts.final_test}` : '未评估',
+                      text: counts.total ? `测试 ${counts.optimize} / 独立验收 ${counts.validation} / 最终 ${counts.final_test}` : '未评估',
                     })
                   )
                 )
@@ -1113,7 +1124,7 @@ export default async function datasetView(container, ctx) {
         h(
           'p.xsmall.muted',
           null,
-          `划分配置：优化 ${Math.round((data.splitConfig.optimize || 0) * 100)}% / 验证 ${Math.round((data.splitConfig.validation || 0) * 100)}% / 最终 ${Math.round((data.splitConfig.final_test || 0) * 100)}%，种子 ${data.splitConfig.seed}`
+          `划分配置：测试 ${Math.round((data.splitConfig.optimize || 0) * 100)}% / 独立验收 ${Math.round((data.splitConfig.validation || 0) * 100)}% / 最终 ${Math.round((data.splitConfig.final_test || 0) * 100)}%，种子 ${data.splitConfig.seed}`
         ),
         errorHost
       )
@@ -1159,7 +1170,7 @@ export default async function datasetView(container, ctx) {
   async function publishDataset() {
     const ok = await confirmDialog({
       title: '发布数据集版本',
-      message: '发布后数据不可原地修改，并会成为项目当前数据集。发布新版本后需要重跑基线评测。',
+      message: '发布后数据不可原地修改，并会成为项目当前数据集。后续评测或验收将使用新版本；已有运行保持原快照。',
       confirmText: '发布并设为当前',
     });
     if (!ok) return;

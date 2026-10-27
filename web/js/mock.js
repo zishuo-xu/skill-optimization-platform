@@ -2301,14 +2301,14 @@ async function fetchImpl({ method, path, query = {}, body }) {
       if (run.status !== 'queued') return;
       run.status = 'running';
       run.started_at = new Date().toISOString();
-      run.stage = mode === 'baseline' ? 'baseline_eval' : 'preflight';
+      run.stage = ['baseline', 'evaluate'].includes(mode) ? 'baseline_eval' : 'preflight';
       run.stage_progress = { stage: run.stage, completed: 0, total: 18, current_case_ids: ['case_001', 'case_002', 'case_003'], started_at: new Date().toISOString(), last_activity_at: new Date().toISOString(), message: '执行中' };
       pushEvent(run.id, 'run_started', { stage: run.stage, payload: { worker: 'worker-mock' } });
       pushEvent(run.id, 'stage_started', { stage: run.stage, payload: { stage: run.stage, planned: 18 } });
       setTimeout(() => {
         run.status = 'completed';
         run.stage = 'decision';
-        run.decision = 'inconclusive';
+        run.decision = mode === 'evaluate' ? null : 'inconclusive';
         run.decision_reason = 'mock 运行已完成：仅用于界面联调，未执行真实模型。';
         run.acceptance = { decision: 'inconclusive', rules: [{ rule: 'validation_complete', ok: false, detail: 'mock 运行未执行复测' }], reason: run.decision_reason };
         run.metrics = buildMetrics({ baseline: ACCEPT_METRIC_DATA.baseline });

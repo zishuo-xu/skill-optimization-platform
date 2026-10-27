@@ -1441,7 +1441,7 @@ export default async function environmentView(container, ctx) {
       { label: '并发案例数', value: String(run.concurrency ?? 3) },
       { label: '单案例超时', value: secondsText(run.case_timeout_s ?? 120) },
       { label: '基线重复次数', value: String(run.base_repeats ?? 1) },
-      { label: '验证配对重复', value: `${run.validation_repeats ?? 3} 次` },
+      { label: '正式验收配对重复', value: `${run.validation_repeats ?? 3} 次` },
     ]);
   }
 
@@ -1455,7 +1455,7 @@ export default async function environmentView(container, ctx) {
           inputFor('run_config.concurrency', { label: '并发案例数', type: 'number' }),
           inputFor('run_config.case_timeout_s', { label: '单案例超时（秒）', type: 'number' }),
           inputFor('run_config.base_repeats', { label: '基线重复次数', type: 'number' }),
-          inputFor('run_config.validation_repeats', { label: '验证配对重复次数', type: 'number' })
+          inputFor('run_config.validation_repeats', { label: '正式验收配对重复次数', type: 'number' })
         )
       : runFacts();
     return sectionCard({
@@ -1678,7 +1678,7 @@ export default async function environmentView(container, ctx) {
         { label: '核心指标', value: 'R、A 不下降；R 或 A 至少一项严格提高；J 不下降' },
         { label: '关键案例', value: 'critical 案例不得从通过变失败（强制）' },
         { label: '阻断条件', value: '基础设施错误或包完整性错误 → 不自动晋级' },
-        { label: '验证重复', value: `${acceptance.validation_repeats ?? 3} 次配对` },
+        { label: '正式验收重复', value: `${acceptance.validation_repeats ?? 3} 次配对` },
         { label: '评分器', value: 'score-v1（冻结）' },
       ]),
       h('p.form-field__hint', { text: '阈值在运行启动时冻结，不能为当前候选临时调低；全部指标持平则拒绝。' })
@@ -1693,7 +1693,7 @@ export default async function environmentView(container, ctx) {
           'div.stack',
           null,
           inputFor('acceptance_config.validation_repeats', {
-            label: '验证配对重复次数',
+            label: '正式验收配对重复次数',
             type: 'number',
             hint: '默认 3 次；少于 3 次时验证被视为不完整，只能给出证据不足结论。',
           }),
@@ -1704,7 +1704,7 @@ export default async function environmentView(container, ctx) {
       : acceptanceFacts();
     return sectionCard({
       title: '接受条件',
-      description: `accept-v1 · ${acceptance.validation_repeats ?? 3} 次配对验证 · 启动冻结`,
+      description: `accept-v1 · ${acceptance.validation_repeats ?? 3} 次配对验收 · 正式验收启动时冻结`,
       collapsible: false,
       body,
     });
@@ -1750,7 +1750,7 @@ export default async function environmentView(container, ctx) {
       {
         label: '判定',
         value: 'accept-v1',
-        hint: `阈值启动冻结 · ${acceptance.validation_repeats ?? 3} 次配对验证`,
+        hint: `正式验收阈值冻结 · ${acceptance.validation_repeats ?? 3} 次配对验证`,
       },
     ];
     return h(

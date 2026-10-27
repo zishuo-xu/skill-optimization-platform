@@ -110,6 +110,8 @@ export default async function runDetailsView(container, ctx) {
     diff: { loaded: false, loading: false, error: null, changes: [], hypotheses: [], selected: 0, mode: 'unified' },
     log: null,
     applyBusy: false,
+    validateBusy: false,
+    validationRequest: null,
     pollTimer: null,
     tickTimer: null,
     refreshTimer: null,
@@ -399,8 +401,8 @@ export default async function runDetailsView(container, ctx) {
         null,
         h('td', null, h('div.metric-name', null, h('span', { text: label }), h('small', { text: hint }))),
         h('td', null, valueCell(base)),
-        h('td', null, valueCell(cand), temporary ? h('span.xsmall.muted', { text: ' 临时' }) : null),
-        h('td', null, h(`span.${deltaClass}`, { text: formatDelta(delta) }))
+        state.run.mode === 'evaluate' ? null : h('td', null, valueCell(cand), temporary ? h('span.xsmall.muted', { text: ' 临时' }) : null),
+        state.run.mode === 'evaluate' ? null : h('td', null, h(`span.${deltaClass}`, { text: formatDelta(delta) }))
       );
     });
     return h(
@@ -413,9 +415,9 @@ export default async function runDetailsView(container, ctx) {
           'tr',
           null,
           h('th', { text: '指标' }),
-          h('th', { text: '基线' }),
-          h('th', { text: '候选' }),
-          h('th', { text: '差值' })
+          h('th', { text: state.run.mode === 'evaluate' ? '评测结果' : '基线' }),
+          state.run.mode === 'evaluate' ? null : h('th', { text: '候选' }),
+          state.run.mode === 'evaluate' ? null : h('th', { text: '差值' })
         )
       ),
       h('tbody', null, ...body)
@@ -527,15 +529,15 @@ export default async function runDetailsView(container, ctx) {
         candidate: validation.candidate,
         delta: validation.delta || {},
         note: unique
-          ? `按验证集统计：${unique} 个没参与优化的案例，每个跑 ${repeats} 次`
-          : '按验证集（没参与优化的案例）统计',
+          ? `按独立验收集统计：${unique} 个没参与优化的案例，每个跑 ${repeats} 次`
+          : '按独立验收集（没参与优化的案例）统计',
       };
     }
     return {
       baseline: metrics.baseline,
       candidate: isBaselineRun() ? null : metrics.candidate,
       delta: metrics.delta || {},
-      note: isBaselineRun() ? '当前版本在全部案例上的表现' : '按优化集统计',
+      note: state.run.mode === 'evaluate' ? '按测试集统计；独立验收集和最终测试集不参与' : isBaselineRun() ? '按测试集统计；独立验收集和最终测试集不参与' : '按测试集统计',
     };
   }
 
@@ -627,7 +629,10 @@ export default async function runDetailsView(container, ctx) {
         text: run.error_message || run.decision_reason || '运行没有产生可应用的候选，可在运行记录里查看原因。',
       };
     }
-    if (decisionErrorCode === 'no_failures') {
+    if (run.mode === 'optimize' && candidateVersionId()) {
+      return { tone: 'info', title: '候选已完成测试集重跑，待正式验收', text: '下方对比仅反映已知测试集表现，尚未完成独立验收，不能据此应用。' };
+    }
+    if (run.mode !== 'evaluate' && decisionErrorCode === 'no_failures') {
       return { tone: 'success', title: '没有发现需要改进的问题', text: run.decision_reason || '当前案例都已通过，优化器没有可依据的失败案例。' };
     }
     if (isBaselineRun()) {
@@ -635,7 +640,7 @@ export default async function runDetailsView(container, ctx) {
       return {
         tone: base.failed ? 'neutral' : 'success',
         title: base.failed ? `${total} 个案例中 ${base.failed} 个没通过` : `全部 ${total} 个案例都通过了`,
-        text: base.failed ? '可以启动单轮优化，让优化器根据这些失败案例修改 Skill。' : '当前版本在这个数据集上没有失败案例。',
+        text: run.mode === 'evaluate' ? '本次评测仅使用测试集；独立验收集和最终测试集不参与。' : base.failed ? '可以启动单轮优化，让优化器根据测试集失败案例修改 Skill。' : '当前版本在测试集上没有失败案例。',
       };
     }
     if (run.decision === 'accept') {
@@ -673,7 +678,14 @@ export default async function runDetailsView(container, ctx) {
     const exportBtn = candVersion
       ? button({ label: '导出候选包', variant: 'ghost', iconName: 'download', onClick: () => download(api.exportSkillVersionUrl(candVersion), `${candVersion}.zip`) })
       : null;
-    if (run.decision === 'accept') {
+    if (run.mode === 'optimize' && run.status === 'completed' && candVersion) {
+      return [
+        button({ label: state.validateBusy ? '正在启动验收…' : '正式验收', variant: 'primary', iconName: 'shield', disabled: state.validateBusy || run.can_validate === false, onClick: startValidation }),
+        button({ label: '查看案例对比', variant: 'secondary', iconName: 'run', onClick: () => switchTab('cases') }),
+        run.can_validate === false ? h('span.small.muted', { text: '当前版本或运行条件已变化，请返回工作台重新优化。' }) : null,
+      ];
+    }
+    if (run.mode !== 'evaluate' && run.decision === 'accept') {
       return [
         candVersion && !applied
           ? button({ label: canApply ? (state.applyBusy ? '正在应用…' : '应用候选') : '需重新评测后应用', variant: canApply ? 'primary' : 'secondary', iconName: canApply ? 'check' : 'lock', disabled: state.applyBusy || !canApply, onClick: applyCandidate })
@@ -686,7 +698,7 @@ export default async function runDetailsView(container, ctx) {
         appliedElsewhere ? h('span.small.muted', { text: '当前版本已变化，不能从本轮候选重复恢复。' }) : null,
       ];
     }
-    if (run.decision === 'reject' || run.decision === 'inconclusive') {
+    if (run.mode !== 'evaluate' && (run.decision === 'reject' || run.decision === 'inconclusive')) {
       const counts = computeTransitions();
       return [
         counts.regressed
@@ -750,7 +762,7 @@ export default async function runDetailsView(container, ctx) {
     }
     return sectionCard({
       title: '案例结果',
-      description: isBaselineRun() ? '点击数字查看对应案例和失败原因。' : '基线 → 候选，每个案例只算一次（验证集取第一次）。点击数字查看。',
+      description: isBaselineRun() ? '点击数字查看对应案例和失败原因。' : state.run.mode === 'validate' ? '基线 → 候选，每个案例只算一次（独立验收集取第一次）。点击数字查看。' : '测试集基线 → 候选。点击数字查看对应案例。',
       body: h('div.stack', null, body, hasCaseData ? failureBreakdown() : null),
     });
   }
@@ -862,20 +874,60 @@ export default async function runDetailsView(container, ctx) {
           'div.overview-grid',
           null,
           sectionCard({
-            title: validation?.baseline ? '优化集指标' : '指标',
-            description: temporary ? '运行尚未结束，候选指标为临时值。' : '优化器看得到的案例上的结果。',
+            title: run.mode === 'validate' ? '独立验收集指标' : '测试集指标',
+            description: run.mode === 'validate' ? '未参与优化的独立案例，按配对重复结果判定。' : run.mode === 'evaluate' ? '仅包含测试集案例；独立验收集和最终测试集不参与。' : temporary ? '运行尚未结束，指标为临时值。' : '测试集案例上的结果。',
             actions: temporary ? [chip('临时值', 'warning', { iconName: 'clock' })] : [],
             body: metricsTable(metrics, temporary),
           }),
-          validation?.baseline
-            ? sectionCard({ title: '验证集指标', description: '没参与优化的案例，重复执行后汇总；结论按这一组判定。', body: metricsTable(validation, false) })
+          run.mode !== 'validate' && validation?.baseline
+            ? sectionCard({ title: '独立验收集指标', description: '没参与优化的案例，重复执行后汇总；结论按这一组判定。', body: metricsTable(validation, false) })
             : null
         ),
-        isBaselineRun() ? null : sectionCard({ title: '判定规则', description: '规则在运行前冻结，不会为当前候选临时调整。', body: ruleList() }),
+        run.mode !== 'validate' ? null : sectionCard({ title: '判定规则', description: '规则在运行前冻结，不会为当前候选临时调整。', body: ruleList() }),
         sectionCard({ title: '执行与成本', body: executionStats() })
       )
     );
     mount(resultHost, h('div.stack', null, verdictCard(), changeSummaryCard(), caseChangeCard(), metricDetails));
+  }
+
+  async function startValidation() {
+    if (state.validateBusy || state.run.can_validate === false) return;
+    state.validateBusy = true;
+    renderResult();
+    try {
+      const project = await api.getProject(state.run.project_id);
+      const dataset = project.current_dataset_id ? await api.getDataset(project.current_dataset_id) : null;
+      const confirmed = await confirmDialog({
+        title: '正式验收候选',
+        message: `将使用当前数据集${dataset ? ` v${dataset.version_seq}` : '（尚未配置）'}中的独立验收案例，配对评测原版本与此候选。不会修改 Skill 或自动应用。`,
+        confirmText: '开始正式验收',
+      });
+      if (!confirmed) return;
+      const signature = JSON.stringify([state.run.id, project.current_skill_version_id, project.current_environment_id, project.current_dataset_id]);
+      if (state.validationRequest?.signature !== signature) state.validationRequest = { signature, key: `validate-${crypto.randomUUID()}` };
+      const result = await api.createRun({ project_id: state.run.project_id, mode: 'validate', source_run_id: state.run.id,
+        expected_skill_version_id: project.current_skill_version_id,
+        expected_environment_id: project.current_environment_id,
+        expected_dataset_id: project.current_dataset_id,
+      }, { idempotencyKey: state.validationRequest.key });
+      const id = result?.run_id || result?.id;
+      if (!id) throw new Error('服务未返回验收运行 ID');
+      toast('正式验收已启动', { type: 'success' });
+      ctx.navigate(`#/runs/${encodeURIComponent(id)}`);
+    } catch (error) {
+      if (error.code === 'dataset_incomplete') {
+        const modal = openModal({
+          title: '需要独立验收集', size: 'md',
+          body: h('p', { text: error.message || '请补充独立验收集后，再启动正式验收。' }),
+          footer: h('div.btn-row', null,
+            button({ label: '关闭', variant: 'ghost', onClick: () => modal.close() }),
+            button({ label: '去补充数据', variant: 'primary', href: `#/projects/${encodeURIComponent(state.run.project_id)}/dataset`, onClick: () => modal.close() })),
+        });
+      } else toast(`启动验收失败：${error.message}`, { type: 'error' });
+    } finally {
+      state.validateBusy = false;
+      renderResult();
+    }
   }
 
   async function applyCandidate() {
@@ -1267,7 +1319,7 @@ export default async function runDetailsView(container, ctx) {
                     'div.case-table__meta',
                     null,
                     h('span.mono', { text: item.case_id }),
-                    item.split === 'validation' ? h('span', { text: '验证集' }) : null,
+                    item.split === 'validation' ? h('span', { text: '独立验收集' }) : null,
                     item.critical ? chip('关键', 'warning') : null
                   )
                 ),
@@ -1591,9 +1643,11 @@ export default async function runDetailsView(container, ctx) {
           ...headerSections,
           emptyState({
             iconName: 'versions',
-            title: state.run.mode === 'baseline' ? '基线运行没有文件差异' : '本轮没有候选补丁',
+            title: state.run.mode === 'evaluate' ? '普通评测没有文件差异' : state.run.mode === 'baseline' ? '基线运行没有文件差异' : '本轮没有候选补丁',
             description:
-              state.run.mode === 'baseline'
+              state.run.mode === 'evaluate'
+                ? '普通评测只执行当前 Skill 包，不生成候选。'
+                : state.run.mode === 'baseline'
                 ? '基线评测只执行当前 Skill 包。启动单轮优化后，这里会展示候选相对基线的文件差异。'
                 : state.run.decision_reason || '优化器未生成可应用的修改；可查看运行记录了解直接原因。',
             actions: [

@@ -34,7 +34,7 @@ from .evaluation import compare_rules_error, normalise_judge_criteria
 from .ids import stable_case_id
 
 SPLITS = ("optimize", "validation", "final_test")
-DEFAULT_SPLIT_RATIOS = {"optimize": 0.7, "validation": 0.2, "final_test": 0.1}
+DEFAULT_SPLIT_RATIOS = {"optimize": 1, "validation": 0, "final_test": 0}
 DEFAULT_SEED = 42
 DEFAULT_MIN_CASES_FOR_FINAL_TEST = 10
 CONSUME_MODES = ("always", "once")
@@ -258,9 +258,12 @@ def _min_cases_for_final_test(config: Any) -> int:
 
 def _split_targets(total: int, group_count: int, ratios: Mapping[str, float],
                    min_final_cases: int) -> dict[str, int]:
-    optimize = max(1, int(round(total * ratios["optimize"])))
+    active = [name for name in SPLITS if ratios[name] > 0]
+    if len(active) == 1:
+        return {name: total if name == active[0] else 0 for name in SPLITS}
+    optimize = max(1, int(round(total * ratios["optimize"]))) if ratios["optimize"] > 0 else 0
     validation = (max(1, int(round(total * ratios["validation"])))
-                  if total >= 2 else 0)
+                  if (total >= 2 or ratios["optimize"] == 0) and ratios["validation"] > 0 else 0)
     final = 0
     if (total >= min_final_cases and group_count >= 3
             and ratios["final_test"] > 0):
@@ -274,7 +277,10 @@ def _split_targets(total: int, group_count: int, ratios: Mapping[str, float],
             optimize = max(1, min(optimize, total))
             break
     if optimize + validation + final < total and final == 0:
-        optimize = total - validation
+        if ratios["optimize"] > 0:
+            optimize = total - validation
+        else:
+            validation = total
     return {"optimize": optimize, "validation": validation, "final_test": final}
 
 
@@ -1003,14 +1009,14 @@ def assign_splits(cases: Iterable[Mapping[str, Any]], config: Mapping[str, Any] 
             member["split"] = split
 
     split_counts = Counter(case.get("split") for case in copied)
-    if split_counts.get("final_test", 0) == 0:
+    if ratios["final_test"] > 0 and split_counts.get("final_test", 0) == 0:
         warnings.append(_warning(
             None, "no_final_test",
-            "数据集没有独立最终测试集，只能使用优化集与验证集评估；"
+            "当前划分没有独立最终测试集，日常测试与优化仍可运行；"
             "增加样本后可补齐 final_test"))
-    if split_counts.get("validation", 0) == 0 and len(copied) > 1:
+    if ratios["validation"] > 0 and split_counts.get("validation", 0) == 0:
         warnings.append(_warning(
-            None, "no_validation", "数据集没有验证集，无法进行候选晋级验证"))
+            None, "no_validation", "当前划分没有独立验收集，正式验收前需要补充；日常测试与优化不受影响"))
     return {"cases": copied, "warnings": warnings}
 
 

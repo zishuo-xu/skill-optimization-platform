@@ -9,17 +9,17 @@ from app import persistence
 from tests.conftest import run_sync
 
 
-def test_apply_conflict_and_rollback(client, demo, optimize_run):
+def test_apply_conflict_and_rollback(client, demo, accepted_run):
     project = demo["project"]
     project_id = project["id"]
-    assert optimize_run["decision"] == "accept"
-    candidate = persistence.get_candidate_for_run(optimize_run["id"])
+    assert accepted_run["decision"] == "accept"
+    candidate = persistence.get_candidate_for_run(accepted_run["id"])
     assert candidate and candidate["skill_version_id"]
     candidate_version_id = candidate["skill_version_id"]
     baseline_version_id = project["current_skill_version_id"]
 
     applied = client.post(
-        f"/api/v3/runs/{optimize_run['id']}/apply",
+        f"/api/v3/runs/{accepted_run['id']}/apply",
         json={"expected_current_version": baseline_version_id})
     assert applied.status_code == 200, applied.text
     assert applied.json()["project"]["current_skill_version_id"] == \
@@ -29,7 +29,7 @@ def test_apply_conflict_and_rollback(client, demo, optimize_run):
 
     # Re-applying with a stale expected version must conflict (409).
     conflict = client.post(
-        f"/api/v3/runs/{optimize_run['id']}/apply",
+        f"/api/v3/runs/{accepted_run['id']}/apply",
         json={"expected_current_version": baseline_version_id})
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "version_conflict"

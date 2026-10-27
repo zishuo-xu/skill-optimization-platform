@@ -115,3 +115,8 @@ def baseline_run(demo):
 @pytest.fixture
 def optimize_run(demo, baseline_run):
     return complete_run(demo, "optimize")
+
+
+@pytest.fixture
+def accepted_run(demo, optimize_run):
+    return complete_run(demo, "validate", source_run_id=optimize_run["id"])

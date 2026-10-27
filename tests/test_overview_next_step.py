@@ -31,19 +31,19 @@ def _complete(project_id: str, mode: str) -> dict:
     return run_sync(run["id"])
 
 
-def test_overview_points_to_pending_candidate_until_applied(client, demo, optimize_run):
+def test_overview_points_to_pending_candidate_until_applied(client, demo, accepted_run):
     project = demo["project"]
-    assert optimize_run["decision"] == "accept"
+    assert accepted_run["decision"] == "accept"
 
     data = services.overview(project["id"])
     assert data["primary_action"]["mode"] == "apply"
-    assert data["primary_action"]["run_id"] == optimize_run["id"]
+    assert data["primary_action"]["run_id"] == accepted_run["id"]
     pending = data["pending_candidate"]
-    assert pending["run_id"] == optimize_run["id"]
+    assert pending["run_id"] == accepted_run["id"]
     assert pending["candidate_joint"] > pending["baseline_joint"]
 
     applied = client.post(
-        f"/api/v3/runs/{optimize_run['id']}/apply",
+        f"/api/v3/runs/{accepted_run['id']}/apply",
         json={"expected_current_version": project["current_skill_version_id"]})
     assert applied.status_code == 200, applied.text
 

@@ -731,6 +731,14 @@ def find_idempotent_run(project_id: str, idempotency_key: str) -> dict[str, Any]
     )
 
 
+def find_latest_evaluation(project_id: str, fingerprint: str) -> dict[str, Any] | None:
+    return _fetchone(
+        "SELECT * FROM runs WHERE project_id = ? AND fingerprint = ? AND mode = 'evaluate'"
+        " AND status = 'completed' ORDER BY created_at DESC LIMIT 1",
+        (project_id, fingerprint),
+    )
+
+
 def find_cached_baseline(project_id: str, fingerprint: str) -> dict[str, Any] | None:
     return _fetchone(
         "SELECT * FROM runs WHERE project_id = ? AND fingerprint = ? AND mode = 'baseline'"

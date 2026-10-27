@@ -149,8 +149,8 @@ def test_validate_happy_path_normalises_case_and_assigns_split():
     assert coverage["skills"]["task_query"]["total"] == 1
     assert coverage["skills"]["task_search"]["total"] == 0
     assert coverage["tools"]["list_tasks"] == 1
-    assert any(warning["code"] == "no_final_test"
-               for warning in result["warnings"])
+    assert not any(warning["code"] in {"no_final_test", "no_validation"}
+                   for warning in result["warnings"])
 
 
 def test_validate_missing_query_and_expected_are_errors_with_line():
@@ -316,24 +316,24 @@ def test_assign_splits_is_deterministic_and_never_splits_a_group():
                for warning in first["warnings"])
 
 
-def test_assign_splits_small_dataset_falls_back_to_optimize_and_validation():
+def test_assign_splits_defaults_to_daily_tests():
     cases = _split_cases(5, group_size=1)
     result = dataset.assign_splits(cases, None, 42)
     counts = Counter(case["split"] for case in result["cases"])
     assert counts["final_test"] == 0
-    assert counts["optimize"] > 0 and counts["validation"] > 0
-    assert any(warning["code"] == "no_final_test"
-               for warning in result["warnings"])
+    assert counts["optimize"] == 5 and counts["validation"] == 0
+    assert not any(warning["code"] in {"no_final_test", "no_validation"}
+                   for warning in result["warnings"])
 
 
-def test_assign_splits_keeps_explicit_splits_and_warns_without_final_test():
+def test_assign_splits_keeps_explicit_splits_without_holdout_requirement():
     cases = _split_cases(4, group_size=1)
     for case in cases:
         case["split"] = "optimize"
     result = dataset.assign_splits(cases, None, 42)
     assert {case["split"] for case in result["cases"]} == {"optimize"}
-    assert any(warning["code"] == "no_final_test"
-               for warning in result["warnings"])
+    assert not any(warning["code"] in {"no_final_test", "no_validation"}
+                   for warning in result["warnings"])
 
 
 def test_assign_splits_resolves_conflicting_explicit_group_split():
@@ -583,3 +583,24 @@ def test_compact_tool_args_shorthand_sets_arguments_path():
         "arguments": {"project_id": "P9"},
         "arguments_path": "args",
     }
+
+
+def test_acceptance_only_import_does_not_create_daily_test_cases():
+    cases = _split_cases(5, group_size=1)
+    result = dataset.assign_splits(cases, {"optimize": 0, "validation": 1, "final_test": 0}, 42)
+    assert {case["split"] for case in result["cases"]} == {"validation"}
+    assert result["warnings"] == []
+
+
+def test_daily_default_preserves_explicit_holdouts():
+    cases = _split_cases(3, group_size=1)
+    cases[0]["split"] = "validation"
+    cases[1]["split"] = "final_test"
+    result = dataset.assign_splits(cases)
+    assert [case["split"] for case in result["cases"]] == ["validation", "final_test", "optimize"]
+
+
+def test_zero_test_ratio_never_assigns_holdouts_to_daily_tests():
+    for count in (1, 5, 30):
+        result = dataset.assign_splits(_split_cases(count, group_size=1), {"optimize": 0, "validation": .8, "final_test": .2})
+        assert all(case["split"] != "optimize" for case in result["cases"])
