@@ -29,19 +29,24 @@ PLACEHOLDER_RESPONSE = {"ok": True, "note": "试跑占位返回"}
 
 
 class _NeverCancelled:
+    def __init__(self, cancelled: Any = None) -> None:
+        self._cancelled = cancelled
+
     def cancelled(self) -> bool:
-        return False
+        return bool(self._cancelled and self._cancelled.is_set())
 
 
 class _TrialEmitter:
     """Collect events in memory with timestamps (the drawer shows a timeline)."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_event: Any = None) -> None:
         self.events: list[dict[str, Any]] = []
+        self.on_event = on_event
+        self._seq = 0
 
     def __call__(self, event: Mapping[str, Any]) -> dict[str, Any]:
         record = {
-            "seq": len(self.events) + 1,
+            "seq": self._seq + 1,
             "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "type": str(event.get("type") or "event"),
             "level": str(event.get("level") or "info"),
@@ -49,8 +54,12 @@ class _TrialEmitter:
             "call_id": event.get("call_id"),
             "payload": dict(event.get("payload") or {}),
         }
-        if len(self.events) < MAX_EVENTS:
-            self.events.append(record)
+        self._seq += 1
+        self.events.append(record)
+        if len(self.events) > MAX_EVENTS:
+            del self.events[:-MAX_EVENTS]
+        if self.on_event is not None:
+            self.on_event(record)
         return record
 
 
@@ -104,7 +113,7 @@ def _load_case(body: Mapping[str, Any], dataset_id: str | None) -> dict[str, Any
 
 
 def _request(env: Mapping[str, Any], case: Mapping[str, Any], skill_version_id: str,
-             manifest: Mapping[str, Any]) -> dict[str, Any]:
+             manifest: Mapping[str, Any], cancel_event: Any = None) -> dict[str, Any]:
     run_config = env.get("run_config") or {}
     loader_config = env.get("loader_config") or {}
     timeout_s = int(run_config.get("case_timeout_s") or 120)
@@ -130,7 +139,7 @@ def _request(env: Mapping[str, Any], case: Mapping[str, Any], skill_version_id: 
         "case_id": case.get("case_id") or "trial",
         "manifest": manifest,
         "allowed_skill_ids": [item["skill_id"] for item in manifest.get("subskills") or []],
-        "cancel_check": _NeverCancelled().cancelled,
+        "cancel_check": _NeverCancelled(cancel_event).cancelled,
         "stage": "trial",
         "split": case.get("split"),
         "variant": "trial",
@@ -143,6 +152,8 @@ def _score(case: Mapping[str, Any], actual: Mapping[str, Any], env: Mapping[str,
     expected = case.get("expected")
     if not expected:
         return None, {}
+    emit({"type": "scoring_started", "level": "info",
+          "payload": {"title": "开始评分"}})
     tool_schema = env.get("tool_schema") or []
     compare_rules = (env.get("scorer_config") or {}).get("compare")
     value_judge = judge_mod.ValueJudge.from_env(env)
@@ -150,6 +161,8 @@ def _score(case: Mapping[str, Any], actual: Mapping[str, Any], env: Mapping[str,
                                   semantic_fallback=value_judge is None)
     pending = score.get("pending_judgments") or []
     if not pending or value_judge is None:
+        emit({"type": "score_completed", "level": "info",
+              "payload": {"title": "评分完成", "passed": bool(score.get("passed"))}})
         return score, {}
 
     def judge_emit(event: Mapping[str, Any]) -> Any:
@@ -163,12 +176,17 @@ def _score(case: Mapping[str, Any], actual: Mapping[str, Any], env: Mapping[str,
         emit({"type": event_types.JUDGE_FAILED, "level": "error",
               "payload": {"error_code": exc.code, "title": "评分模型调用失败",
                           "message": exc.message}})
-        return evaluation.mark_infrastructure(score, f"评分模型不可用：{exc.message}"), {}
+        marked = evaluation.mark_infrastructure(score, f"评分模型不可用：{exc.message}")
+        emit({"type": "score_completed", "level": "error",
+              "payload": {"title": "评分失败", "message": exc.message, "passed": False}})
+        return marked, {}
     score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
                                   judgments=verdicts)
     score["judge"] = {key: stats[key] for key in ("items", "cached", "judged", "passed")}
     emit({"type": event_types.JUDGE_COMPLETED,
           "payload": judge_mod.judge_event_payload(stats, verdicts, pending)})
+    emit({"type": "score_completed", "level": "info",
+          "payload": {"title": "评分完成", "passed": bool(score.get("passed"))}})
     return score, dict(stats.get("usage") or {})
 
 
@@ -199,18 +217,22 @@ def _side(actual: Mapping[str, Any], score: Mapping[str, Any] | None) -> dict[st
 
 
 def try_case(body: Mapping[str, Any], *, project_id: str | None = None,
-             run_id: str | None = None) -> dict[str, Any]:
+             run_id: str | None = None, on_event: Any = None,
+             cancel_event: Any = None) -> dict[str, Any]:
     """Run one case (``case_id``) or one free-form ``query`` and score it."""
-    from .services import redact_secrets
+    from .model_output import redact_output
 
     picked = _resolve(body, project_id=project_id, run_id=run_id)
     env = persistence.get_environment(picked["environment_id"])
     version = persistence.get_skill_version(picked["skill_version_id"])
     manifest = version.get("manifest") or {}
     case = _load_case(body, picked["dataset_id"])
-    emit = _TrialEmitter()
+    credentials = {"model_config": env.get("model_config") or {},
+                   "scorer_config": env.get("scorer_config") or {}}
+    safe_callback = (lambda event: on_event(redact_output(event, credentials))) if on_event else None
+    emit = _TrialEmitter(safe_callback)
     adapter = build_adapter(env.get("model_config") or {})
-    request = _request(env, case, picked["skill_version_id"], manifest)
+    request = _request(env, case, picked["skill_version_id"], manifest, cancel_event)
     started = time.monotonic()
     try:
         actual = execution.run_case(request, adapter, emit)
@@ -226,8 +248,22 @@ def try_case(body: Mapping[str, Any], *, project_id: str | None = None,
             "capabilities": {"routing": True, "tool_arguments": True},
             "events": [], "fixture_misses": [],
         }
+    if cancel_event is not None and cancel_event.is_set():
+        return redact_output({
+            "case_id": case.get("case_id"), "query": case["query"],
+            "split": case.get("split"), "critical": bool(case.get("critical")),
+            "expected": case.get("expected"), "scored": False,
+            "result": _side({**actual, "error": {"code": "cancelled", "message": "试跑已取消"}}, None),
+            "judge_usage": None,
+            "skill_version": {"id": version["id"], "status": version.get("status"),
+                              "message": version.get("message")},
+            "environment": {"id": env["id"], "version_seq": env.get("version_seq"),
+                            "status": env.get("status")},
+            "events": redact_output(emit.events, credentials), "trial": True,
+            "note": "试跑已取消。",
+        }, credentials)
     score, judge_usage = _score(case, actual, env, emit)
-    return {
+    return redact_output({
         "case_id": case.get("case_id"),
         "query": case["query"],
         "split": case.get("split"),
@@ -240,7 +276,7 @@ def try_case(body: Mapping[str, Any], *, project_id: str | None = None,
                           "message": version.get("message")},
         "environment": {"id": env["id"], "version_seq": env.get("version_seq"),
                         "status": env.get("status")},
-        "events": redact_secrets(emit.events),
+        "events": redact_output(emit.events, credentials),
         "trial": True,
         "note": "试跑结果不写入运行记录，也不影响指标和结论。",
-    }
+    }, credentials)

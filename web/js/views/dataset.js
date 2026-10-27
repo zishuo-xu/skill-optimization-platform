@@ -316,7 +316,7 @@ export default async function datasetView(container, ctx) {
     openTrialDrawer({
       title: `试跑 ${caseId}`,
       context: '用项目当前的 Skill 版本和执行环境跑这一个案例（使用已保存的案例内容）',
-      runTrial: () => api.trialProjectCase(project.id, { case_id: caseId, dataset_id: datasetId }),
+      runTrial: (options) => api.trialProjectCase(project.id, { case_id: caseId, dataset_id: datasetId }, options),
     });
   }
 
@@ -333,7 +333,7 @@ export default async function datasetView(container, ctx) {
       openTrialDrawer({
         title: '试跑一句话',
         context: '用项目当前的 Skill 版本和执行环境；没有预期，只展示实际行为、不评分；业务工具一律返回占位结果 {"ok": true}',
-        runTrial: () => api.trialProjectCase(project.id, { query }),
+        runTrial: (options) => api.trialProjectCase(project.id, { query }, options),
       });
     };
     input.addEventListener('keydown', (event) => {

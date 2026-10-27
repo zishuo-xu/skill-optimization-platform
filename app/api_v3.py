@@ -6,6 +6,7 @@ import asyncio
 import csv
 import io
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -675,11 +676,81 @@ async def debug_case(request: Request) -> Response:
     from . import trial
 
     body = await json_body(request)
-    result = await run_in_threadpool(
-        trial.try_case, body,
-        project_id=request.path_params.get("project_id"),
-        run_id=request.path_params.get("run_id"))
-    return ok(result)
+    wants_stream = "application/x-ndjson" in request.headers.get("accept", "").lower()
+    if not wants_stream:
+        result = await run_in_threadpool(
+            trial.try_case, body,
+            project_id=request.path_params.get("project_id"),
+            run_id=request.path_params.get("run_id"))
+        return ok(result)
+
+    # Trials are synchronous internally, but the opt-in NDJSON transport lets
+    # the drawer render each real execution event before the final score.
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
+    cancel_event = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def publish(item: dict[str, Any], *, terminal: bool = False) -> None:
+        def enqueue() -> None:
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull:
+                if terminal:
+                    # Keep the terminal frame even if an adapter emitted a
+                    # burst of events. The oldest event is least useful.
+                    try:
+                        queue.get_nowait()
+                        queue.put_nowait(item)
+                    except asyncio.QueueEmpty:
+                        queue.put_nowait(item)
+        try:
+            loop.call_soon_threadsafe(enqueue)
+        except RuntimeError:
+            # A disconnected client must not block the model worker.
+            return
+
+    def emit_event(event: Mapping[str, Any]) -> None:
+        safe = services.redact_secrets(dict(event))
+        publish({"type": "event", "event": safe})
+
+    def worker_call() -> None:
+        try:
+            publish({"type": "event", "event": {"seq": 0, "type": "trial_started",
+                                                     "level": "info", "payload": {"title": "开始试跑"}}})
+            result = trial.try_case(
+                body, project_id=request.path_params.get("project_id"),
+                run_id=request.path_params.get("run_id"), on_event=emit_event,
+                cancel_event=cancel_event)
+            publish({"type": "result", "result": services.redact_secrets(result)}, terminal=True)
+        except AppError as exc:
+            publish({"type": "error", "error": exc.as_dict().get("error", {})}, terminal=True)
+        except Exception as exc:  # noqa: BLE001
+            publish({"type": "error", "error": {"code": "internal_error",
+                                                   "message": "试跑执行失败，请检查服务日志。"}}, terminal=True)
+
+    task = asyncio.create_task(asyncio.to_thread(worker_call))
+
+    async def stream():
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield b'{"type":"heartbeat"}\n'
+                    continue
+                yield (json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+                if item["type"] in ("result", "error"):
+                    break
+        except asyncio.CancelledError:
+            cancel_event.set()
+            raise
+        finally:
+            if not task.done():
+                cancel_event.set()
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
 
 
 # --------------------------------------------------------------------------- #

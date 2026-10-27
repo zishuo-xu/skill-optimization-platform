@@ -215,14 +215,21 @@ export function timelineBlock(events) {
           ]
             .filter(Boolean)
             .join(' · ')
-        )
+        ),
+        (() => {
+          const payload = event.payload || {};
+          const detail = Object.fromEntries(['arguments', 'result', 'response', 'output'].filter((key) => payload[key] !== undefined).map((key) => [key, payload[key]]));
+          return !Object.keys(detail).length ? null : h('details.timeline__payload', null,
+            h('summary', { text: '查看参数 / 返回' }),
+            h('pre.code-block__pre', { text: safeJsonStringify(detail, 2), style: { maxHeight: '180px', whiteSpace: 'pre-wrap' } }));
+        })()
       )
     )
   );
 }
 
-export function timelineDetails(events) {
-  return h('details.case-more', null, h('summary', { text: `执行过程（${events.length} 条事件）` }), timelineBlock(events));
+export function timelineDetails(events, { open = false } = {}) {
+  return h('details.case-more', open ? { open: true } : null, h('summary', { text: `执行过程（${events.length} 条事件）` }), timelineBlock(events));
 }
 
 /* ---------------- single-case trial ---------------- */
@@ -257,9 +264,41 @@ function trialResultView(data) {
     side.raw_output && side.action !== 'tool_call'
       ? h('details.case-more', null, h('summary', { text: '模型原始输出' }), codeBlock(side.raw_output, { wrap: true, maxHeight: '260px' }))
       : null,
-    timelineDetails(data.events || []),
+    timelineDetails(data.events || [], { open: true }),
     data.expected ? jsonViewer(data.expected, { label: '预期结果 JSON', maxHeight: '240px', redact: false }) : null
   );
+}
+
+function createTrialLiveView(events, startedAt) {
+  const elapsed = Math.max(0, Date.now() - startedAt);
+  const latest = events[events.length - 1];
+  const timeline = events.length ? timelineBlock(events) : h('div.timeline');
+  let lastSeq = events.length ? events[events.length - 1].seq : -1;
+  const details = h('details.case-more', { open: true }, h('summary', { text: `实时执行链路（${events.length} 条）` }), timeline);
+  const root = h('div.trial-live', null,
+    h('div.row', { style: { justifyContent: 'space-between', alignItems: 'center' } },
+      h('strong.trial-live__title', { text: latest?.payload?.title || (latest ? eventLabel(latest.type) : '正在连接模型…') }),
+      h('span.xsmall.muted.trial-live__elapsed', { text: `已等待 ${formatDuration(elapsed)}` })),
+    h('p.xsmall.muted.trial-live__message', { text: latest?.payload?.message || '连接建立后，模型、技能和工具事件会实时出现。' }), details
+  );
+  root._update = (nextEvents, nextStartedAt) => {
+    const nextLatest = nextEvents[nextEvents.length - 1];
+    root.querySelector('.trial-live__title').textContent = nextLatest?.payload?.title || (nextLatest ? eventLabel(nextLatest.type) : '正在连接模型…');
+    root.querySelector('.trial-live__elapsed').textContent = `已等待 ${formatDuration(Math.max(0, Date.now() - nextStartedAt))}`;
+    root.querySelector('.trial-live__message').textContent = nextLatest?.payload?.message || '连接建立后，模型、技能和工具事件会实时出现。';
+    const summary = details.querySelector('summary');
+    if (summary) summary.textContent = `实时执行链路（${nextEvents.length} 条）`;
+    const oldTimeline = details.querySelector('.timeline');
+    const newEvents = nextEvents.filter((event) => event.seq > lastSeq);
+    if (oldTimeline && newEvents.length) {
+      const additions = timelineBlock(newEvents);
+      while (additions.firstChild) oldTimeline.appendChild(additions.firstChild);
+      while (oldTimeline.children.length > 200) oldTimeline.firstChild.remove();
+      lastSeq = newEvents[newEvents.length - 1].seq;
+    }
+    events = nextEvents;
+  };
+  return root;
 }
 
 /**
@@ -269,6 +308,12 @@ function trialResultView(data) {
 export function openTrialDrawer({ title, context = '', runTrial }) {
   let busy = false;
   let drawer = null;
+  let controller = null;
+  let startedAt = 0;
+  let liveEvents = [];
+  let liveTimer = null;
+  let liveRoot = null;
+  let closed = false;
   const footer = () =>
     h(
       'div.btn-row.btn-row--between',
@@ -283,24 +328,45 @@ export function openTrialDrawer({ title, context = '', runTrial }) {
     );
 
   async function start() {
-    if (busy) return;
+    if (busy || closed) return;
     busy = true;
+    controller = new AbortController();
+    startedAt = Date.now();
+    liveEvents = [];
+    if (liveTimer) clearInterval(liveTimer);
+    liveTimer = setInterval(() => {
+      if (busy && drawer && !closed && liveRoot?._update) liveRoot._update(liveEvents, startedAt);
+    }, 1000);
     drawer.setFooter(footer());
-    drawer.setBody(loadingState('正在试跑：执行这个案例并评分…'));
+    liveRoot = createTrialLiveView(liveEvents, startedAt);
+    drawer.setBody(liveRoot);
     try {
-      const data = await runTrial();
+      const data = await runTrial({
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (!event || liveEvents.some((item) => item.seq === event.seq)) return;
+          liveEvents = [...liveEvents, event].slice(-200);
+          if (drawer && busy && !closed && liveRoot?._update) liveRoot._update(liveEvents, startedAt);
+        },
+      });
       const version = data.skill_version || {};
       const env = data.environment || {};
       const head = h(
         'p.xsmall.muted.trial-meta',
         { text: `Skill ${version.status === 'candidate' ? '候选版本' : '版本'} ${version.id || '—'}${version.message ? `（${truncate(version.message, 40)}）` : ''} · 执行环境 v${env.version_seq ?? '—'}${env.status === 'draft' ? '（草稿）' : ''}` }
       );
-      drawer.setBody(h('div', null, head, trialResultView(data)));
+      if (!closed) drawer.setBody(h('div', null, head, trialResultView(data)));
     } catch (error) {
-      drawer.setBody(errorState(error, { title: '试跑失败', retry: start }));
+      if (error?.code !== 'aborted' && !closed) {
+        const failure = errorState(error, { title: '试跑失败', retry: start });
+        drawer.setBody(h('div', null, liveRoot || null, failure));
+      }
     } finally {
       busy = false;
-      drawer.setFooter(footer());
+      if (liveTimer) clearInterval(liveTimer);
+      liveTimer = null;
+      controller = null;
+      if (!closed) drawer.setFooter(footer());
     }
   }
 
@@ -310,6 +376,12 @@ export function openTrialDrawer({ title, context = '', runTrial }) {
     size: 'xl',
     body: loadingState('正在试跑…'),
     footer: h('div'),
+    onClose: () => {
+      closed = true;
+      if (controller) controller.abort();
+      if (liveTimer) clearInterval(liveTimer);
+      liveTimer = null;
+    },
   });
   start();
   return drawer;

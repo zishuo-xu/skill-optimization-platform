@@ -1463,7 +1463,7 @@ export default async function runDetailsView(container, ctx) {
     openTrialDrawer({
       title: `试跑 ${caseId}`,
       context: `用${label}和本次运行的执行环境、数据集重跑这个案例`,
-      runTrial: () => api.trialRunCase(state.run.id, { case_id: caseId, variant }),
+      runTrial: (options) => api.trialRunCase(state.run.id, { case_id: caseId, variant }, options),
     });
   }
 

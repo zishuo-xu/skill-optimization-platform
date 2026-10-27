@@ -159,7 +159,19 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 临时覆盖所选模型可传 `model_config`，同 provider 的未更改凭据由服务端继承；不保存配置。
 空白 `input` 使用“只回复 OK”，非空文本原样发送；最多 64 输出 Token、无自动重试。详见 [连接测试](CONNECTION_TEST.md)。
 
-## 5. 数据集
+## 5. 单案例试跑
+
+`POST /projects/{pid}/debug-cases` 与 `/runs/{rid}/debug-cases` 默认返回完整 JSON。请求头增加 `Accept: application/x-ndjson` 时，接口改为逐行返回：
+
+```json
+{"type":"event","event":{"seq":1,"type":"model_call_started", "payload":{}}}
+{"type":"event","event":{"seq":2,"type":"tool_call_finished", "payload":{}}}
+{"type":"result","result":{"trial":true,"events":[]}}
+```
+
+事件来自同一次真实执行，可能包括模型调用、技能读取、业务工具、评分模型和评分完成；不会发送隐藏推理或凭据。正常结束时只发送一次终态，类型为 `result` 或 `error`；每 15 秒无业务事件时发送 `{"type":"heartbeat"}`。断流且未收到终态必须视为未完成，不能自动重试。客户端断开时服务会设置取消标记，执行器在下一个可取消检查点停止。默认 JSON 行为和试跑的数据隔离不变。
+
+## 6. 数据集
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -221,7 +233,7 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
 }
 ```
 
-## 6. 运行
+## 7. 运行
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -309,7 +321,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/runs/$RID/apply \
 {"error": {"code": "version_conflict", "message": "项目当前版本已不是本轮基线版本，请重新比较", "details": {"current_version": "sv_new", "baseline_version": "sv_base"}}}
 ```
 
-## 7. SSE 与事件
+## 8. SSE 与事件
 
 `GET /runs/{rid}/events` 返回：
 
@@ -326,7 +338,7 @@ data: {"id": 1234, "run_id": "run_…", "seq": 15, "ts": "2026-10-24T08:45:30.12
 - `level ∈ debug|info|warning|error`；warning/error 且 payload 含 `issue` 时进入问题摘要。
 - 事件类型/阶段注册表见 `app/event_types.py`；运行记录 UX 对应需求 §44–§54。
 
-## 8. 报告与导出
+## 9. 报告与导出
 
 - `GET /runs/{rid}/report.json`：版本指纹、评分口径、前后指标、逐案例差异、接受规则与结论、
   候选补丁与文件差异、成本、问题摘要；不包含凭据与最终测试答案。

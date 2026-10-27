@@ -143,6 +143,77 @@ async function httpTransport({ method, path, query, body, headers, signal }) {
   return { status: response.status, data };
 }
 
+/** Run a trial over the opt-in NDJSON stream, invoking onEvent as events arrive. */
+async function streamTrial(path, body, { onEvent, signal } = {}) {
+  if (mockMode) {
+    const data = await request('POST', path, { body, signal });
+    for (const event of data?.events || []) {
+      try { onEvent && onEvent(event); } catch { /* listener errors are isolated */ }
+    }
+    return data;
+  }
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { Accept: 'application/x-ndjson', 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new ApiError('请求已取消', { code: 'aborted', cause: error });
+    throw new ApiError('无法连接后端服务（/api/v3）', { code: 'network_error', network: true, cause: error });
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    const detail = data?.error || {};
+    throw new ApiError(detail.message || `请求失败（HTTP ${response.status}）`, {
+      code: detail.code || `http_${response.status}`, status: response.status,
+      field_path: detail.field_path, details: detail.details,
+    });
+  }
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('ndjson') || !response.body) return response.json();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result = null;
+  const consume = (line) => {
+    if (!line.trim()) return;
+    let packet;
+    try { packet = JSON.parse(line); } catch (error) {
+      throw new ApiError('试跑流包含无效事件数据', { code: 'trial_protocol_error', cause: error });
+    }
+    if (packet.type === 'event' && packet.event) {
+      try { onEvent && onEvent(packet.event); } catch { /* listener errors are isolated */ }
+    } else if (packet.type === 'result') result = packet.result;
+    else if (packet.type === 'error') {
+      const detail = packet.error || {};
+      throw new ApiError(detail.message || '试跑失败', { code: detail.code || 'trial_error', details: detail.details });
+    }
+  };
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      lines.forEach(consume);
+    }
+    buffer += decoder.decode();
+    consume(buffer);
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new ApiError('请求已取消', { code: 'aborted', cause: error });
+    throw error;
+  } finally {
+    try { await reader.cancel(); } catch { /* stream already closed */ }
+    reader.releaseLock();
+  }
+  if (result === null) throw new ApiError('试跑流结束但没有结果', { code: 'trial_incomplete' });
+  return result;
+}
+
 /**
  * Low-level request. Returns the parsed payload; throws ApiError on failure.
  */
@@ -423,13 +494,13 @@ export const api = {
     return apiUrl(`/runs/${encodeURIComponent(runId)}/report.${format}`);
   },
   /** 试跑：用某次运行的基线 / 候选 Skill 重跑一个案例（不写正式成绩）。 */
-  trialRunCase(runId, payload) {
-    return request('POST', `/runs/${encodeURIComponent(runId)}/debug-cases`, { body: payload });
+  trialRunCase(runId, payload, options = {}) {
+    return streamTrial(`/runs/${encodeURIComponent(runId)}/debug-cases`, payload, options);
   },
 
   /** 试跑：用项目当前（或指定）版本跑一个案例或一句自由输入。 */
-  trialProjectCase(projectId, payload) {
-    return request('POST', `/projects/${encodeURIComponent(projectId)}/debug-cases`, { body: payload });
+  trialProjectCase(projectId, payload, options = {}) {
+    return streamTrial(`/projects/${encodeURIComponent(projectId)}/debug-cases`, payload, options);
   },
 };
 
