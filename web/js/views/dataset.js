@@ -33,6 +33,7 @@ import {
   truncate,
 } from '../format.js';
 import { ACTION_LABELS } from '../eventTypes.js';
+import { openTrialDrawer } from './caseView.js';
 
 function asItems(payload) {
   if (Array.isArray(payload)) return payload;
@@ -160,6 +161,7 @@ export default async function datasetView(container, ctx) {
         state.dataset && state.dataset.status === 'published'
           ? button({ label: '创建编辑草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createEditDraft })
           : null,
+        button({ label: '试跑一句话', variant: 'secondary', size: 'sm', iconName: 'play', onClick: openQueryTrial }),
         button({ label: '导入数据集', variant: 'primary', size: 'sm', iconName: 'upload', onClick: openImportModal })
       )
     );
@@ -293,8 +295,57 @@ export default async function datasetView(container, ctx) {
           : warning
           ? chip('有警告', 'info', { iconName: 'info' })
           : chip('有效', 'success', { iconName: 'check' })
+      ),
+      h(
+        'td.nowrap.cell-actions',
+        {
+          // Keep clicks and Enter on the button from also opening the case drawer.
+          onclick: (event) => event.stopPropagation(),
+          onkeydown: (event) => event.stopPropagation(),
+        },
+        invalid
+          ? null
+          : button({ label: '试跑', variant: 'ghost', size: 'sm', iconName: 'play', title: '立即用当前 Skill 版本跑这一个案例', onClick: () => trialCase(item.case_id) })
       )
     );
+  }
+
+  /** Run one case of the dataset being viewed, with the project's current Skill and environment. */
+  function trialCase(caseId) {
+    const datasetId = state.dataset?.id;
+    openTrialDrawer({
+      title: `试跑 ${caseId}`,
+      context: '用项目当前的 Skill 版本和执行环境跑这一个案例（使用已保存的案例内容）',
+      runTrial: () => api.trialProjectCase(project.id, { case_id: caseId, dataset_id: datasetId }),
+    });
+  }
+
+  /** Try any sentence: shows what the model does; there is no expectation to score against. */
+  function openQueryTrial() {
+    const input = h('textarea.input', { rows: 4, placeholder: '例如：把任务 T42 交给 U7', 'aria-label': '要试跑的问题', style: { width: '100%', resize: 'vertical' } });
+    const submit = () => {
+      const query = input.value.trim();
+      if (!query) {
+        input.focus();
+        return;
+      }
+      modal.close();
+      openTrialDrawer({
+        title: '试跑一句话',
+        context: '用项目当前的 Skill 版本和执行环境；没有预期，只展示实际行为、不评分；业务工具一律返回占位结果 {"ok": true}',
+        runTrial: () => api.trialProjectCase(project.id, { query }),
+      });
+    };
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) submit();
+    });
+    const modal = openModal({
+      title: '试跑一句话',
+      size: 'md',
+      body: h('div.stack', null, h('p.small.muted', { text: '输入任意问题，看模型会选哪个技能、调用什么工具和参数。业务工具返回占位结果，不会写入运行记录。' }), input),
+      footer: h('div.btn-row', null, button({ label: '取消', variant: 'ghost', onClick: () => modal.close() }), button({ label: '试跑', variant: 'primary', iconName: 'play', onClick: submit })),
+      initialFocus: input,
+    });
   }
 
   function renderTable() {
@@ -354,7 +405,8 @@ export default async function datasetView(container, ctx) {
                 h('th', { text: '预期子技能' }),
                 h('th', { text: '预期工具' }),
                 h('th', { text: '划分' }),
-                h('th', { text: '状态' })
+                h('th', { text: '状态' }),
+                h('th', { 'aria-label': '操作' })
               )
             ),
             h('tbody', null, ...state.cases.map(caseRow))
@@ -407,7 +459,12 @@ export default async function datasetView(container, ctx) {
         ctx.setDirty(null);
       },
       body: h('div'),
-      footer: h('div.btn-row', null, button({ label: '关闭', variant: 'secondary', onClick: () => drawer.close('footer') })),
+      footer: h(
+        'div.btn-row.btn-row--between',
+        null,
+        button({ label: '试跑这个案例', variant: 'secondary', iconName: 'play', onClick: () => trialCase(caseId) }),
+        button({ label: '关闭', variant: 'secondary', onClick: () => drawer.close('footer') })
+      ),
     });
     activeDrawer = drawer;
     drawer.setBody(buildCaseDetail(detail, drawer, (dirty) => {

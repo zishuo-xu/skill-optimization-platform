@@ -240,7 +240,18 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
 | GET | `/runs/{rid}/events/{seq}/model-output` | 查看指定模型完成事件的脱敏正文/工具参数；新记录 `source=captured`，旧记录按实际保存结果返回 `legacy_case_result`，不可恢复时为 `unavailable` |
 | GET | `/runs/{rid}/report.json` | 评测报告 JSON 下载 |
 | GET | `/runs/{rid}/report.csv` | 评测报告 CSV 下载 |
-| POST | `/runs/{rid}/debug-cases` 或 `/projects/{pid}/debug-cases` | 单案例调试（不写正式成绩） |
+| POST | `/runs/{rid}/debug-cases` 或 `/projects/{pid}/debug-cases` | 试跑：立即执行一个案例并按环境评分规则评分（含评分模型），同步返回；不写入运行、案例结果与指标。见下方说明 |
+
+试跑请求体（`POST …/debug-cases`）：
+
+- `case_id`：数据集中的案例；`dataset_id` 可选（默认项目当前数据集，或该运行的数据集）。
+- `variant`：仅在 `/runs/{rid}/…` 下有效，`baseline`（默认）用该运行的基线 Skill，`candidate` 用候选 Skill；运行没有候选时返回 422。
+- `skill_version_id` / `environment_id`：可选，显式指定版本。
+- `query`：不给 `case_id` 时试跑一句自由输入；没有预期，因此不评分（`scored=false`），业务工具统一返回占位结果 `{"ok": true}`。
+
+返回 `{case_id, query, split, expected, scored, result, skill_version, environment, events, judge_usage, trial: true, note}`，
+`result` 与 `/runs/{rid}/cases` 中单侧结果同形（`passed/status/diagnostics/judgments/tool_calls/…`，另有 `error_message`、`raw_output`）。
+执行在线程池中进行，单次最长为环境的 `case_timeout_s`。
 
 创建运行：
 

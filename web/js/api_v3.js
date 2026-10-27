@@ -422,8 +422,14 @@ export const api = {
   downloadReportUrl(runId, format = 'json') {
     return apiUrl(`/runs/${encodeURIComponent(runId)}/report.${format}`);
   },
-  debugCase(runId, payload) {
+  /** 试跑：用某次运行的基线 / 候选 Skill 重跑一个案例（不写正式成绩）。 */
+  trialRunCase(runId, payload) {
     return request('POST', `/runs/${encodeURIComponent(runId)}/debug-cases`, { body: payload });
+  },
+
+  /** 试跑：用项目当前（或指定）版本跑一个案例或一句自由输入。 */
+  trialProjectCase(projectId, payload) {
+    return request('POST', `/projects/${encodeURIComponent(projectId)}/debug-cases`, { body: payload });
   },
 };
 

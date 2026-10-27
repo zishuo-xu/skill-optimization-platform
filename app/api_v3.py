@@ -669,61 +669,17 @@ async def run_report_csv(request: Request) -> Response:
 
 
 async def debug_case(request: Request) -> Response:
+    """试跑：立即执行一个案例（或一句自由输入）并评分，不写入正式成绩。"""
+    from starlette.concurrency import run_in_threadpool
+
+    from . import trial
+
     body = await json_body(request)
-    project_id = request.path_params.get("project_id") or body.get("project_id")
-    if not project_id:
-        raise ValidationError("缺少 project_id", field_path="project_id")
-    project = persistence.get_project(project_id)
-    skill_version_id = body.get("skill_version_id") or project.get("current_skill_version_id")
-    environment_id = body.get("environment_id") or project.get("current_environment_id")
-    dataset_id = body.get("dataset_id") or project.get("current_dataset_id")
-    case_id = body.get("case_id")
-    if not (skill_version_id and environment_id and dataset_id and case_id):
-        raise ValidationError("调试需要已发布的 Skill、环境、数据集与案例")
-    env = persistence.get_environment(environment_id)
-    case = persistence.get_case(dataset_id, case_id)
-    from . import execution
-    from .adapters.registry import build_adapter
-
-    adapter = build_adapter(env.get("model_config") or {})
-    request_payload = {
-        "query": case["query"],
-        "context": case.get("context") or {},
-        "skill_snapshot_path": str(persistence.skill_files_dir(skill_version_id)),
-        "system_prompt": env["prompt"],
-        "model_config": env.get("model_config") or {},
-        "request_template": (env.get("model_config") or {}).get("request_template"),
-        "tool_schema": env.get("tool_schema") or [],
-        "fixtures": case.get("fixtures") or [],
-        "limits": {
-            **(env.get("loader_config") or {}),
-            "max_model_calls": (env.get("run_config") or {}).get("max_model_calls", 12),
-            "case_timeout_s": (env.get("run_config") or {}).get("case_timeout_s", 120),
-        },
-        "run_id": "debug",
-        "case_id": case_id,
-        "manifest": persistence.get_skill_version(skill_version_id).get("manifest") or {},
-        "allowed_skill_ids": [item["skill_id"] for item in
-                              (persistence.get_skill_version(skill_version_id)
-                               .get("manifest") or {}).get("subskills") or []],
-    }
-    events: list[dict[str, Any]] = []
-
-    def emit(event_type: str, payload: Any = None, **fields: Any) -> None:
-        events.append({"type": event_type, "payload": payload or {}, **fields})
-
-    result = execution.run_case(request_payload, adapter, emit)
-    actual = result
-    hide_expected = bool(body.get("hide_expected"))
-    return ok({
-        "case_id": case_id,
-        "query": case["query"],
-        "expected": None if hide_expected else case.get("expected"),
-        "actual": actual,
-        "events": events,
-        "debug": True,
-        "note": "调试记录与正式评测分开，不写入正式运行成绩。",
-    })
+    result = await run_in_threadpool(
+        trial.try_case, body,
+        project_id=request.path_params.get("project_id"),
+        run_id=request.path_params.get("run_id"))
+    return ok(result)
 
 
 # --------------------------------------------------------------------------- #

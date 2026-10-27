@@ -36,8 +36,6 @@ import {
   shortenId,
   splitLabel,
   truncate,
-  actionLabel,
-  safeJsonStringify,
   explainCaseSide,
   FAILURE_GROUPS,
 } from '../format.js';
@@ -50,10 +48,18 @@ import {
   RUN_STATUS_META,
   STAGE_LABELS,
   TERMINAL_STATUSES,
-  eventLabel,
   decisionKey,
 } from '../eventTypes.js';
 import { createRunLog } from './runLog.js';
+import {
+  actualColumn,
+  expectedColumn,
+  judgmentsBlock,
+  openTrialDrawer,
+  sideBadge,
+  timelineDetails,
+  verdictRows,
+} from './caseView.js';
 
 const TABS = [
   { id: 'result', label: '结果概览' },
@@ -1111,11 +1117,6 @@ export default async function runDetailsView(container, ctx) {
     );
   }
 
-  function sideBadge(side) {
-    if (!side) return h('span.muted.xsmall', { text: '—' });
-    return statusBadge(side.status || (side.passed ? 'pass' : 'fail'), 'case');
-  }
-
   function renderCases() {
     if (state.cases.loading && !state.cases.items.length) {
       mount(casesHost, loadingState('正在加载案例对比…'));
@@ -1375,6 +1376,14 @@ export default async function runDetailsView(container, ctx) {
       footer: h(
         'div.btn-row.btn-row--between',
         null,
+        h(
+          'div.btn-row',
+          null,
+          isBaselineRun()
+            ? button({ label: '再跑一次', variant: 'secondary', iconName: 'play', onClick: () => trialCase(caseId, 'baseline') })
+            : button({ label: '用候选版本再跑', variant: 'secondary', iconName: 'play', onClick: () => trialCase(caseId, 'candidate') }),
+          isBaselineRun() ? null : button({ label: '用基线版本再跑', variant: 'ghost', iconName: 'play', onClick: () => trialCase(caseId, 'baseline') })
+        ),
         button({
           label: '在运行记录中查看',
           variant: 'ghost',
@@ -1410,173 +1419,9 @@ export default async function runDetailsView(container, ctx) {
     }
   }
 
-  function expectedCallBlock(call, index) {
-    const path = call.arguments_path;
-    const args = call.arguments || {};
-    return h(
-      'div.expected-call',
-      null,
-      h(
-        'div.row',
-        { style: { gap: '6px', alignItems: 'center' } },
-        h('span.mono.xsmall', { text: `${call.name || '—'}${args && typeof args === 'object' && args.method ? ` · ${args.method}` : ''}` }),
-        path ? chip(`只比较 ${path}`, 'neutral') : null
-      ),
-      h('pre.code-block__pre.expected-call__args', {
-        text: safeJsonStringify(args, 2),
-        style: { maxHeight: '200px', whiteSpace: 'pre-wrap', margin: '6px 0 0' },
-      })
-    );
-  }
-
-  function actualCallBlock(call) {
-    if (!call) return h('p.muted.small', { text: '无业务工具调用' });
-    const args = call && typeof call.arguments === 'object' && call.arguments
-      ? call.arguments
-      : {};
-    // Full arguments, same as the expected column, so the two can be compared.
-    const method = args && typeof args === 'object' ? args.method : null;
-    return h(
-      'div.actual-call',
-      null,
-      h('div.mono.xsmall', {
-        text: `${call.name || '—'}${method ? ` · ${method}` : ''}`,
-      }),
-      h('pre.code-block__pre.actual-call__args', {
-        text: safeJsonStringify(args, 2),
-        style: { maxHeight: '200px', whiteSpace: 'pre-wrap', margin: '6px 0 0' },
-      })
-    );
-  }
-
-  /** One column of the expected / baseline / candidate comparison. */
-  function compareColumn({ label, badge = null, routes, action, calls, missing = null, footer = null, expected = false }) {
-    return h(
-      `div.compare-column${expected ? ' compare-column--expected' : ''}`,
-      null,
-      h('div.compare-column__head', null, h('span', { text: label }), badge),
-      h(
-        'div.compare-column__body',
-        null,
-        h('div', null, h('span.xsmall.muted', { text: '技能' }), h('div', null, routes.length ? routes.map((route) => h('span.route-pill', { text: route })) : h('span.small.muted', { text: '无' }))),
-        h('div', null, h('span.xsmall.muted', { text: '动作' }), h('div.small', { text: actionLabel(action) })),
-        missing && missing.length ? h('div', null, h('span.xsmall.muted', { text: '应澄清的字段' }), h('div.small', { text: missing.join('、') })) : null,
-        h(
-          'div',
-          null,
-          h('span.xsmall.muted', { text: '工具调用' }),
-          calls.length ? h('div.stack.stack--sm', null, ...calls) : h('div.small.muted', { text: '无' })
-        ),
-        footer
-      )
-    );
-  }
-
-  function actualColumn(side, label) {
-    if (!side) {
-      return h(
-        'div.compare-column',
-        null,
-        h('div.compare-column__head', null, h('span', { text: label })),
-        h('div.compare-column__body', null, h('p.muted.small', { text: '本次没有运行' }))
-      );
-    }
-    const tokens = side.usage?.total_tokens ?? (side.usage?.input_tokens ? side.usage.input_tokens + (side.usage.output_tokens || 0) : undefined);
-    return compareColumn({
-      label,
-      badge: sideBadge(side),
-      routes: side.selected_skills || [],
-      action: side.action,
-      calls: (side.tool_calls || []).map(actualCallBlock),
-      missing: side.action === 'clarify' ? side.missing_fields : null,
-      footer: h('div.xsmall.muted', { text: `耗时 ${formatDuration(side.duration_ms)} · Token ${formatNumber(tokens)}` }),
-    });
-  }
-
-  /** Plain-language verdict per side: passed, or the list of what went wrong. */
-  function verdictRows(detail) {
-    const sides = isBaselineRun() ? [['结果', detail.baseline]] : [['基线', detail.baseline], ['候选', detail.candidate]];
-    return h(
-      'div.case-verdict',
-      null,
-      ...sides.map(([label, side]) => {
-        const explained = explainCaseSide(side);
-        return h(
-          'div.case-verdict__row',
-          null,
-          h('span.case-verdict__label', { text: label }),
-          side ? sideBadge(side) : h('span.muted.small', { text: '未运行' }),
-          explained && !explained.passed
-            ? h('ul.case-verdict__reasons', null, ...explained.reasons.map((reason) => h('li', { text: reason.text })))
-            : h('span.small.muted', { text: explained ? '与预期一致' : '' })
-        );
-      })
-    );
-  }
-
-  /** Judge-model verdicts on argument values (semantic comparison). */
-  function judgmentsBlock(detail) {
-    const sides = [['基线', detail.baseline], ['候选', detail.candidate]]
-      .filter(([, side]) => side && (side.judgments || []).length);
-    if (!sides.length) return null;
-    return h(
-      'div.case-section',
-      null,
-      h('div.case-section__title', null, h('span', { text: '评分模型判定' })),
-      ...sides.map(([label, side]) =>
-        h(
-          'div.stack.stack--sm',
-          null,
-          sides.length > 1 ? h('div.xsmall.muted', { text: label }) : null,
-          ...side.judgments.map((item) =>
-            h(
-              'div.param-diff',
-              null,
-              h('div.param-diff__path', null, h('div', { text: item.path || '$' }), statusBadge(item.passed ? 'pass' : 'fail', 'case')),
-              h('div.param-diff__cell', null, h('span.param-diff__label', { text: '预期 → 实际' }),
-                h('span.param-diff__value', { text: `${typeof item.expected === 'string' ? item.expected : safeJsonStringify(item.expected, 0)} → ${typeof item.actual === 'string' ? item.actual : safeJsonStringify(item.actual, 0)}` })),
-              h('div.param-diff__cell', null, h('span.param-diff__label', { text: '理由' }), h('span.param-diff__value', { text: item.reason || '—' }))
-            )
-          )
-        )
-      )
-    );
-  }
-
-  function timelineBlock(events) {
-    if (!events.length) return h('p.muted.small', { text: '没有该案例的详细事件。' });
-    return h(
-      'div.timeline',
-      null,
-      ...events.slice(-60).map((event) =>
-        h(
-          `div.timeline__item timeline__item--${event.level || 'info'}`,
-          null,
-          h('span.timeline__time', { text: formatDateTime(event.ts).slice(11) }),
-          h('span.timeline__title', { text: event.payload?.title || eventLabel(event.type) }),
-          h(
-            'div.timeline__detail',
-            null,
-            [
-              event.payload?.skill_id,
-              event.payload?.tool,
-              event.payload?.finish_reason,
-              event.payload?.passed !== undefined ? (event.payload.passed ? '通过' : '未通过') : null,
-              event.payload?.issue?.message,
-            ]
-              .filter(Boolean)
-              .join(' · ')
-          )
-        )
-      )
-    );
-  }
-
   function buildCaseDetail(detail, events) {
-    const expected = detail.expected || {};
-    const routes = (expected.routes || []).map((route) => (Array.isArray(route) ? route.join(' → ') : String(route)));
-    const expectedCalls = expected.tool_calls || [];
     const baselineOnly = isBaselineRun();
+    const sides = baselineOnly ? [['结果', detail.baseline]] : [['基线', detail.baseline], ['候选', detail.candidate]];
     return h(
       'div.case-detail',
       null,
@@ -1591,7 +1436,7 @@ export default async function runDetailsView(container, ctx) {
           detail.critical ? chip('关键案例', 'warning', { iconName: 'alert' }) : null,
           !baselineOnly && detail.changeType ? statusBadge(detail.changeType, 'change') : null
         ),
-        verdictRows(detail)
+        verdictRows(sides)
       ),
       h(
         'div.case-section',
@@ -1600,27 +1445,25 @@ export default async function runDetailsView(container, ctx) {
         h(
           `div.compare-columns${baselineOnly ? '' : ' compare-columns--3'}`,
           null,
-          compareColumn({
-            label: '预期（数据集）',
-            routes: routes.length > 1 ? routes.map((route, index) => (index ? `或 ${route}` : route)) : routes,
-            action: expected.action,
-            calls: expectedCalls.map((call, index) => expectedCallBlock(call, index)),
-            missing: expected.action === 'clarify' ? expected.missing_fields : null,
-            expected: true,
-          }),
+          expectedColumn(detail.expected),
           actualColumn(detail.baseline, baselineOnly ? '实际' : '基线'),
           baselineOnly ? null : actualColumn(detail.candidate, '候选')
         )
       ),
-      judgmentsBlock(detail),
-      h(
-        'details.case-more',
-        null,
-        h('summary', { text: `执行过程（${events.length} 条事件）` }),
-        timelineBlock(events)
-      ),
+      judgmentsBlock(sides),
+      timelineDetails(events),
       jsonViewer(detail.expected || {}, { label: '预期结果 JSON', maxHeight: '240px', redact: false })
     );
+  }
+
+  /** Re-run one case of this run right now, with the baseline or candidate Skill. */
+  function trialCase(caseId, variant) {
+    const label = variant === 'candidate' ? '候选版本' : isBaselineRun() ? '本次的 Skill 版本' : '基线版本';
+    openTrialDrawer({
+      title: `试跑 ${caseId}`,
+      context: `用${label}和本次运行的执行环境、数据集重跑这个案例`,
+      runTrial: () => api.trialRunCase(state.run.id, { case_id: caseId, variant }),
+    });
   }
 
   /* ---------------- diff tab ---------------- */

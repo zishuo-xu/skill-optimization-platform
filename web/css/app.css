@@ -4941,3 +4941,9 @@ pre,
   .case-table .case-reason { width: 100%; }
   .case-table tr + tr { border-top: 1px solid var(--line-soft); }
 }
+
+/* ---------- single-case trial ---------- */
+.trial-meta { margin: 0 0 12px; }
+.trial-error { margin: 10px 0 0; color: var(--danger); overflow-wrap: anywhere; }
+.cell-actions { width: 1%; text-align: right; }
+.dataset-toolbar .mono { min-width: 0; overflow-wrap: anywhere; }

@@ -2444,6 +2444,22 @@ async function fetchImpl({ method, path, query = {}, body }) {
     return ok(caseDetail(decodeURIComponent(match[1]), decodeURIComponent(match[2])));
   }
 
+  match = path.match(/^\/(runs|projects)\/([^/]+)\/debug-cases$/);
+  if (match && method === 'POST') {
+    // 试跑 in demo mode: replay the recorded side of a case (no model is called).
+    const caseId = body?.case_id;
+    const trialMeta = { skill_version: { id: 'sv_mock', status: body?.variant === 'candidate' ? 'candidate' : 'published' }, environment: { id: 'env_mock', version_seq: 1, status: 'published' }, trial: true, note: '演示数据：重放已有结果，没有调用模型。' };
+    if (!caseId) {
+      if (!String(body?.query || '').trim()) throw new ApiError('请选择一个案例，或输入要试跑的问题', { code: 'validation_failed', status: 422, field_path: 'query' });
+      return ok({ ...trialMeta, case_id: null, query: body.query, scored: false, expected: null, events: [], result: { selected_skills: [], action: 'no_action', tool_calls: [], missing_fields: [], passed: null, status: null, diagnostics: [], judgments: [], usage: {}, duration_ms: 0 } });
+    }
+    const runId = match[1] === 'runs' ? decodeURIComponent(match[2]) : runs.find((run) => runCases(run.id).some((item) => item.case_id === caseId))?.id;
+    if (!runId) return notFound('案例不存在');
+    const detail = caseDetail(runId, caseId);
+    const side = (body?.variant === 'candidate' ? detail.candidate : detail.baseline) || detail.baseline || detail.candidate;
+    return ok({ ...trialMeta, case_id: caseId, query: detail.query, split: detail.split, scored: true, expected: detail.expected, events: detail.events || [], result: clone(side) });
+  }
+
   match = path.match(/^\/runs\/([^/]+)\/diff$/);
   if (match && method === 'GET') {
     return ok(runDiffPayload(findRun(decodeURIComponent(match[1]))));

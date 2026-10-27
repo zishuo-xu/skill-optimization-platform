@@ -376,7 +376,7 @@ retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式�
 | `GET /runs/{rid}/issues` | 问题摘要（错误/警告事件 + 定位 seq + 影响范围） |
 | `GET /runs/{rid}/trace-artifacts/{aid}` | 大内容按需加载 |
 | `GET /runs/{rid}/report.json` / `report.csv` | 评测报告下载 |
-| `POST /runs/{rid}/debug-cases` | 单案例调试（阶段隔离，不写正式成绩） |
+| `POST /runs/{rid}/debug-cases`、`POST /projects/{pid}/debug-cases` | 试跑一个案例（可选基线/候选版本）或一句自由输入；同步执行并评分，不写入运行、案例结果与指标 |
 | `GET /projects/{pid}/export-summary` | 导出说明（可选） |
 
 运行对象（`GET /runs/{rid}`）关键字段：
