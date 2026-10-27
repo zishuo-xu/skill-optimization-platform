@@ -149,10 +149,15 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
                  "missing_arg|extra_arg|type_error|value_error|wrong_order|protocol_error|"
                  "fixture_miss|clarify_mismatch|unexpected_call|action_mismatch",
      "skill_id": "task_query", "tool": "list_tasks", "field_path": "$.status",
-     "expected_value": "in_progress", "actual_value": "active", "case_id": "case_001"}
+     "expected_value": "in_progress", "actual_value": "active", "case_id": "case_001",
+     "basis": "严格比较：值必须与数据集预期完全相等"}
   ]
 }
 ```
+
+诊断的可选字段：`note`（语义比较时评分模型的说明）、`basis`（判定依据：这一项为什么算错，
+例如「严格比较：值必须与数据集预期完全相等」「按字段规则 $.method，严格比较…」「工具 Schema 只允许这些值：[…]」
+「数据集允许的技能路线：task_query」「模型返回：<错误信息>」）。旧结果没有 `basis` 时前端按类别补一条通用依据。
 
 规则（score-v1，冻结）：
 - `status=="infra"` 的结果不计入任何分母，单独统计并阻止自动晋级。

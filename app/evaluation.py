@@ -1455,6 +1455,158 @@ def _error_diagnostics(actual: Mapping[str, Any], kind: str | None,
     return diags
 
 
+
+# --------------------------------------------------------------------------- #
+# judgment basis ("判定依据") for diagnostics
+# --------------------------------------------------------------------------- #
+_ACTION_TEXT = {"tool_call": "调用工具", "clarify": "请求澄清", "no_action": "无需操作"}
+_MODE_BASIS = {
+    "strict": "严格比较：值必须与数据集预期完全相等",
+    "lenient": "宽松比较：忽略大小写、全半角与首尾空格，数字与数字字符串视为相同，数组不计顺序，仍不相等",
+    "semantic": "语义比较：由评分模型判断含义是否与数据集预期一致",
+    "keys": "只看字段：不比较值",
+}
+
+
+def _short(value: Any, limit: int = 80) -> str:
+    text = value if isinstance(value, str) else json_dumps_compact(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _routes_text(routes: Sequence[Sequence[str]]) -> str:
+    return " 或 ".join(" → ".join(route) for route in routes) or "无"
+
+
+def _field_rule_for(path: str, tool: str | None, rules: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    normalised = _normalise_path(path or "")
+    for rule in rules.get("field_rules") or ():
+        if rule.get("tool") and rule["tool"] != tool:
+            continue
+        if rule["pattern"].fullmatch(normalised):
+            return rule
+    return None
+
+
+def _compare_basis(diag: Mapping[str, Any], rules: Mapping[str, Any]) -> str:
+    category = diag.get("category")
+    path = diag.get("field_path") or ""
+    rule = _field_rule_for(path, diag.get("tool"), rules)
+    mode = (rule or {}).get("mode") or rules.get("mode") or "strict"
+    source = f"按字段规则 {rule['path']}，" if rule else ""
+    if category == "missing_arg":
+        return f"{source}数据集预期包含这个字段"
+    if category == "extra_arg":
+        return f"{source}数据集预期没有这个字段，且评分规则不允许多余字段"
+    if category == "type_error" and mode != "semantic":
+        return f"{source}{_MODE_BASIS.get(mode, _MODE_BASIS['strict'])}（类型也不同）"
+    basis = f"{source}{_MODE_BASIS.get(mode, _MODE_BASIS['strict'])}"
+    note = diag.get("note")
+    if note:
+        basis += f"；{note}"
+    return basis
+
+
+def _schema_basis(diag: Mapping[str, Any]) -> str:
+    category = diag.get("category")
+    expected = diag.get("expected_value")
+    if category == "type_error":
+        return f"工具 Schema 规定类型为 {_short(expected)}"
+    if category == "missing_arg":
+        return "工具 Schema 把这个字段列为必填（required）"
+    if category == "extra_arg":
+        return "工具 Schema 不允许额外字段（additionalProperties: false）"
+    if isinstance(expected, list):
+        return f"工具 Schema 只允许这些值：{_short(expected, 120)}"
+    if isinstance(expected, str) and expected[:2] in (">=", "<="):
+        return f"工具 Schema 要求取值 {expected}"
+    return "工具 Schema 校验未通过"
+
+
+def _plain(value: Any) -> str:
+    if value is None or value == "":
+        return "空"
+    if isinstance(value, list):
+        return "、".join(" → ".join(map(str, item)) if isinstance(item, list) else _short(item, 40)
+                        for item in value) or "无"
+    return _short(value, 60)
+
+
+def describe_diagnostic(diag: Mapping[str, Any]) -> str:
+    """One diagnostic as a plain sentence plus its basis (for logs and the optimizer)."""
+    category = diag.get("category")
+    field = str(diag.get("field_path") or "").removeprefix("$.").removeprefix("$") or "参数"
+    tool = f"{diag['tool']} 的" if diag.get("tool") else ""
+    exp, act = _plain(diag.get("expected_value")), _plain(diag.get("actual_value"))
+    text = {
+        "wrong_route": f"选错技能：选了 {act}，应为 {exp}",
+        "missing_route": f"没有选中技能 {_plain(diag.get('expected_value') or diag.get('skill_id'))}",
+        "extra_route": f"多选了技能 {_plain(diag.get('actual_value') or diag.get('skill_id'))}",
+        "wrong_order": f"顺序不对：{act}，应为 {exp}",
+        "action_mismatch": f"应该{_ACTION_TEXT.get(str(diag.get('expected_value')), exp)}，"
+                           f"实际{_ACTION_TEXT.get(str(diag.get('actual_value')), act)}",
+        "clarify_mismatch": f"澄清的字段不对：问了 {act}，应问 {exp}",
+        "unexpected_call": f"不该调用工具 {act}",
+        "missing_tool": f"没有调用工具 {exp}",
+        "extra_tool": f"多调用了工具 {act}",
+        "wrong_tool": f"工具用错：调了 {act}，应为 {exp}",
+        "missing_arg": (f"缺少{tool}必填参数 {field}" if diag.get("expected_value") == "required"
+                        else f"缺少{tool}参数 {field}（应为 {exp}）"),
+        "extra_arg": f"多了{tool}参数 {field}",
+        "value_error": f"{tool}参数 {field} 不对：给了 {act}，应为 {exp}",
+        "type_error": f"{tool}参数 {field} 类型不对：给了 {act}，应为 {exp}",
+        "fixture_miss": f"调用 {diag.get('tool') or '工具'} 时没有匹配的模拟返回",
+        "protocol_error": f"执行出错：{act}" if diag.get("field_path") == "error.code"
+                          else "模型输出的工具调用格式不对",
+    }.get(str(category), str(category or "不匹配"))
+    basis = diag.get("basis")
+    return f"{text}（依据：{basis}）" if basis else text
+
+
+def _annotate_basis(diags: list[dict[str, Any]], *, source: str,
+                    rules: Mapping[str, Any], candidate: Mapping[str, Any] | None = None,
+                    expected_action: str | None = None,
+                    expected_missing: Sequence[str] | None = None,
+                    error: Mapping[str, Any] | None = None) -> None:
+    """Attach a plain ``basis`` (why it counts as wrong) to each diagnostic in place."""
+    for diag in diags:
+        if diag.get("basis"):
+            continue
+        category = diag.get("category")
+        basis = ""
+        if source == "schema":
+            basis = _schema_basis(diag)
+        elif source == "error":
+            if category == "fixture_miss":
+                basis = "数据集没有为这次工具调用准备匹配的模拟返回（工具名或 match 条件不符）"
+            else:
+                message = (error or {}).get("message")
+                basis = f"模型返回：{_short(message, 160)}" if message else "执行出错，无法按预期评分"
+        elif category in ("wrong_route", "missing_route", "extra_route") or (
+                category == "wrong_order" and diag.get("field_path") == "selected_skills"):
+            routes = (candidate or {}).get("routes") or []
+            ordered = bool((candidate or {}).get("route_ordered"))
+            multi = any(len(route) > 1 for route in routes)
+            basis = (f"数据集允许的技能路线：{_routes_text(routes)}"
+                     + (f"（{'按顺序' if ordered else '不计顺序'}比较）" if multi else ""))
+        elif category in ("missing_tool", "extra_tool", "wrong_tool", "wrong_order"):
+            calls = (candidate or {}).get("tool_calls") or []
+            names = " → ".join(str(call.get("name")) for call in calls) or "无"
+            unordered = (candidate or {}).get("call_match") == "unordered"
+            basis = (f"数据集预期的工具调用：{names}"
+                     + (f"（{'不计顺序' if unordered else '按顺序'}比较）" if len(calls) > 1 else ""))
+        elif category == "action_mismatch":
+            basis = f"数据集预期动作：{_ACTION_TEXT.get(str(expected_action), expected_action)}"
+        elif category == "clarify_mismatch":
+            basis = f"数据集预期需要澄清的字段：{'、'.join(expected_missing or []) or '无'}"
+        elif category == "unexpected_call":
+            basis = f"数据集预期动作是{_ACTION_TEXT.get(str(expected_action), expected_action)}，不应调用业务工具"
+        elif category == "protocol_error":
+            basis = "模型输出的工具调用不是合法的数组结构"
+        elif category in ("missing_arg", "extra_arg", "value_error", "type_error"):
+            basis = _compare_basis(diag, rules)
+        if basis:
+            diag["basis"] = basis
+
 # --------------------------------------------------------------------------- #
 # public entry points
 # --------------------------------------------------------------------------- #
@@ -1721,8 +1873,7 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
     }
 
     diagnostics: list[dict[str, Any]] = list(chosen["diags"])
-    diagnostics.extend(schema_diags)
-    diagnostics.extend(_error_diagnostics(actual, error_kind, error_code, case_id))
+    error_diags = _error_diagnostics(actual, error_kind, error_code, case_id)
     if not action_ok:
         diagnostics.append(_diag("action_mismatch", case_id=case_id,
                                  field_path="action", expected_value=action,
@@ -1732,6 +1883,14 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
                                  field_path="$.tool_calls",
                                  expected_value="工具调用数组",
                                  actual_value=actual.get("tool_calls")))
+    _annotate_basis(diagnostics, source="compare", rules=rules,
+                    candidate=chosen["candidate"], expected_action=action,
+                    expected_missing=expected_missing)
+    _annotate_basis(schema_diags, source="schema", rules=rules)
+    error = actual.get("error") if isinstance(actual.get("error"), Mapping) else None
+    _annotate_basis(error_diags, source="error", rules=rules, error=error)
+    diagnostics.extend(schema_diags)
+    diagnostics.extend(error_diags)
 
     if error_kind == "infrastructure":
         status, passed = "infra", False

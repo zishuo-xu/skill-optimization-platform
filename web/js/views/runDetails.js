@@ -1111,9 +1111,10 @@ export default async function runDetailsView(container, ctx) {
     const [first, ...rest] = explained.reasons;
     return h(
       `td.case-reason${item.changeType === 'fixed' ? ' is-fixed' : ''}`,
-      null,
+      { title: explained.reasons.map((reason) => `${reason.text}${reason.basis ? `\n  依据：${reason.basis}` : ''}`).join('\n') },
       h('span', { text: `${prefix}${first.text}` }),
-      rest.length ? h('span.case-reason__more', { text: ` 等 ${explained.reasons.length} 处` }) : null
+      rest.length ? h('span.case-reason__more', { text: ` 等 ${explained.reasons.length} 处` }) : null,
+      first.basis ? h('div.case-reason__basis', { text: `依据：${truncate(first.basis, 80)}` }) : null
     );
   }
 

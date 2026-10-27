@@ -568,9 +568,12 @@ def test_all_diagnostics_have_contract_fields():
         {"name": "list_tasks", "arguments": {"project_id": "P123"}}]))
     assert result["diagnostics"]
     for diagnostic in result["diagnostics"]:
-        assert set(diagnostic) == {"category", "skill_id", "tool",
-                                   "field_path", "expected_value",
-                                   "actual_value", "case_id"}
+        contract = {"category", "skill_id", "tool", "field_path",
+                    "expected_value", "actual_value", "case_id"}
+        assert contract <= set(diagnostic)
+        # Optional extras: ``note`` (judge detail) and ``basis`` (判定依据).
+        assert set(diagnostic) - contract <= {"note", "basis"}
+        assert diagnostic.get("basis")
         assert diagnostic["case_id"] == "case_001"
 
 

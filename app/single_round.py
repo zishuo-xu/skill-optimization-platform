@@ -949,20 +949,25 @@ def _infra_errors(rows: Sequence[Mapping[str, Any]]) -> int:
 
 
 def _score_reason(score: Mapping[str, Any]) -> str:
-    joint = score.get("joint")
-    if isinstance(joint, Mapping):
-        return str(joint.get("reason") or "案例未通过")
-    routing = score.get("routing") if isinstance(score.get("routing"), Mapping) else {}
-    if routing.get("reason"):
-        return str(routing["reason"])
-    tool_args = score.get("tool_args") if isinstance(score.get("tool_args"), Mapping) else {}
-    if tool_args.get("reason"):
-        return str(tool_args["reason"])
-    diagnostics = score.get("diagnostics") or []
+    """Why a case failed, from its diagnostics (with the rule each was judged by)."""
+    diagnostics = [item for item in score.get("diagnostics") or [] if isinstance(item, Mapping)]
     if diagnostics:
-        first = diagnostics[0]
-        return str(first.get("category") or "案例未通过")
-    return "案例未通过"
+        # Execution errors and wrong actions explain the rest; list them first.
+        rank = {"protocol_error": 0, "fixture_miss": 0, "action_mismatch": 1,
+                "clarify_mismatch": 1, "unexpected_call": 1}
+        ordered = sorted(diagnostics, key=lambda item: rank.get(str(item.get("category")), 2))
+        parts = [evaluation.describe_diagnostic(item) for item in ordered[:3]]
+        more = f"；另有 {len(diagnostics) - 3} 处" if len(diagnostics) > 3 else ""
+        return "；".join(parts) + more
+    for key in ("routing", "tool_args"):
+        block = score.get(key) if isinstance(score.get(key), Mapping) else {}
+        failed_here = block.get("evaluable") and block.get("passed") is False
+        if (failed_here or score.get("status") == "infra") and block.get("reason"):
+            return str(block["reason"])
+    joint = score.get("joint")
+    if isinstance(joint, Mapping) and joint.get("reason"):
+        return str(joint["reason"])
+    return str(score.get("reason") or "案例未通过")
 
 
 def _metric_summary(metrics: Mapping[str, Any] | None) -> dict[str, Any]:

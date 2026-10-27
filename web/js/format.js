@@ -572,7 +572,7 @@ export const FAILURE_GROUPS = {
   error: '执行出错',
 };
 
-const FAILURE_GROUPS_ORDER = { action: 1, route: 2, tool: 3, arg: 4, error: 5 };
+const FAILURE_GROUPS_ORDER = { error: 0, action: 1, route: 2, tool: 3, arg: 4 };
 
 const DIAG_GROUP = {
   wrong_route: 'route', missing_route: 'route', extra_route: 'route',
@@ -598,13 +598,67 @@ function plainValue(value) {
   return String(value);
 }
 
-/** One scorer diagnostic → `{ group, text }` in plain Chinese. */
-export function describeDiagnostic(diag) {
+const MODE_LABELS = { strict: '严格', lenient: '宽松', semantic: '语义（评分模型）', keys: '只看字段', ignore: '不比较' };
+
+const MODE_BASIS = {
+  strict: '严格比较：值必须与数据集预期完全相等',
+  lenient: '宽松比较：忽略大小写、全半角与首尾空格，数字与数字字符串视为相同，仍不相等',
+  semantic: '语义比较：由评分模型判断含义是否一致',
+  keys: '只看字段：不比较值',
+};
+
+function routesText(routes) {
+  return (routes || []).map((route) => (Array.isArray(route) ? route.join(' → ') : String(route))).join(' 或 ') || '无';
+}
+
+/** Basis for diagnostics scored before the scorer recorded one (older runs). */
+function fallbackBasis(d, side) {
+  const s = side || {};
+  switch (d.category) {
+    case 'wrong_route':
+    case 'missing_route':
+    case 'extra_route':
+      if (s.routing?.allowed_routes) return `数据集允许的技能路线：${routesText(s.routing.allowed_routes)}`;
+      return d.expected_value ? `数据集允许的技能：${plainValue(d.expected_value)}` : '';
+    case 'missing_tool':
+    case 'wrong_tool':
+      return d.expected_value ? `数据集预期调用工具：${plainValue(d.expected_value)}` : '';
+    case 'extra_tool':
+      return '数据集预期里没有这次工具调用';
+    case 'unexpected_call':
+      return '数据集预期这一步不调用业务工具';
+    case 'clarify_mismatch':
+      return `数据集预期需要澄清的字段：${plainValue(d.expected_value)}`;
+    case 'action_mismatch':
+      return `数据集预期动作：${ACTION_LABELS[d.expected_value] || plainValue(d.expected_value)}`;
+    case 'missing_arg':
+      return d.expected_value === 'required' ? '工具 Schema 把这个字段列为必填（required）' : '数据集预期包含这个字段';
+    case 'extra_arg':
+      return '数据集预期没有这个字段，且评分规则不允许多余字段';
+    case 'value_error':
+    case 'type_error': {
+      const mode = s.tool_args?.compare?.mode || 'strict';
+      return `${MODE_BASIS[mode] || MODE_BASIS.strict}${d.note ? `；${d.note}` : ''}`;
+    }
+    case 'protocol_error':
+      return s.error_message ? `模型返回：${truncate(s.error_message, 160)}` : '';
+    case 'fixture_miss':
+      return '数据集没有为这次工具调用准备匹配的模拟返回';
+    default:
+      return '';
+  }
+}
+
+/** One scorer diagnostic → `{ group, text, basis }` in plain Chinese. */
+export function describeDiagnostic(diag, side = null) {
   const d = diag || {};
   const exp = plainValue(d.expected_value);
   const act = plainValue(d.actual_value);
   const field = plainField(d.field_path);
   const routeField = d.field_path === 'selected_skills';
+  const basis = d.basis || fallbackBasis(d, side);
+  const fromSchema = basis.startsWith('工具 Schema');
+  const param = `${d.tool ? `${d.tool} 的` : ''}参数 ${field}`;
   let text;
   switch (d.category) {
     case 'wrong_route': text = `选错技能：选了 ${act}，应为 ${exp}`; break;
@@ -617,21 +671,40 @@ export function describeDiagnostic(diag) {
     case 'missing_tool': text = `没有调用工具 ${exp}`; break;
     case 'extra_tool': text = `多调用了工具 ${act}`; break;
     case 'wrong_tool': text = `工具用错：调了 ${act}，应为 ${exp}`; break;
-    case 'missing_arg': text = d.expected_value === 'required' ? `缺少必填参数 ${field}` : `缺少参数 ${field}（应为 ${exp}）`; break;
-    case 'extra_arg': text = `多了参数 ${field}`; break;
-    case 'value_error': text = `参数 ${field} 不对：给了 ${act}，应为 ${exp}`; break;
-    case 'type_error': text = `参数 ${field} 类型不对：给了 ${act}，应为 ${exp}`; break;
-    case 'fixture_miss': text = `工具 ${d.tool || ''} 缺少模拟返回`.replace('  ', ' '); break;
-    case 'protocol_error': text = `模型输出不符合协议${d.actual_value ? `（${act}）` : ''}`; break;
+    case 'missing_arg': text = `${d.tool ? `${d.tool} ` : ''}缺少${d.expected_value === 'required' ? '必填' : ''}参数 ${field}${d.expected_value === 'required' ? '' : `（应为 ${exp}）`}`; break;
+    case 'extra_arg': text = `多了${param}（给了 ${act}）`; break;
+    case 'value_error':
+      text = fromSchema ? `${param} 取值超出工具定义：给了 ${act}` : `${param} 不对：给了 ${act}，应为 ${exp}`;
+      break;
+    case 'type_error':
+      text = fromSchema ? `${param} 类型不对：给了 ${act}，工具定义要求 ${exp}` : `${param} 类型不对：给了 ${act}，应为 ${exp}`;
+      break;
+    case 'fixture_miss': text = `调用 ${d.tool || '工具'} 时没有匹配的模拟返回`; break;
+    case 'protocol_error':
+      text = d.field_path === 'error.code'
+        ? `执行出错：${CASE_ERROR_LABELS[d.actual_value] || act}`
+        : '模型输出的工具调用格式不对';
+      break;
     default: text = `${d.category || '不匹配'}${d.field_path ? `：${field}` : ''}`;
   }
-  if (d.note && d.category === 'value_error') text += `（${truncate(d.note, 60)}）`;
-  return { group: DIAG_GROUP[d.category] || 'error', text };
+  return { group: DIAG_GROUP[d.category] || 'error', text, basis };
+}
+
+/** "参数严格比较 · 不允许多余字段 · 字段规则 2 条" from a scored side's tool_args.compare. */
+export function compareRuleSummary(compare) {
+  if (!compare) return '';
+  const parts = [`参数按${MODE_LABELS[compare.mode] || MODE_LABELS.strict}比较`];
+  parts.push(compare.allow_extra_keys ? '允许多余字段' : '不允许多余字段');
+  const rules = compare.field_rules || [];
+  if (rules.length) {
+    parts.push(rules.slice(0, 3).map((rule) => `${rule.path} ${MODE_LABELS[rule.mode] || rule.mode}`).join('、') + (rules.length > 3 ? ` 等 ${rules.length} 条字段规则` : ''));
+  }
+  return parts.join(' · ');
 }
 
 /**
  * Why one side (baseline / candidate run of a case) failed, as plain sentences.
- * Returns `{ passed, reasons: [{group, text}] }`; `reasons` is empty on a pass.
+ * Returns `{ passed, reasons: [{group, text, basis}] }`; `reasons` is empty on a pass.
  */
 export function explainCaseSide(side) {
   if (!side) return null;
@@ -647,24 +720,31 @@ export function explainCaseSide(side) {
       const names = missing.map((one) => (one.expected_value === 'required' || one.expected_value === undefined || one.expected_value === null
         ? plainField(one.field_path)
         : `${plainField(one.field_path)}（应为 ${plainValue(one.expected_value)}）`));
-      item = { group: 'arg', text: `缺少参数 ${names.join('、')}` };
+      const bases = [...new Set(missing.map((one) => describeDiagnostic(one, side).basis).filter(Boolean))];
+      const tool = missing.every((one) => one.tool && one.tool === missing[0].tool) ? `${missing[0].tool} ` : '';
+      item = { group: 'arg', text: `${tool}缺少参数 ${names.join('、')}`, basis: bases.join('；') };
     } else {
-      item = describeDiagnostic(diag);
+      item = describeDiagnostic(diag, side);
     }
     if (seen.has(item.text)) continue;
     seen.add(item.text);
     reasons.push(item);
   }
-  // Most decisive first: wrong action explains everything after it.
+  // Most decisive first: an execution error or a wrong action explains everything after it.
   const order = Object.keys(FAILURE_GROUPS_ORDER);
   reasons.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
   if (!reasons.length) {
     const code = side.error_code;
-    const label = CASE_ERROR_LABELS[code] || side.reason || code;
-    if (label) reasons.push({ group: 'error', text: side.reason && CASE_ERROR_LABELS[code] ? `${CASE_ERROR_LABELS[code]}：${truncate(side.reason, 60)}` : label });
-    else if (side.routing && side.routing.passed === false) reasons.push({ group: 'route', text: side.routing.reason || '技能选择不对' });
-    else if (side.tool_args && side.tool_args.passed === false) reasons.push({ group: 'arg', text: side.tool_args.reason || '工具调用或参数不对' });
-    else reasons.push({ group: 'error', text: '与预期不一致' });
+    const message = side.error_message || side.reason;
+    if (code || message) {
+      reasons.push({ group: 'error', text: `执行出错：${CASE_ERROR_LABELS[code] || code || '未知错误'}`, basis: message ? `模型返回：${truncate(message, 160)}` : '' });
+    } else if (side.routing && side.routing.passed === false && side.routing.evaluable !== false) {
+      reasons.push({ group: 'route', text: '选择的技能不在允许路线中', basis: side.routing.reason || '' });
+    } else if (side.tool_args && side.tool_args.passed === false && side.tool_args.evaluable !== false) {
+      reasons.push({ group: 'arg', text: '工具调用或参数与预期不一致', basis: side.tool_args.reason || '' });
+    } else {
+      reasons.push({ group: 'error', text: '结果与预期不一致（评分没有给出明细）', basis: '' });
+    }
   }
   return { passed: false, reasons };
 }

@@ -1432,6 +1432,7 @@ def _side(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "error_code": row.get("error_code") or scores.get("error_code"),
         "reason": (scores.get("joint") or {}).get("reason") if isinstance(
             scores.get("joint"), dict) else scores.get("reason"),
+        "error_message": row.get("error_message"),
         "duration_ms": row.get("duration_ms"),
         "usage": row.get("usage") or {},
         "routing": scores.get("routing"),

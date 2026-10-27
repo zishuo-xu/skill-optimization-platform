@@ -17,6 +17,7 @@ import {
 } from '../components.js';
 import {
   actionLabel,
+  compareRuleSummary,
   explainCaseSide,
   formatDateTime,
   formatDuration,
@@ -112,6 +113,25 @@ export function actualColumn(side, label) {
   });
 }
 
+/** Reasons with the rule each one was judged by ("依据"). */
+export function reasonList(reasons) {
+  return h(
+    'ul.case-verdict__reasons',
+    null,
+    ...reasons.map((reason) =>
+      h('li', null, h('span', { text: reason.text }), reason.basis ? h('span.case-verdict__basis', { text: `依据：${reason.basis}` }) : null)
+    )
+  );
+}
+
+/** One line naming the comparison rules a scored side was judged with. */
+function ruleLine(sides) {
+  const scored = sides.map(([, side]) => side).find((side) => side && side.tool_args?.compare);
+  const summary = scored ? compareRuleSummary(scored.tool_args.compare) : '';
+  if (!summary) return null;
+  return h('p.case-verdict__rules', null, h('span', { text: `评分规则：${summary}` }), h('span.muted', { text: '（在「执行环境 → 评分规则」中修改）' }));
+}
+
 /** Plain-language verdict per side: `[[label, side], ...]`. */
 export function verdictRows(sides) {
   return h(
@@ -123,7 +143,7 @@ export function verdictRows(sides) {
       let detail;
       if (!side) detail = h('span.small.muted', { text: '' });
       else if (!scored) detail = h('span.small.muted', { text: '自由输入没有预期，只展示模型的实际行为。' });
-      else if (explained && !explained.passed) detail = h('ul.case-verdict__reasons', null, ...explained.reasons.map((reason) => h('li', { text: reason.text })));
+      else if (explained && !explained.passed) detail = reasonList(explained.reasons);
       else detail = h('span.small.muted', { text: '与预期一致' });
       return h(
         'div.case-verdict__row',
@@ -132,7 +152,8 @@ export function verdictRows(sides) {
         side ? sideBadge(side) : h('span.muted.small', { text: '未运行' }),
         detail
       );
-    })
+    }),
+    sides.some(([, side]) => side && side.passed === false) ? ruleLine(sides) : null
   );
 }
 

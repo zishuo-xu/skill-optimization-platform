@@ -157,6 +157,7 @@ function eventSummary(event) {
   if (event.type === 'case_started' || event.type === 'case_completed' || event.type === 'case_failed') {
     if (p.phase) bits.push(p.phase === 'baseline' ? '基线' : p.phase === 'candidate' ? '候选' : p.phase);
     if (p.passed !== undefined) bits.push(p.passed ? '通过' : '未通过');
+    if (event.type === 'case_failed' && p.failure_reason) bits.push(truncate(p.failure_reason, 160));
   }
   if (event.type === 'score_completed' && p.passed !== undefined) bits.push(p.passed ? '通过' : '未通过');
   if (event.type === 'preflight_item' || event.type === 'static_check_item') {
