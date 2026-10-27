@@ -368,22 +368,24 @@ export const api = {
   getDataset(datasetId) {
     return request('GET', `/datasets/${encodeURIComponent(datasetId)}`);
   },
-  preflightDataset({ filename, content, splitConfig, seed }) {
+  preflightDataset({ filename, content, splitConfig, seed, importPurpose }) {
     return request('POST', '/datasets/preflight', {
       body: {
         filename,
         content,
         split_config: splitConfig,
+        import_purpose: importPurpose,
         seed,
       },
     });
   },
-  createDataset(projectId, { filename, content, splitConfig, seed, excludeInvalid, sourceName }) {
+  createDataset(projectId, { filename, content, splitConfig, seed, excludeInvalid, sourceName, importPurpose }) {
     return request('POST', `/projects/${encodeURIComponent(projectId)}/datasets`, {
       body: {
         filename,
         content,
         split_config: splitConfig,
+        import_purpose: importPurpose,
         seed,
         exclude_invalid: Boolean(excludeInvalid),
         source_name: sourceName || filename,

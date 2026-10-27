@@ -535,7 +535,8 @@ def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dic
     filename = str(payload.get("filename") or "dataset.jsonl")
     content = payload.get("content")
     if content is None and isinstance(payload.get("cases"), list):
-        items = [dict(item) for item in payload["cases"]]
+        items = [dict(item) if isinstance(item, Mapping) else item
+                 for item in payload["cases"]]
         fmt = "json"
     else:
         if content is None:
@@ -545,10 +546,25 @@ def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dic
         else:
             raw = bytes(content)
         items, fmt = dataset_module.parse_payload(raw, filename)
+    purpose = payload.get("import_purpose")
+    if "import_purpose" in payload and purpose not in ("optimize", "validation", "preserve"):
+        raise ValidationError("import_purpose 必须是 optimize、validation 或 preserve",
+                              field_path="import_purpose")
+    if purpose in ("optimize", "validation"):
+        if any(isinstance(item, Mapping) and item.get("split") == "final_test"
+               for item in items):
+            raise ValidationError("文件包含最终测试集，请选择保留文件划分后导入",
+                                  code="final_test_requires_preserve",
+                                  field_path="import_purpose")
+        items = [{**item, "split": purpose} if isinstance(item, Mapping)
+                 and not item.get("_parse_error") else item for item in items]
     project = persistence.get_project(project_id) if project_id else {}
     skill_ids = _active_skill_ids(project)
     split_config = payload.get("split_config") or {
         "optimize": 1, "validation": 0, "final_test": 0}
+    if purpose in ("optimize", "validation"):
+        split_config = {name: int(name == purpose)
+                        for name in ("optimize", "validation", "final_test")}
     seed = int(payload.get("seed") or 42)
     manifest = {}
     if project:
@@ -563,6 +579,7 @@ def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dic
     report["ok"] = not report.get("errors")
     report["format"] = fmt
     report["filename"] = filename
+    report["split_config"] = split_config
     coverage_stats = dataset_module.coverage(cases, skill_ids)
     coverage_stats["single_route_cases"] = max(
         0, int(coverage_stats.get("total") or 0)
@@ -588,8 +605,7 @@ def create_dataset(project_id: str, payload: Mapping[str, Any]) -> dict[str, Any
     if not cases:
         raise ValidationError("没有有效案例可发布", code="dataset_invalid",
                               details=errors)
-    split_config = payload.get("split_config") or {
-        "optimize": 1, "validation": 0, "final_test": 0}
+    split_config = report["split_config"]
     dataset = persistence.create_dataset(
         project_id, cases, split_config,
         source_name=str(payload.get("source_name") or payload.get("filename") or ""),

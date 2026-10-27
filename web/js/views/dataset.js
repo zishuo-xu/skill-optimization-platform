@@ -819,8 +819,11 @@ export default async function datasetView(container, ctx) {
     const finalInput = h('input.input', { type: 'number', value: '0', min: '0', max: '100' });
     const purposeInput = h('select.input', { 'aria-label': '导入用途' },
       h('option', { value: 'optimize', text: '日常测试集' }),
-      h('option', { value: 'validation', text: '独立验收集' }));
+      h('option', { value: 'validation', text: '独立验收集' }),
+      h('option', { value: 'preserve', text: '保留文件划分（混合集 / 最终测试集）' }));
     purposeInput.addEventListener('change', () => {
+      advancedSettings.hidden = purposeInput.value !== 'preserve';
+      if (purposeInput.value === 'preserve') return;
       optimizeInput.value = purposeInput.value === 'optimize' ? '100' : '0';
       validationInput.value = purposeInput.value === 'validation' ? '100' : '0';
       finalInput.value = '0';
@@ -878,6 +881,7 @@ export default async function datasetView(container, ctx) {
         return;
       }
       const config = splitConfig();
+      const purpose = purposeInput.value;
       const sum = config.optimize + config.validation + config.final_test;
       if (Math.abs(sum - 1) > 0.001) {
         mount(errorHost, inlineError(`划分比例之和必须为 100%，当前为 ${Math.round(sum * 100)}%`));
@@ -892,12 +896,14 @@ export default async function datasetView(container, ctx) {
           filename: fileState.filename,
           content: fileState.content,
           splitConfig: config,
+          importPurpose: purpose,
           seed: config.seed,
         });
         data.preflight = result;
         data.filename = fileState.filename;
         data.content = fileState.content;
         data.splitConfig = config;
+        data.importPurpose = purpose;
         data.sourceName = sourceInput.value || fileState.filename;
         renderImportStep2(modal, data);
       } catch (error) {
@@ -909,6 +915,9 @@ export default async function datasetView(container, ctx) {
       }
     }
 
+    const advancedSettings = h('details', { hidden: true }, h('summary', { text: '高级划分设置' }),
+      h('div.form-grid.form-grid--3', null, formField({ label: '测试集 %', control: optimizeInput }), formField({ label: '独立验收集 %', control: validationInput }), formField({ label: '最终测试集 %', control: finalInput })),
+      formField({ label: '随机种子', control: seedInput, hint: '仅对文件中未指定 split 的案例生效；固定种子保证划分可复现。' }));
     mount(
       modal.body,
       h(
@@ -916,11 +925,9 @@ export default async function datasetView(container, ctx) {
         null,
         h('div.import-steps', null, h('span.import-step.is-active', null, h('span.import-step__num', { text: '1' }), h('span', { text: '上传文件' })), h('span.import-step', null, h('span.import-step__num', { text: '2' }), h('span', { text: '校验与划分预览' }))),
         zone,
-        formField({ label: '导入用途', control: purposeInput, hint: '文件中未指定 split 的案例按此用途划分；已指定 split 的案例保留原值。发布会切换当前数据集。' }),
+        formField({ label: '导入用途', control: purposeInput, hint: '选择日常测试或独立验收时，所有案例按所选用途划分；含最终测试集的文件请选择保留文件划分。发布会切换当前数据集。' }),
         formField({ label: '来源文件名', control: sourceInput, hint: '仅用于版本记录展示。' }),
-        h('details', null, h('summary', { text: '高级划分设置' }),
-          h('div.form-grid.form-grid--3', null, formField({ label: '测试集 %', control: optimizeInput }), formField({ label: '独立验收集 %', control: validationInput }), formField({ label: '最终测试集 %', control: finalInput })),
-          formField({ label: '随机种子', control: seedInput, hint: '固定种子保证划分可复现；按 group_id 分组，不跨集合。' })),
+        advancedSettings,
         errorHost,
         h('p.xsmall.muted', { text: '日常评测与优化只使用测试集；正式验收需要独立验收集。最终测试集继续保持隔离。' })
       )
@@ -968,6 +975,7 @@ export default async function datasetView(container, ctx) {
           filename: data.filename,
           content: data.content,
           splitConfig: data.splitConfig,
+          importPurpose: data.importPurpose,
           seed: data.splitConfig.seed,
           excludeInvalid: excludeInput.checked,
           sourceName: data.sourceName,
