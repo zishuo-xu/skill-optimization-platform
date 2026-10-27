@@ -178,7 +178,6 @@ async def project_versions(request: Request) -> Response:
         env.pop("model_config", None)
         env.pop("optimizer_config", None)
         env["scorer_config"] = services.public_scorer_config(env.get("scorer_config"))
-        env.pop("tool_schema", None)
         env.pop("prompt", None)
     datasets = persistence.list_datasets(project_id)
     return ok({

@@ -132,7 +132,6 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
     "timeout_s": 30
   },
   "optimizer_config": {"provider": "heuristic", "model": "frozen-heuristic-v1"},
-  "tool_schema": [{"name": "list_tasks", "description": "…", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}],
   "loader_config": {"max_steps": 8, "max_model_calls": 12, "max_context_chars": 60000, "context_overflow": "error"},
   "run_config": {"concurrency": 3, "max_model_calls": 12, "case_timeout_s": 120, "base_repeats": 1, "validation_repeats": 3},
   "budget_config": {"max_tokens": 300000, "max_cost": null, "max_seconds": 1800},

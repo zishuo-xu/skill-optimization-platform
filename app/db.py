@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS environments (
     prompt TEXT NOT NULL,
     model_config_json TEXT NOT NULL,
     optimizer_config_json TEXT NOT NULL,
-    tool_schema_json TEXT NOT NULL,
     loader_config_json TEXT NOT NULL,
     run_config_json TEXT NOT NULL,
     budget_config_json TEXT NOT NULL,

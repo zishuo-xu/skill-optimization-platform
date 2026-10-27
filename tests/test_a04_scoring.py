@@ -11,35 +11,6 @@ import copy
 
 from app.evaluation import score_case
 
-TOOL_SCHEMA = [
-    {
-        "name": "list_tasks",
-        "parameters": {
-            "type": "object",
-            "required": ["project_id"],
-            "properties": {
-                "project_id": {"type": "string"},
-                "status": {"type": "string",
-                           "enum": ["in_progress", "active"]},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "search_tasks",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filters": {
-                    "type": "object",
-                    "properties": {"status": {"type": "string"}},
-                    "additionalProperties": False,
-                },
-            },
-        },
-    },
-]
-
 BASE_CALL = {"name": "list_tasks",
              "arguments": {"project_id": "P123", "status": "in_progress"}}
 BASE_EXPECTED = {
@@ -67,11 +38,10 @@ def actual(**overrides) -> dict:
     return value
 
 
-def score(expectation=None, result=None, tool_schema=TOOL_SCHEMA,
-          compare_rules=None) -> dict:
+def score(expectation=None, result=None, compare_rules=None) -> dict:
     return score_case(expectation if expectation is not None else expected(),
                       result if result is not None else actual(),
-                      tool_schema, compare_rules)
+                      compare_rules)
 
 
 def categories(result: dict) -> list[str]:
@@ -150,7 +120,6 @@ def test_type_is_strict():
                               "arguments": {"flag": True}}]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"flag": 1}}]),
-        tool_schema=None,
     )
     assert bool_is_not_int["tool_args"]["passed"] is False
     assert "type_error" in categories(bool_is_not_int)
@@ -177,7 +146,6 @@ def test_missing_is_not_null():
                                             "status": None}}]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"project_id": "P123"}}]),
-        tool_schema=None,
     )
     assert omitted["tool_args"]["passed"] is False
     assert "missing_arg" in categories(omitted)
@@ -187,7 +155,6 @@ def test_missing_is_not_null():
                               "arguments": {"project_id": "P123"}}]),
         actual(tool_calls=[{"name": "list_tasks", "arguments": {
             "project_id": "P123", "status": None}}]),
-        tool_schema=None,
     )
     assert extra_null["tool_args"]["passed"] is False
     assert "extra_arg" in categories(extra_null)
@@ -199,26 +166,22 @@ def test_array_order_is_significant():
                               "arguments": {"ids": ["a", "b"]}}]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"ids": ["b", "a"]}}]),
-        tool_schema=None,
     )
     assert result["tool_args"]["passed"] is False
     assert find_diagnostic(result, "value_error")["field_path"] == "$.ids[0]"
 
 
-def test_schema_validation_runs_before_value_comparison():
-    # Deep comparison would pass, but the tool schema requires project_id.
+def test_expected_arguments_define_the_comparison_contract():
     result = score(
         expected(tool_calls=[{"name": "list_tasks",
                               "arguments": {"status": "in_progress"}}]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"status": "in_progress"}}]),
     )
-    assert result["tool_args"]["passed"] is False
-    diagnostic = find_diagnostic(result, "missing_arg")
-    assert diagnostic["field_path"] == "$.project_id"
+    assert result["tool_args"]["passed"] is True
 
 
-def test_schema_enum_violation_fails():
+def test_expected_value_mismatch_fails():
     result = score(
         expected(tool_calls=[{"name": "list_tasks",
                               "arguments": {"project_id": "P123"}}]),
@@ -226,10 +189,10 @@ def test_schema_enum_violation_fails():
             "project_id": "P123", "status": "archived"}}]),
     )
     assert result["tool_args"]["passed"] is False
-    assert "value_error" in categories(result)
+    assert "extra_arg" in categories(result)
 
 
-def test_unknown_tool_schema_is_tolerated():
+def test_arbitrary_skill_defined_tool_is_scored():
     result = score(
         expected(tool_calls=[{"name": "unknown_tool",
                               "arguments": {"x": 1}}]),
@@ -261,7 +224,6 @@ def test_wrong_tool_missing_tool_and_extra_tool():
                               "arguments": {"project_id": "P123"}}]),
         actual(tool_calls=[{"name": "search_tasks",
                             "arguments": {"project_id": "P123"}}]),
-        tool_schema=None,
     )
     assert wrong_tool["tool_args"]["passed"] is False
     assert "wrong_tool" in categories(wrong_tool)
@@ -273,7 +235,6 @@ def test_wrong_tool_missing_tool_and_extra_tool():
         ]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"project_id": "P123"}}]),
-        tool_schema=None,
     )
     assert missing_tool["tool_args"]["passed"] is False
     assert "missing_tool" in categories(missing_tool)
@@ -285,7 +246,6 @@ def test_wrong_tool_missing_tool_and_extra_tool():
             {"name": "list_tasks", "arguments": {"project_id": "P123"}},
             {"name": "search_tasks", "arguments": {}},
         ]),
-        tool_schema=None,
     )
     assert extra_tool["tool_args"]["passed"] is False
     assert "extra_tool" in categories(extra_tool)
@@ -500,8 +460,7 @@ def _args_case(expected_arguments: dict, actual_arguments: dict,
         expectation["compare"] = compare
     return score(expectation,
                  actual(tool_calls=[{"name": "list_tasks",
-                                     "arguments": actual_arguments}]),
-                 tool_schema=None)
+                                     "arguments": actual_arguments}]))
 
 
 def test_numeric_tolerance_requires_explicit_versioned_rule():
@@ -559,7 +518,7 @@ def test_invalid_expected_action_invalidates_case():
 
 
 def test_non_mapping_actual_is_invalid():
-    result = score_case(expected(), ["not", "a", "mapping"], TOOL_SCHEMA, None)
+    result = score_case(expected(), ["not", "a", "mapping"])
     assert result["status"] == "invalid"
 
 
@@ -583,7 +542,7 @@ def test_all_diagnostics_have_contract_fields():
 def test_environment_scorer_config_keeps_default_strict_comparison():
     scorer_config = {"version": "score-v1", "route_compare": "set",
                      "param_compare": "strict_json", "seed": 42}
-    passing = score_case(expected(), actual(), TOOL_SCHEMA, scorer_config)
+    passing = score_case(expected(), actual(), scorer_config)
     assert passing["status"] == "pass"
     assert "protocol_error" not in categories(passing)
 
@@ -591,7 +550,7 @@ def test_environment_scorer_config_keeps_default_strict_comparison():
         expected(),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"project_id": "P999"}}]),
-        TOOL_SCHEMA, scorer_config,
+        scorer_config,
     )
     assert failing["status"] == "fail"
     assert "value_error" in categories(failing)
@@ -603,7 +562,6 @@ def test_compare_rules_as_fourth_argument_need_explicit_version():
                               "arguments": {"score": 1.0}}]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"score": 1.04}}]),
-        None,
         {"version": "compare-v1", "numeric_tolerance": 0.1},
     )
     assert passing["tool_args"]["passed"] is True
@@ -613,33 +571,15 @@ def test_compare_rules_as_fourth_argument_need_explicit_version():
                               "arguments": {"score": 1.0}}]),
         actual(tool_calls=[{"name": "list_tasks",
                             "arguments": {"score": 1.04}}]),
-        None,
         {"numeric_tolerance": 0.1},
     )
     assert unversioned["status"] == "invalid"
 
     unsupported = score_case(
-        expected(), actual(), TOOL_SCHEMA,
+        expected(), actual(),
         {"version": "compare-v99", "numeric_tolerance": 0.1},
     )
     assert unsupported["status"] == "invalid"
-
-
-IMAGE_TOOL_SCHEMA = [
-    {
-        "name": "imageEditWorkflow",
-        "parameters": {
-            "type": "object",
-            "required": ["method", "script", "request", "args"],
-            "properties": {
-                "method": {"type": "string"},
-                "script": {"type": "string"},
-                "request": {"type": "object"},
-                "args": {"type": "object"},
-            },
-        },
-    },
-]
 
 
 def test_arguments_path_compares_only_the_args_subtree():
@@ -667,7 +607,7 @@ def test_arguments_path_compares_only_the_args_subtree():
         }],
         "capabilities": {"routing": True, "tool_arguments": True},
     }
-    scored = score_case(expectation, result, IMAGE_TOOL_SCHEMA, None)
+    scored = score_case(expectation, result)
     assert scored["tool_args"]["passed"] is True
     assert scored["joint"] is True
 
@@ -697,7 +637,7 @@ def test_arguments_path_failure_reports_nested_field_path():
         }],
         "capabilities": {"routing": True, "tool_arguments": True},
     }
-    scored = score_case(expectation, result, IMAGE_TOOL_SCHEMA, None)
+    scored = score_case(expectation, result)
     assert scored["tool_args"]["passed"] is False
     diagnostic = find_diagnostic(scored, "value_error")
     assert diagnostic["field_path"] == "$.args.targetColor"

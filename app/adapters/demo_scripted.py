@@ -350,7 +350,9 @@ class DemoScriptedAdapter(ModelAdapter):
                 value = _extract(field, query, params["mappings"], params["defaults"])
                 if value is not None:
                     arguments[field] = value
-            calls = [_tool_call(chosen["tool"], arguments, 0)]
+            calls = [_tool_call("call_tool", {
+                "name": chosen["tool"], "arguments": arguments,
+            }, 0)]
             return self._response(tool_calls=calls, usage=usage,
                                   finish_reason="tool_calls")
 

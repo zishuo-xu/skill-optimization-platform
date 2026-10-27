@@ -70,7 +70,7 @@ def make_case(index: int = 1, **overrides) -> dict:
 
 
 def prepare(items, **kwargs):
-    options = {"manifest": MANIFEST, "tool_schema": TOOL_SCHEMA}
+    options = {"manifest": MANIFEST}
     options.update(kwargs)
     return dataset.validate_and_prepare(items, **options)
 
@@ -177,17 +177,15 @@ def test_validate_generates_stable_case_id():
     assert result["cases"][0]["case_id"] == expected_id
 
 
-def test_validate_unknown_skill_and_tool_have_field_paths():
+def test_validate_unknown_skill_has_field_path_without_tool_registry():
     case = make_case(1)
     case["expected"]["routes"] = [["task_query", "unknown_skill"]]
     case["expected"]["tool_calls"] = [{"name": "nope_tool", "arguments": {}}]
 
     result = prepare([case])
-    assert set(codes(result)) == {"unknown_skill_id", "unknown_tool"}
+    assert set(codes(result)) == {"unknown_skill_id"}
     by_code = {error["code"]: error for error in result["errors"]}
     assert by_code["unknown_skill_id"]["field_path"] == "expected.routes[0][1]"
-    assert by_code["unknown_tool"]["field_path"] == "expected.tool_calls[0].name"
-    assert by_code["unknown_tool"]["case_id"] == "case_001"
 
 
 @pytest.mark.parametrize("mutate, code", [
@@ -280,8 +278,7 @@ def test_validate_fixture_structure_errors():
     bad_list["fixtures"] = {"name": "list_tasks"}
 
     result = prepare([bad_match, unknown_tool, bad_list])
-    assert set(codes(result)) == {"invalid_fixture_match", "unknown_tool",
-                                  "invalid_fixtures"}
+    assert set(codes(result)) == {"invalid_fixture_match", "invalid_fixtures"}
 
 
 # --------------------------------------------------------------------------- #
@@ -374,8 +371,7 @@ def test_coverage_counts_skills_tools_splits_and_actions():
             "action": "clarify", "missing_fields": ["project_id"]}},
         {"split": "final_test", "expected": {"action": "no_action"}},
     ]
-    result = dataset.coverage(cases, ["task_query", "task_search", "task_other"],
-                             ["list_tasks", "search_tasks"])
+    result = dataset.coverage(cases, ["task_query", "task_search", "task_other"])
 
     assert result["total"] == 3
     assert result["split_counts"] == {"optimize": 1, "validation": 1,
@@ -384,7 +380,7 @@ def test_coverage_counts_skills_tools_splits_and_actions():
                                               "final_test": 0, "total": 1}
     assert result["skills"]["task_search"]["optimize"] == 1
     assert result["skills"]["task_other"]["total"] == 0
-    assert result["tools"] == {"list_tasks": 1, "search_tasks": 0}
+    assert result["tools"] == {"list_tasks": 1}
     assert result["multi_route_cases"] == 1
     assert result["actions"] == {"tool_call": 1, "clarify": 1, "no_action": 1}
     assert result["clarify_cases"] == 1
@@ -545,9 +541,8 @@ def test_sample_dataset_is_valid_compact_input():
         (samples / "dataset.jsonl").read_bytes(), "dataset.jsonl")
     manifest = json.loads((samples / "skill_package" / "manifest.json")
                           .read_text(encoding="utf-8"))
-    tools = json.loads((samples / "tool_schema.json").read_text(encoding="utf-8"))
     result = dataset.validate_and_prepare(
-        items, manifest=manifest, tool_schema=tools,
+        items, manifest=manifest,
         split_config={"optimize": 0.7, "validation": 0.2, "final_test": 0.1},
         seed=42)
     assert fmt == "jsonl"

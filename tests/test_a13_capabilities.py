@@ -92,18 +92,6 @@ TEXT_TOOL_CAPS = {"routing": True, "tool_arguments": True, "native_tools": False
 NATIVE_CAPS = {"routing": True, "tool_arguments": True, "native_tools": True,
                "usage": True, "streaming": False}
 
-TOOL_SCHEMA = [{
-    "name": "list_tasks",
-    "description": "按项目与状态查询任务",
-    "parameters": {
-        "type": "object",
-        "properties": {"project_id": {"type": "string"},
-                       "status": {"type": "string"}},
-        "required": ["project_id", "status"],
-    },
-}]
-
-
 # --------------------------------------------------------------------------- #
 # skill package / case request helpers
 # --------------------------------------------------------------------------- #
@@ -139,7 +127,6 @@ def make_request(root, manifest, *, fixtures=None, limits=None,
         "system_prompt": "你是使用 Skill 包完成用户任务的执行 Agent。",
         "model_config": adapter_config or {},
         "request_template": {},
-        "tool_schema": TOOL_SCHEMA,
         "fixtures": fixtures if fixtures is not None else [{
             "name": "list_tasks",
             "match": {"project_id": "P123", "status": "in_progress"},
@@ -242,7 +229,7 @@ def test_router_only_text_adapter_reports_tool_arguments_unevaluated(package):
          "tool_calls": [{"name": "list_tasks",
                          "arguments": {"project_id": "P123",
                                        "status": "in_progress"}}]},
-        result, TOOL_SCHEMA, None)
+        result, None)
     assert score["routing"]["evaluable"] is True
     assert score["routing"]["passed"] is True
     assert score["tool_args"]["evaluable"] is False
@@ -312,7 +299,7 @@ def test_native_adapter_internal_tools_never_count_as_business_calls(package):
                                  {"path": "references/task_query.md"}, "c2"),
         ]},
         {"tool_calls": [ScriptedAdapter.tool(
-            "list_tasks", {"project_id": "P123", "status": "in_progress"}, "c3")]},
+            "call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}}, "c3")]},
         finish_response(),
     ], capabilities=NATIVE_CAPS)
     result = run_case(make_request(root, manifest), adapter)
@@ -336,7 +323,7 @@ def test_native_business_result_can_end_without_finish_in_relaxed_mode(package):
     root, manifest = package
     adapter = ScriptedAdapter([
         {"tool_calls": [ScriptedAdapter.tool("select_skill", {"skill_id": "task_query"}, "s1")]},
-        {"tool_calls": [ScriptedAdapter.tool("list_tasks", {"project_id": "P123", "status": "in_progress"}, "b1")]},
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}}, "b1")]},
         {"content": "已完成查询"},
     ], capabilities=NATIVE_CAPS)
     result = run_case(make_request(root, manifest), adapter)
@@ -349,7 +336,7 @@ def test_native_business_result_can_end_without_finish_in_relaxed_mode(package):
 def test_native_missing_finish_can_be_strictly_rejected(package):
     root, manifest = package
     adapter = ScriptedAdapter([
-        {"tool_calls": [ScriptedAdapter.tool("list_tasks", {"project_id": "P123", "status": "in_progress"}, "b1")]},
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}}, "b1")]},
         {"content": "已完成查询"},
     ], capabilities=NATIVE_CAPS)
     result = run_case(make_request(root, manifest,
@@ -369,7 +356,7 @@ def test_finish_summary_must_match_observed_selection_events(package):
     assert result["error_kind"] == "capability"
 
 
-def test_unknown_native_tool_is_protocol_error(package):
+def test_native_business_tool_name_comes_from_skill_and_fixture_boundary(package):
     root, manifest = package
     adapter = ScriptedAdapter([
         {"tool_calls": [ScriptedAdapter.tool("drop_database", {}, "c1")]},
@@ -377,6 +364,67 @@ def test_unknown_native_tool_is_protocol_error(package):
     result = run_case(make_request(root, manifest), adapter)
     assert result["error"]["code"] == "protocol_error"
     assert len(adapter.calls) == 1
+
+
+def test_native_generic_call_tool_executes_without_tool_schema(package):
+    root, manifest = package
+    adapter = ScriptedAdapter([
+        select_response("task_query"),
+        {"tool_calls": [ScriptedAdapter.tool(
+            "call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123"}}, "c1")]},
+        finish_response(selected=["task_query"]),
+    ], capabilities=NATIVE_CAPS)
+    request = make_request(root, manifest, fixtures=[{
+        "name": "list_tasks", "match": {"project_id": "P123"}, "response": {"tasks": []},
+    }])
+    result = run_case(request, adapter)
+    assert result["error"] is None, result["error"]
+    assert result["tool_calls"] == [{"name": "list_tasks", "arguments": {"project_id": "P123"}}]
+    definitions = adapter.calls[0]["tools"]
+    assert {tool["function"]["name"] for tool in definitions} == {
+        "call_tool", "select_skill", "read_skill", "finish"}
+    assert "list_tasks" not in json.dumps(definitions)
+    # Fixture response is available only after the call, never in model setup.
+    assert '"tasks": []' not in json.dumps(adapter.calls[0]["messages"])
+
+
+@pytest.mark.parametrize("arguments", [
+    {"name": 123, "arguments": {}},
+    {"name": "list_tasks", "arguments": {}, "extra": True},
+    {"name": "read_skill", "arguments": {"path": "references/task_query.md"}},
+    {"name": "call_tool", "arguments": {}},
+])
+def test_native_generic_call_tool_rejects_invalid_wrappers(package, arguments):
+    root, manifest = package
+    adapter = ScriptedAdapter([
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", arguments, "c1")]},
+    ], capabilities=NATIVE_CAPS)
+    result = run_case(make_request(root, manifest), adapter)
+    assert result["error"]["code"] in {"format_error", "protocol_error"}
+
+
+def test_native_generic_call_tool_result_uses_protocol_name_for_next_model_turn(package):
+    root, manifest = package
+    class InspectingAdapter(ScriptedAdapter):
+        def invoke(self, messages, config=None, tools=None, *, emit=None):
+            response = super().invoke(messages, config, tools, emit=emit)
+            if len(self.calls) == 3:
+                tool_messages = [m for m in messages
+                                 if m.get("role") == "tool" and m.get("name") == "call_tool"]
+                assert tool_messages[-1]["name"] == "call_tool"
+                assert json.loads(tool_messages[-1]["content"]) == {"tasks": []}
+            return response
+    adapter = InspectingAdapter([
+        select_response("task_query"),
+        {"tool_calls": [ScriptedAdapter.tool(
+            "call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123"}}, "c1")]},
+        finish_response(selected=["task_query"]),
+    ], capabilities=NATIVE_CAPS)
+    request = make_request(root, manifest, fixtures=[{
+        "name": "list_tasks", "match": {"project_id": "P123"}, "response": {"tasks": []},
+    }])
+    result = run_case(request, adapter)
+    assert result["error"] is None, result["error"]
 
 
 def test_native_model_stopping_without_finish_is_undetermined_in_relaxed_mode(package):
@@ -460,15 +508,13 @@ def test_fixtures_once_and_always_consumption(package):
          "consume": "once"},
         {"name": "lookup", "match": {}, "response": {"n": 2}, "consume": "always"},
     ]
-    tool_schema = [{"name": "lookup", "parameters": {"type": "object"}}]
     responses = [
-        {"tool_calls": [ScriptedAdapter.tool("lookup", {"q": "a"}, "c1")]},
-        {"tool_calls": [ScriptedAdapter.tool("lookup", {"q": "a"}, "c2")]},
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", {"name": "lookup", "arguments": {"q": "a"}}, "c1")]},
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", {"name": "lookup", "arguments": {"q": "a"}}, "c2")]},
         finish_response(selected=[]),
     ]
     adapter = ScriptedAdapter(responses, capabilities=NATIVE_CAPS)
     request = make_request(root, manifest, fixtures=fixtures)
-    request["tool_schema"] = tool_schema
     result = run_case(request, adapter)
     assert result["error"] is None, result["error"]
     assert len(result["tool_calls"]) == 2
@@ -483,7 +529,7 @@ def test_fixture_miss_fails_immediately_without_real_service(package):
     root, manifest = package
     adapter = ScriptedAdapter([
         {"tool_calls": [ScriptedAdapter.tool(
-            "list_tasks", {"project_id": "OTHER", "status": "done"}, "c1")]},
+            "call_tool", {"name": "list_tasks", "arguments": {"project_id": "OTHER", "status": "done"}}, "c1")]},
         finish_response(),  # must never be reached
     ], capabilities=NATIVE_CAPS)
     result = run_case(make_request(root, manifest), adapter)
@@ -519,7 +565,7 @@ def test_max_model_calls_limit(package):
 def test_max_steps_limit(package):
     root, manifest = package
     business = {"tool_calls": [ScriptedAdapter.tool(
-        "list_tasks", {"project_id": "P123", "status": "in_progress"},
+        "call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}},
         "calls")]}
     adapter = ScriptedAdapter([business, business, business],
                               capabilities=NATIVE_CAPS)
@@ -652,8 +698,8 @@ def _http_ok_payload() -> dict:
                 "tool_calls": [{
                     "id": "call_http",
                     "type": "function",
-                    "function": {"name": "list_tasks",
-                                 "arguments": '{"project_id":"P123"}'},
+                    "function": {"name": "call_tool",
+                                 "arguments": '{"name":"list_tasks","arguments":{"project_id":"P123"}}'},
                 }],
             },
             "finish_reason": "tool_calls",
@@ -670,8 +716,9 @@ def test_openai_http_parses_tool_calls_and_keeps_credentials_out_of_events():
             [{"role": "user", "content": "查询任务"}], {}, [], emit=events.append)
         request = server.requests[0]
     assert result["content"] == "查询完成"
-    assert result["tool_calls"] == [{"id": "call_http", "name": "list_tasks",
-                                     "arguments": {"project_id": "P123"}}]
+    assert result["tool_calls"] == [{"id": "call_http", "name": "call_tool",
+                                     "arguments": {"name": "list_tasks",
+                                                   "arguments": {"project_id": "P123"}}}]
     assert result["finish_reason"] == "tool_calls"
     assert result["usage"] == {"input_tokens": 5, "output_tokens": 2,
                                "total_tokens": 7}

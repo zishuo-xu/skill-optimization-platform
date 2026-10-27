@@ -68,7 +68,6 @@ DEMO_SPECS = [
         "version_message": "示例 Skill 包（主 Skill + 21 个子技能）",
         "environment": "environment.json",
         "prompt": "system_prompt.md",
-        "tools": "tool_schema.json",
         "dataset": "dataset.jsonl",
         "dataset_name": "示例数据集（任务管理）",
     },
@@ -79,7 +78,6 @@ DEMO_SPECS = [
         "version_message": "语流修图 Skill 包（主技能路由 + 12 类参数子技能）",
         "environment": "image_environment.json",
         "prompt": "image_system_prompt.md",
-        "tools": "image_tool_schema.json",
         "dataset": "image_dataset.jsonl",
         "dataset_name": "示例数据集（图片编辑）",
     },
@@ -107,7 +105,6 @@ def _seed_project(spec: dict, with_optimize: bool) -> dict:
     template = _load_json(config.SAMPLES_DIR / spec["environment"])
     template["prompt"] = (config.SAMPLES_DIR / spec["prompt"]).read_text(
         encoding="utf-8")
-    template["tool_schema"] = _load_json(config.SAMPLES_DIR / spec["tools"])
     env = services.create_environment(project["id"], template, status="published",
                                       set_current=True)
     print(f"执行环境: {env['id']}（provider={(env.get('model_config') or {}).get('provider')}）")
@@ -180,7 +177,6 @@ def refresh_image_sample() -> dict:
         if previous["current_environment_id"] else template
     env_payload = dict(old_env)
     env_payload["prompt"] = (config.SAMPLES_DIR / spec["prompt"]).read_text(encoding="utf-8")
-    env_payload["tool_schema"] = _load_json(config.SAMPLES_DIR / spec["tools"])
     for key, fields in (("loader_config", ("max_steps",)),
                         ("run_config", ("max_model_calls",))):
         env_payload[key] = dict(old_env.get(key) or template[key])
@@ -188,7 +184,7 @@ def refresh_image_sample() -> dict:
             env_payload[key][field] = max(int(env_payload[key].get(field) or 0),
                                           int(template[key][field]))
     env_payload["reproducibility_note"] = (
-        "12 类修图示例协议；模型接入配置沿用既有版本。新增 method 需由真实业务 SDK 实现；"
+        "12 类修图示例；模型接入配置沿用既有版本。新增 method 需由真实业务 SDK 实现；"
         "demo_scripted 成绩只代表确定性模拟器。")
     model = env_payload["model_config"]
     env_payload["adapter_hash"] = hashing.hash_json({
@@ -203,7 +199,7 @@ def refresh_image_sample() -> dict:
     items, _ = dataset_module.parse_payload(content, spec["dataset"])
     split_config = {"optimize": 0.7, "validation": 0.2, "final_test": 0.1}
     report = dataset_module.validate_and_prepare(
-        items, manifest=package["manifest"], tool_schema=env_payload["tool_schema"],
+        items, manifest=package["manifest"],
         split_config=split_config, seed=42)
     if report["errors"]:
         raise ValidationError("新版修图数据集校验失败", details=report["errors"])
@@ -265,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--with-optimize", action="store_true",
                         help="创建并执行一次单轮优化")
     parser.add_argument("--refresh-image", action="store_true",
-                        help="为已有修图示例发布新版包/协议/数据集，保留模型配置和历史；不调用模型")
+                        help="为已有修图示例发布新版 Skill 包和数据集，保留模型配置和历史；不调用模型")
     args = parser.parse_args(argv)
     if args.refresh_image:
         if args.reset or args.with_optimize:

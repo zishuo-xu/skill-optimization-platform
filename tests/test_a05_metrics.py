@@ -13,22 +13,6 @@ import copy
 
 from app.evaluation import aggregate_metrics, score_case
 
-TOOL_SCHEMA = [
-    {
-        "name": "list_tasks",
-        "parameters": {
-            "type": "object",
-            "required": ["project_id"],
-            "properties": {
-                "project_id": {"type": "string"},
-                "status": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {"name": "search_tasks", "parameters": {"type": "object"}},
-]
-
 BASE_CALL = {"name": "list_tasks",
              "arguments": {"project_id": "P123", "status": "in_progress"}}
 BASE_EXPECTED = {
@@ -62,7 +46,7 @@ def make_actual(*, selected_skills=("task_query",), action="tool_call",
 
 
 def score(case: dict, actual: dict) -> dict:
-    return score_case(case["expected"], actual, TOOL_SCHEMA, None)
+    return score_case(case["expected"], actual)
 
 
 def assert_metric(metric: dict, *, value, evaluated: int, passed: int,

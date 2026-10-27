@@ -528,9 +528,6 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
           "Skill 包文件哈希校验通过" if integrity["ok"]
           else "；".join(integrity["errors"]), level="error",
           next_action="重新导入或发布 Skill 包版本。")
-    check("environment_tools", bool(env.get("tool_schema")),
-          f"工具协议包含 {len(env.get('tool_schema') or [])} 个工具", level="error",
-          next_action="在执行环境配置工具协议并发布版本。")
     splits = {case.get("split") or "optimize" for case in cases}
     required = {"optimize"} if mode == "baseline" else (
         {"final_test"} if mode == "final_test" else {"optimize", "validation"})
@@ -783,8 +780,7 @@ def _score_with_judge(case: Mapping[str, Any], actual: Mapping[str, Any],
                       budget: "_Budget") -> tuple[dict[str, Any], dict[str, Any]]:
     """Score a case; values needing semantic judgment go to the judge model."""
     expected = case.get("expected") or {}
-    tool_schema = env.get("tool_schema") or []
-    score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
+    score = evaluation.score_case(expected, actual, compare_rules,
                                   semantic_fallback=value_judge is None)
     pending = score.get("pending_judgments") or []
     if not pending or value_judge is None:
@@ -812,7 +808,7 @@ def _score_with_judge(case: Mapping[str, Any], actual: Mapping[str, Any],
                       next_action="检查评分模型地址、凭据与连通性后重新运行。",
                       case_id=case_id, split=case.get("split"), repeat_index=repeat)
         return evaluation.mark_infrastructure(score, f"评分模型不可用：{exc.message}"), {}
-    score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
+    score = evaluation.score_case(expected, actual, compare_rules,
                                   judgments=verdicts)
     score["judge"] = {key: stats[key] for key in ("items", "cached", "judged", "passed")}
     emitter.emit(event_types.JUDGE_COMPLETED,
@@ -832,7 +828,6 @@ def _case_request(run: Mapping[str, Any], env: Mapping[str, Any],
         "system_prompt": env["prompt"],
         "model_config": env.get("model_config") or {},
         "request_template": (env.get("model_config") or {}).get("request_template"),
-        "tool_schema": env.get("tool_schema") or [],
         "fixtures": case.get("fixtures") or [],
         "limits": {
             **loader_config,

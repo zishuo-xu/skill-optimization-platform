@@ -3,7 +3,7 @@
 from app.execution import run_case
 from app.obs_tools import ObsToolRuntime
 from tests.test_a13_capabilities import (
-    NATIVE_CAPS, ScriptedAdapter, TOOL_SCHEMA, make_request, package,
+    NATIVE_CAPS, ScriptedAdapter, make_request, package,
 )
 
 
@@ -27,7 +27,7 @@ def test_native_model_can_go_select_to_business_without_read_round_trip(package)
     root, manifest = package
     adapter = ScriptedAdapter([
         {"tool_calls": [ScriptedAdapter.tool("select_skill", {"skill_id": "task_query"}, "s1")]},
-        {"tool_calls": [ScriptedAdapter.tool("list_tasks", {"project_id": "P123", "status": "in_progress"}, "b1")]},
+        {"tool_calls": [ScriptedAdapter.tool("call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}}, "b1")]},
         {"tool_calls": [ScriptedAdapter.tool("finish", {
             "action": "tool_call", "selected_skills": ["task_query"],
             "missing_fields": [], "summary": "完成"}, "f1")]},

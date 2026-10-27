@@ -106,6 +106,20 @@ def _tool_for(main_skill: str, skill_id: str | None) -> str:
     return ""
 
 
+def _is_business_call(call: Mapping[str, Any], business_tool: str) -> bool:
+    """Recognize the native wrapper while tolerating provider-normalized calls."""
+    name = call.get("name") or (call.get("function") or {}).get("name")
+    if name != "call_tool":
+        return False
+    arguments = call.get("arguments") or (call.get("function") or {}).get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(arguments, Mapping) and arguments.get("name") == business_tool
+
+
 class DemoImageScriptedAdapter(ModelAdapter):
     """Rule simulator for the image-editing sample project."""
 
@@ -184,7 +198,7 @@ class DemoImageScriptedAdapter(ModelAdapter):
                 "args": arg_values,
             }
             return self._response(
-                tool_calls=[_tool_call(BUSINESS_TOOL, arguments, 0)],
+                tool_calls=[_tool_call("call_tool", {"name": BUSINESS_TOOL, "arguments": arguments}, 0)],
                 usage=usage, finish_reason="tool_calls")
 
         return self._response(
@@ -245,7 +259,7 @@ class DemoImageScriptedAdapter(ModelAdapter):
         if not chosen_skills:
             return self._response(tool_calls=[], usage=usage)
         business_sent = any(
-            (call.get("name") or (call.get("function") or {}).get("name")) == BUSINESS_TOOL
+            _is_business_call(call, BUSINESS_TOOL)
             for message in messages if message.get("role") == "assistant"
             for call in (message.get("tool_calls") or [])
         )
@@ -270,9 +284,12 @@ class DemoImageScriptedAdapter(ModelAdapter):
                     method = str(item.get("tool") or _tool_for(main_skill, skill_id))
                 if missing:
                     continue
-                calls.append(_tool_call(BUSINESS_TOOL, {
-                    "method": method, "script": SCRIPT_PATH,
-                    "request": {"query": query}, "args": arg_values,
+                calls.append(_tool_call("call_tool", {
+                    "name": BUSINESS_TOOL,
+                    "arguments": {
+                        "method": method, "script": SCRIPT_PATH,
+                        "request": {"query": query}, "args": arg_values,
+                    },
                 }, len(calls)))
             if all_missing:
                 return self._response(tool_calls=[_tool_call("finish", {

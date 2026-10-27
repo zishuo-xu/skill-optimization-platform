@@ -34,65 +34,6 @@ const DEFAULT_PROMPT = `你是使用 Skill 包完成用户任务的执行 Agent�
    实际工具调用以运行时事件为准，不能靠终止摘要补记。
 8. 遇到工具错误按主 Skill 及本轮固定规则处理；不能声称成功。`;
 
-const TOOL_SCHEMA = [
-  {
-    name: 'list_tasks',
-    description: '查询项目中的任务列表',
-    parameters: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: '项目 ID' },
-        status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
-      },
-      required: ['project_id'],
-    },
-  },
-  {
-    name: 'get_task',
-    description: '查询单个任务详情',
-    parameters: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string' },
-      },
-      required: ['task_id'],
-    },
-  },
-  {
-    name: 'update_task_status',
-    description: '更新任务状态',
-    parameters: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string' },
-        status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
-      },
-      required: ['task_id', 'status'],
-    },
-  },
-  {
-    name: 'search_members',
-    description: '按姓名或角色搜索成员',
-    parameters: {
-      type: 'object',
-      properties: {
-        keyword: { type: 'string' },
-        role: { type: 'string' },
-      },
-      required: ['keyword'],
-    },
-  },
-  {
-    name: 'get_project',
-    description: '查询项目基本信息',
-    parameters: {
-      type: 'object',
-      properties: { project_id: { type: 'string' } },
-      required: ['project_id'],
-    },
-  },
-];
-
 const MANIFEST = {
   version: 1,
   main: 'SKILL.md',
@@ -327,7 +268,7 @@ const DATASET_CASES = CASE_DEFS.map((def) => ({
 function coverageFor(cases) {
   const skills = {};
   for (const sub of MANIFEST.subskills) skills[sub.skill_id] = { optimize: 0, validation: 0, final_test: 0, total: 0 };
-  const tools = Object.fromEntries(TOOL_SCHEMA.map((tool) => [tool.name, 0]));
+  const tools = {};
   const actions = { tool_call: 0, clarify: 0, no_action: 0 };
   const splitCounts = {};
   let multiRoute = 0;
@@ -427,7 +368,6 @@ function baseEnvironment(id, versionSeq, overrides = {}) {
       temperature: 0.2,
       max_tokens: 4096,
     },
-    tool_schema: clone(TOOL_SCHEMA),
     loader_config: {
       main_skill_mode: 'inject',
       subskill_tool: 'read_skill',
@@ -2058,7 +1998,7 @@ async function fetchImpl({ method, path, query = {}, body }) {
   if (match && method === 'POST') {
     const project = findProject(decodeURIComponent(match[1]));
     const payload = body || {};
-    const missing = ['prompt', 'model_config', 'tool_schema'].filter((field) => !payload[field]);
+    const missing = ['prompt', 'model_config'].filter((field) => !payload[field]);
     if (missing.length) throw new ApiError(`执行环境缺少字段: ${missing.join(', ')}`, { code: 'validation_error', status: 422, field_path: missing[0] });
     const versionSeq = Math.max(...environments.filter((env) => env.project_id === project.id).map((env) => env.version_seq), 0) + 1;
     const env = baseEnvironment(`env_${Date.now()}`, versionSeq, {
@@ -2066,7 +2006,6 @@ async function fetchImpl({ method, path, query = {}, body }) {
       prompt: payload.prompt,
       model_config: payload.model_config,
       optimizer_config: payload.optimizer_config || {},
-      tool_schema: payload.tool_schema,
       loader_config: payload.loader_config || {},
       run_config: payload.run_config || {},
       budget_config: payload.budget_config || {},
@@ -2523,7 +2462,6 @@ async function fetchImpl({ method, path, query = {}, body }) {
           { role: 'system', content: '[优化器系统 Prompt，已脱敏]\n你只能修改白名单内的 Markdown 文件……' },
           { role: 'user', content: '失败案例：case_002（$.status 预期 in_progress，实际 active）、case_006（漏调 get_task）……' },
         ],
-        tools: TOOL_SCHEMA.slice(0, 2),
         note: '这是按需加载的大内容示例，默认不在日志列表中渲染。',
       },
     });
@@ -2575,7 +2513,6 @@ function parseDatasetContent(content) {
     }
   }
   const skillIds = new Set(MANIFEST.subskills.map((sub) => sub.skill_id));
-  const toolNames = new Set(TOOL_SCHEMA.map((tool) => tool.name));
   const validCases = [];
   const seenIds = new Set();
   const seenQueries = new Map();
@@ -2596,7 +2533,7 @@ function parseDatasetContent(content) {
       }
     }
     for (const call of expected.tool_calls || []) {
-      if (call && call.name && !toolNames.has(call.name)) caseErrors.push({ code: 'unknown_tool', message: `未知工具：${call.name}`, field_path: 'expected.tool_calls' });
+      if (!call || typeof call.name !== 'string' || !call.name.trim() || !call.arguments || typeof call.arguments !== 'object' || Array.isArray(call.arguments)) caseErrors.push({ code: 'invalid_tool_call', message: '工具调用需要非空名称和参数对象', field_path: 'expected.tool_calls' });
     }
     if (seenIds.has(caseId)) caseErrors.push({ code: 'duplicate_case_id', message: `重复 case_id：${caseId}`, field_path: 'case_id' });
     if (caseErrors.length) {

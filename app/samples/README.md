@@ -1,13 +1,11 @@
 # 示例 Skill 包与示例数据（仅用于离线演示/测试）
 
 - `skill_package/`：主 `SKILL.md` + `references/` 下 21 个子技能 + `manifest.json`（稳定 skill_id → 路径映射）。
-- `tool_schema.json`：固定业务工具协议（21 个工具，平台管理，候选不可修改）。
 - `system_prompt.md`：需求文档 §31 的固定业务系统 Prompt 模板。
 - `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/预算/接受规则等）。
 - `image_skill_package/`：主技能负责语流理解与路由，12 个子技能负责修图参数契约。
   子技能选择为 `path + skillName`；业务调用为 `functionName + skillName + arguments`，
   `arguments` 包含 `method / script / request.query / args`。标准包字段完整，不再故意缺参数。
-- `image_tool_schema.json`：图片编辑工具协议（`imageEditWorkflow`）。
 - `image_system_prompt.md` / `image_environment.json`：图片编辑示例环境
   （provider=`demo_scripted`，model=`demo-image-v1`，domain=image）。
 - `image_dataset.jsonl`：覆盖 12 类操作、澄清、否定改口和有序复合任务。
@@ -43,7 +41,7 @@ fixtures 模拟业务工具返回，不实际生成图片。主 Skill 与 refere
 需要演示失败修复时可使用任务管理示例或在隔离测试中显式构造缺陷变体。
 
 已有本地修图项目可执行 `.venv/bin/python -m app.seed --refresh-image`：
-发布新的 Skill/工具协议/数据集版本，保留业务模型、优化模型、预算及所有历史；该操作不调用模型。
+发布新的 Skill/数据集版本，保留业务模型、优化模型、预算及所有历史；该操作不调用模型。
 不要用 `--reset` 覆盖自己的接入配置。
 
 设计与验证边界见 `docs/IMAGE_SKILL_EXPANSION.md`。

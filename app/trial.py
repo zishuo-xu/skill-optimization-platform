@@ -126,7 +126,6 @@ def _request(env: Mapping[str, Any], case: Mapping[str, Any], skill_version_id: 
         "system_prompt": env["prompt"],
         "model_config": model_config,
         "request_template": (env.get("model_config") or {}).get("request_template"),
-        "tool_schema": env.get("tool_schema") or [],
         "fixtures": case.get("fixtures") or [],
         "limits": {
             **loader_config,
@@ -154,10 +153,9 @@ def _score(case: Mapping[str, Any], actual: Mapping[str, Any], env: Mapping[str,
         return None, {}
     emit({"type": "scoring_started", "level": "info",
           "payload": {"title": "开始评分"}})
-    tool_schema = env.get("tool_schema") or []
     compare_rules = (env.get("scorer_config") or {}).get("compare")
     value_judge = judge_mod.ValueJudge.from_env(env)
-    score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
+    score = evaluation.score_case(expected, actual, compare_rules,
                                   semantic_fallback=value_judge is None)
     pending = score.get("pending_judgments") or []
     if not pending or value_judge is None:
@@ -180,7 +178,7 @@ def _score(case: Mapping[str, Any], actual: Mapping[str, Any], env: Mapping[str,
         emit({"type": "score_completed", "level": "error",
               "payload": {"title": "评分失败", "message": exc.message, "passed": False}})
         return marked, {}
-    score = evaluation.score_case(expected, actual, tool_schema, compare_rules,
+    score = evaluation.score_case(expected, actual, compare_rules,
                                   judgments=verdicts)
     score["judge"] = {key: stats[key] for key in ("items", "cached", "judged", "passed")}
     emit({"type": event_types.JUDGE_COMPLETED,

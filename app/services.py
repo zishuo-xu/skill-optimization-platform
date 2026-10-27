@@ -29,8 +29,6 @@ def default_environment_template() -> dict[str, Any]:
     prompt = (samples / "system_prompt.md").read_text(encoding="utf-8")
     template = json.loads((samples / "environment.json").read_text(encoding="utf-8"))
     template["prompt"] = prompt
-    template["tool_schema"] = json.loads(
-        (samples / "tool_schema.json").read_text(encoding="utf-8"))
     return template
 
 
@@ -50,24 +48,6 @@ def normalize_model_config(raw: Any) -> dict[str, Any]:
             normalized["heartbeat_interval_s"] = normalized["heartbeat_s"]
         normalized.pop("heartbeat_s", None)
     return normalized
-
-
-def normalize_tool_schema(raw: Any) -> list[dict[str, Any]]:
-    if isinstance(raw, dict) and isinstance(raw.get("tools"), list):
-        raw = raw["tools"]
-    if not isinstance(raw, list) or not raw:
-        raise ValidationError("tool_schema 必须是非空数组", field_path="tool_schema")
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict) or not item.get("name"):
-            raise ValidationError(f"tool_schema[{index}] 缺少工具名",
-                                  field_path=f"tool_schema[{index}].name")
-        if "parameters" not in item:
-            raise ValidationError(f"tool_schema[{index}] 缺少 parameters",
-                                  field_path=f"tool_schema[{index}].parameters")
-    names = [item["name"] for item in raw]
-    if len(set(names)) != len(names):
-        raise ValidationError("tool_schema 存在重复工具名", field_path="tool_schema")
-    return raw
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +215,6 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
         if provider not in ("heuristic", "demo_scripted", "openai_http", "enterprise_ws"):
             raise ValidationError("优化模型 provider 不支持",
                                   field_path="optimizer_config.provider")
-    tool_schema = normalize_tool_schema(payload.get("tool_schema"))
     loader_config = dict(payload.get("loader_config") or {})
     strict_finish = loader_config.get("strict_finish", False)
     if not isinstance(strict_finish, bool):
@@ -268,7 +247,6 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
         "prompt": prompt,
         "model_config": model_config,
         "optimizer_config": optimizer_config,
-        "tool_schema": tool_schema,
         "loader_config": loader_config,
         "run_config": run_config,
         "budget_config": budget_config,
@@ -459,9 +437,6 @@ def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
                     model_config[key] = value
     else:
         model_config = normalize_model_config(payload.get("model_config") or {})
-    tool_schema = payload.get("tool_schema")
-    if tool_schema:
-        normalize_tool_schema(tool_schema)
     provider = model_config.get("provider")
     if provider == "demo_scripted":
         return {"ok": True, "provider": provider,
@@ -535,8 +510,7 @@ def probe_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
     if mode not in ("probe", "check"):
         raise ValidationError("mode 必须是 probe 或 check", field_path="mode")
     if mode == "check":
-        return test_connection({"model_config": _probe_config(payload, target),
-                                "tool_schema": payload.get("tool_schema")})
+        return test_connection({"model_config": _probe_config(payload, target)})
     from .connection_probe import probe_connection as _probe
     return _probe(_probe_config(payload, target), target=target, input_text=input_text)
 
@@ -553,17 +527,6 @@ def _active_skill_ids(project: Mapping[str, Any]) -> list[str]:
     except NotFoundError:
         return []
     return [item["skill_id"] for item in (version.get("manifest") or {}).get("subskills") or []]
-
-
-def _active_tools(project: Mapping[str, Any]) -> list[str]:
-    environment_id = project.get("current_environment_id")
-    if not environment_id:
-        return []
-    try:
-        env = persistence.get_environment(environment_id)
-    except NotFoundError:
-        return []
-    return [item["name"] for item in env.get("tool_schema") or []]
 
 
 def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -584,28 +547,23 @@ def preflight_dataset(project_id: str | None, payload: Mapping[str, Any]) -> dic
         items, fmt = dataset_module.parse_payload(raw, filename)
     project = persistence.get_project(project_id) if project_id else {}
     skill_ids = _active_skill_ids(project)
-    tools = _active_tools(project)
     split_config = payload.get("split_config") or {
         "optimize": 0.7, "validation": 0.2, "final_test": 0.1}
     seed = int(payload.get("seed") or 42)
     manifest = {}
-    tool_schema: list[dict[str, Any]] = []
     if project:
         if project.get("current_skill_version_id"):
             manifest = persistence.get_skill_version(
                 project["current_skill_version_id"]).get("manifest") or {}
-        if project.get("current_environment_id"):
-            tool_schema = persistence.get_environment(
-                project["current_environment_id"]).get("tool_schema") or []
     report = dataset_module.validate_and_prepare(
-        items, manifest=manifest, tool_schema=tool_schema,
+        items, manifest=manifest,
         split_config=split_config, seed=seed)
     cases = report.get("cases") or []
     report["cases"] = cases
     report["ok"] = not report.get("errors")
     report["format"] = fmt
     report["filename"] = filename
-    coverage_stats = dataset_module.coverage(cases, skill_ids, tools)
+    coverage_stats = dataset_module.coverage(cases, skill_ids)
     coverage_stats["single_route_cases"] = max(
         0, int(coverage_stats.get("total") or 0)
         - int(coverage_stats.get("multi_route_cases") or 0))
@@ -675,14 +633,10 @@ def update_dataset_case(dataset_id: str, case: Mapping[str, Any], expected_hash:
     current = persistence.get_case(dataset_id, str(case.get("case_id") or ""))
     project = persistence.get_project(dataset["project_id"])
     manifest = {}
-    tools = []
     if project.get("current_skill_version_id"):
         manifest = persistence.get_skill_version(project["current_skill_version_id"]).get("manifest") or {}
-    if project.get("current_environment_id"):
-        tools = persistence.get_environment(project["current_environment_id"]).get("tool_schema") or []
     from . import dataset as dataset_module
     report = dataset_module.validate_and_prepare([dict(case)], manifest=manifest,
-                                                  tool_schema=tools,
                                                   split_config={"optimize": 1, "validation": 0, "final_test": 0})
     if report.get("errors"):
         raise ValidationError("案例校验未通过", code="dataset_invalid", details=report["errors"])
@@ -761,8 +715,7 @@ def dataset_detail(dataset_id: str) -> dict[str, Any]:
     project = persistence.get_project(dataset["project_id"])
     cases = persistence.all_cases(dataset_id)
     skill_ids = _active_skill_ids(project)
-    tools = _active_tools(project)
-    coverage = dataset_module.coverage(cases, skill_ids, tools)
+    coverage = dataset_module.coverage(cases, skill_ids)
     coverage["single_route_cases"] = max(
         0, int(coverage.get("total") or 0)
         - int(coverage.get("multi_route_cases") or 0))

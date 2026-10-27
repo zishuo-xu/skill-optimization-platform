@@ -207,7 +207,6 @@ function defaults() {
     // environments default to lenient; existing ones without rules are strict.
     scorer_compare: { mode: 'lenient', allow_extra_keys: true, field_rules: [] },
     scorer_compare_extra: {},
-    tool_schema: [],
     loader_config: {
       main_skill_mode: 'inject',
       subskill_tool: 'read_skill',
@@ -242,7 +241,6 @@ function toForm(env) {
       optimizer_headers_text: '{}',
       judge_request_template_text: '{}',
       judge_headers_text: '{}',
-      tool_schema_text: '[\n  {\n    "name": "list_tasks",\n    "description": "查询任务列表",\n    "parameters": {"type": "object", "properties": {}}\n  }\n]',
     };
   }
   const modelConfig = { ...base.model_config, ...(env.model_config || {}) };
@@ -280,7 +278,6 @@ function toForm(env) {
     prompt: env.prompt ?? base.prompt,
     model_config: modelConfig,
     optimizer_config: optimizerConfig,
-    tool_schema: env.tool_schema || [],
     loader_config: { ...base.loader_config, ...(env.loader_config || {}) },
     run_config: {
       ...base.run_config,
@@ -330,7 +327,6 @@ function toForm(env) {
     scorer_compare_extra: Object.fromEntries(
       Object.entries(compareSource).filter(([key]) => !['version', 'mode', 'allow_extra_keys', 'field_rules'].includes(key))
     ),
-    tool_schema_text: JSON.stringify(env.tool_schema || [], null, 2),
     reproducibility_note: env.reproducibility_note || '',
   };
 }
@@ -410,7 +406,6 @@ export default async function environmentView(container, ctx) {
     let optimizerRequestTemplate = {};
     let modelHeaders = {};
     let optimizerHeaders = {};
-    let toolSchema = [];
     try {
       requestTemplate = form.request_template_text?.trim() ? JSON.parse(form.request_template_text) : {};
       if (!requestTemplate || typeof requestTemplate !== 'object' || Array.isArray(requestTemplate)) throw new Error('必须是 JSON 对象');
@@ -452,13 +447,6 @@ export default async function environmentView(container, ctx) {
       } catch (error) {
         errors[errorPath] = `${label}不是合法 JSON：${error.message}`;
       }
-    }
-    try {
-      toolSchema = form.tool_schema_text?.trim() ? JSON.parse(form.tool_schema_text) : [];
-      if (!Array.isArray(toolSchema)) throw new Error('必须是 JSON 数组');
-    } catch (error) {
-      errors.tool_schema = `工具协议不是合法 JSON 数组：${error.message}`;
-      toolSchema = [];
     }
 
     const provider = form.model_config.provider;
@@ -563,7 +551,6 @@ export default async function environmentView(container, ctx) {
     }
 
     if (!form.prompt || !String(form.prompt).trim()) errors.prompt = '业务系统 Prompt 不能为空';
-    if (!toolSchema.length) errors.tool_schema = '工具协议至少需要 1 个工具';
 
     const loaderConfig = {
       ...form.loader_config,
@@ -653,7 +640,6 @@ export default async function environmentView(container, ctx) {
       prompt: form.prompt,
       model_config: modelConfig,
       optimizer_config: optimizerConfig,
-      tool_schema: toolSchema,
       loader_config: loaderConfig,
       run_config: runConfig,
       budget_config: budgetConfig,
@@ -1374,39 +1360,6 @@ export default async function environmentView(container, ctx) {
     });
   }
 
-  function toolsSection() {
-    const editable = EDITABLE();
-    const tools = Array.isArray(state.form.tool_schema) ? state.form.tool_schema : [];
-    const names = tools.map((tool) => tool.name).filter(Boolean);
-    const body = editable
-      ? h(
-          'div.stack',
-          null,
-          inputFor('tool_schema_text', {
-            label: '工具 Schema（JSON 数组）',
-            rows: 8,
-            mono: true,
-            hint: '保存时会校验 JSON 结构与必填字段；业务工具通过 fixtures 模拟，不执行真实写操作。',
-          }),
-          state.fieldErrors.tool_schema ? inlineError(state.fieldErrors.tool_schema) : null
-        )
-      : names.length
-      ? h(
-          'div.stack',
-          null,
-          h('div.tool-chip-list', null, ...names.map((name) => chip(name, 'neutral'))),
-          h('p.form-field__hint', { text: '工具名、描述、JSON Schema 与模拟返回均由平台管理，候选不能修改。' })
-        )
-      : h('p.muted.small', { text: '尚未配置工具协议。' });
-    return sectionCard({
-      title: '工具协议',
-      description: `${tools.length} 个业务工具 · 平台管理`,
-      collapsible: true,
-      open: Boolean(state.fieldErrors.tool_schema),
-      body,
-    });
-  }
-
   function loaderFacts() {
     const loader = state.form.loader_config || {};
     return factsList([
@@ -1598,7 +1551,7 @@ export default async function environmentView(container, ctx) {
       inputFor('scorer_compare.allow_extra_keys', {
         label: '多余字段',
         type: 'checkbox',
-        hint: '允许模型多传预期里没有的字段（工具协议明确禁止的字段仍算错）',
+        hint: '允许模型多传预期里没有的字段',
       }),
       fieldRulesEditor(),
       advancedSettings(
@@ -1847,7 +1800,7 @@ export default async function environmentView(container, ctx) {
 
     const groups = [
       ['业务接入', '先选择业务模型；Prompt 属于高级上下文设置。', [businessModelSection(), advancedSettings('高级：业务 Prompt', promptSection())]],
-      ['执行与工具', '工具协议、上下文加载和并发只在需要调整时展开。', [advancedSettings('高级：工具、上下文与并发', h('div.stack', null, toolsSection(), loaderSection(), runParamsSection()))]],
+      ['执行设置', '上下文加载和并发只在需要调整时展开。', [advancedSettings('高级：上下文与并发', h('div.stack', null, loaderSection(), runParamsSection()))]],
       ['优化与验收', '优化模型、评分方式与预算直接可见；验收规则按需查看。', [optimizerSection(), scoringRulesSection(), judgeSection(), budgetSection(), advancedSettings('高级：接受条件', acceptanceSection())]],
     ];
     const children = [
@@ -1914,7 +1867,7 @@ export default async function environmentView(container, ctx) {
     }
     const ok = await confirmDialog({
       title: '发布执行环境',
-      message: '发布后将设为项目当前环境，并冻结本轮使用的 Prompt、模型参数与工具协议。已有运行保留原快照。',
+      message: '发布后将设为项目当前环境，并冻结本轮使用的 Prompt 与模型参数。已有运行保留原快照。',
       confirmText: '发布并设为当前',
     });
     if (!ok) return;
@@ -2127,7 +2080,7 @@ export default async function environmentView(container, ctx) {
       let target = null;
       if (preferredId) target = state.versions.find((version) => version.id === preferredId) || null;
       if (!target) target = state.versions.find((version) => version.id === project.current_environment_id) || state.versions[0] || null;
-      if (target && !target.tool_schema) target = (await api.getEnvironment(target.id).catch(() => target)) || target;
+      if (target && !target.model_config) target = (await api.getEnvironment(target.id).catch(() => target)) || target;
       if (!target && detail) target = detail;
       state.env = target;
       state.credentialStatus = target?.credential_status || { model_config: {}, optimizer_config: {} };
@@ -2152,7 +2105,7 @@ export default async function environmentView(container, ctx) {
     container,
     pageHeader({
       title: '执行环境',
-      description: '业务 Prompt、模型接入与工具协议在启动时冻结；发布后只读，修改生成草稿。',
+      description: '业务 Prompt 与模型接入在启动时冻结；发布后只读，修改生成草稿。',
     }),
     versionHost,
     formHost

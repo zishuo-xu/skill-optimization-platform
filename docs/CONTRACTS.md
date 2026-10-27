@@ -131,7 +131,7 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 
 ### 2.4 评分结果（`app/evaluation.py`, T1）
 
-`score_case(expected, actual, tool_schema, compare_rules) -> dict`：
+`score_case(expected, actual, compare_rules) -> dict`：
 
 ```json
 {
@@ -156,7 +156,7 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 ```
 
 诊断的可选字段：`note`（语义比较时评分模型的说明）、`basis`（判定依据：这一项为什么算错，
-例如「严格比较：值必须与数据集预期完全相等」「按字段规则 $.method，严格比较…」「工具 Schema 只允许这些值：[…]」
+例如「严格比较：值必须与数据集预期完全相等」「按字段规则 $.method，严格比较…」
 「数据集允许的技能路线：task_query」「模型返回：<错误信息>」）。旧结果没有 `basis` 时前端按类别补一条通用依据。
 
 规则（score-v1，冻结）：
@@ -175,7 +175,7 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
   clarify 需 action 正确且 missing_fields 集合一致（expected 未提供 missing_fields
   时只看 action）；no_action 需 action 正确且无业务工具调用。
 - 参数比较默认 JSON 深度精确：对象键顺序无关、类型严格、缺失≠null、数组顺序敏
-  感、额外参数判错；Schema 校验先于值比较。仅当 `expected.compare` 显式声明
+  感、额外参数判错。仅当 `expected.compare` 显式声明
   版本化规则时启用数值容差/时间规范化/数组无序/字段允许值。
 
 `aggregate(results: list[（case, score)], planned: int, duration_ms, usage, cost,
@@ -201,7 +201,7 @@ fixture_misses) -> metrics`（同名函数在 evaluator 中）：
 
 - `parse_payload(raw: bytes|str, filename: str) -> (items: list[dict], format: str)`：
   支持 `.jsonl` / `.json`（数组），容忍 BOM 与空行；解析错误带行号。
-- `validate_and_prepare(items, *, manifest, tool_schema, split_config, seed) -> dict`：
+- `validate_and_prepare(items, *, manifest, split_config, seed) -> dict`：
   返回
   ```json
   {"cases": [...], "errors": [{"line": 3, "case_id": "...", "code": "unknown_skill_id",
@@ -254,13 +254,14 @@ class ModelAdapter:                     # app/adapters/base.py
   `finish(action, selected_skills, missing_fields, summary)`；记录路线事件与读取
   事件；finish 摘要与事件不一致→`protocol_error`；纯文本协议由 `app/adapters/text_parse.py`
   固定解析（未知名称/缺行/多义/截断→parse_failed，不调用模型猜测）。
+- Native 模型通过平台通用入口 `call_tool(name, arguments)` 调用 Skill 中定义的业务工具；内部工具仍独立注册。封装参数必须符合基本结构，工具名和业务参数不依赖独立环境 Schema。
 - `app/execution.py::run_case(case_request, adapter, emit) -> CaseExecutionResult`：
   组装 messages（系统 Prompt + 主 Skill + 按加载策略提供的子技能 + query + 允许
   的 context，绝不含 expected），循环最多 `max_model_calls` 次；执行内部工具与
   业务工具（业务工具通过 fixtures 模拟，未匹配立即记录 fixture_miss 且不访问真
   实服务）；输出结果与轨迹事件；支持取消检查。
   `CaseRequest`（dict）：query/context/skill_snapshot_path/system_prompt/
-  model_config/request_template/tool_schema/fixtures/limits/run_id/case_id/
+  model_config/request_template/fixtures/limits/run_id/case_id/
   manifest/allowed_skill_ids。`limits` 含 `max_model_calls`、`max_steps`、
   `case_timeout_s`、`max_context_chars`、`context_overflow`（error/frozen_strategy）。
 - 取消/超时：`case_timeout_s` 到点→`timeout`（infrastructure）；取消→`cancelled`。

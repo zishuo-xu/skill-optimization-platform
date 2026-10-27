@@ -17,8 +17,6 @@ def _image_project():
         encoding="utf-8"))
     template["prompt"] = (config.SAMPLES_DIR / "image_system_prompt.md").read_text(
         encoding="utf-8")
-    template["tool_schema"] = json.loads(
-        (config.SAMPLES_DIR / "image_tool_schema.json").read_text(encoding="utf-8"))
     services.create_environment(project["id"], template, status="published",
                                 set_current=True)
     services.create_dataset(project["id"], {

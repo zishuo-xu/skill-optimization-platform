@@ -1,6 +1,6 @@
 """Deterministic ``score-v1`` scorer and metric aggregation.
 
-The scorer is a pure function of ``(expected, actual, tool_schema, compare_rules)``.
+The scorer is a pure function of ``(expected, actual, compare_rules)``.
 It follows the frozen rules in ``docs/CONTRACTS.md`` §2.4 and requirement §15/§16:
 
 * Routing (R), tool arguments (A) and joint (J) are scored independently. A wrong
@@ -8,8 +8,7 @@ It follows the frozen rules in ``docs/CONTRACTS.md`` §2.4 and requirement §15/
   correct dispatch does not rescue wrong arguments.
 * Argument comparison is exact JSON deep comparison by default (object key order
   ignored, types strict, missing != null, array order significant, extra
-  arguments are errors). JSON-Schema validation for the actual arguments runs
-  *before* value comparison.
+  arguments are errors). Argument rules come from the expected case.
 * Numeric tolerance, datetime normalisation, unordered arrays and per-field
   allowed values only activate through an explicit versioned ``compare-v1``
   rule set on ``expected["compare"]`` (or the ``compare_rules`` argument).
@@ -148,68 +147,6 @@ def _child_path(path: str, key: str) -> str:
     if path in ("", "$"):
         return f"$.{key}"
     return f"{path}.{key}"
-
-
-# --------------------------------------------------------------------------- #
-# tool schema helpers
-# --------------------------------------------------------------------------- #
-def _schema_from_spec(spec: Any) -> dict[str, Any]:
-    if isinstance(spec, Mapping):
-        for key in ("parameters", "input_schema", "schema", "json_schema"):
-            nested = spec.get(key)
-            if isinstance(nested, Mapping):
-                return dict(nested)
-        return dict(spec)
-    return {}
-
-
-def tool_schema_map(tool_schema: Any) -> dict[str, dict[str, Any]]:
-    """Normalise the environment tool schema into ``{tool_name: json_schema}``.
-
-    Accepts an OpenAI-style tool list, ``{"tools": [...]}``, a mapping of tool
-    name to schema/spec, or a plain list of names (schema checks are then skipped).
-    """
-
-    result: dict[str, dict[str, Any]] = {}
-    if tool_schema is None:
-        return result
-    if isinstance(tool_schema, Mapping):
-        tools = tool_schema.get("tools")
-        if _is_sequence(tools):
-            return tool_schema_map(tools)
-        for name, spec in tool_schema.items():
-            if isinstance(name, str) and name:
-                result[name] = _schema_from_spec(spec)
-        return result
-    if _is_sequence(tool_schema):
-        for entry in tool_schema:
-            if isinstance(entry, str):
-                result[entry] = {}
-                continue
-            if not isinstance(entry, Mapping):
-                continue
-            function = entry.get("function")
-            fn = function if isinstance(function, Mapping) else {}
-            name = entry.get("name") or fn.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            spec = entry.get("parameters")
-            if spec is None:
-                spec = entry.get("input_schema")
-            if spec is None:
-                spec = fn.get("parameters")
-            if spec is None:
-                spec = fn.get("input_schema")
-            if spec is None:
-                spec = fn.get("schema")
-            result[name] = _schema_from_spec(spec)
-    return result
-
-
-def tool_names(tool_schema: Any) -> list[str]:
-    """Return declared tool names in declaration order."""
-
-    return list(tool_schema_map(tool_schema))
 
 
 # --------------------------------------------------------------------------- #
@@ -947,167 +884,6 @@ def _compare_arguments_unordered(expected: list[Any], actual: list[Any], path: s
 # --------------------------------------------------------------------------- #
 # JSON-schema validation (runs before value comparison)
 # --------------------------------------------------------------------------- #
-_SCHEMA_TYPE_CHECKS = {
-    "object": lambda value: isinstance(value, Mapping),
-    "array": lambda value: isinstance(value, (list, tuple)),
-    "string": lambda value: isinstance(value, str),
-    "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
-    "number": _is_number,
-    "boolean": lambda value: isinstance(value, bool),
-    "null": lambda value: value is None,
-}
-
-
-def _check_schema_type(value: Any, declared: Any) -> bool:
-    if isinstance(declared, str):
-        check = _SCHEMA_TYPE_CHECKS.get(declared)
-        return check(value) if check else True
-    if _is_sequence(declared):
-        return any(_check_schema_type(value, item) for item in declared)
-    return True
-
-
-_CONTAINER_TYPES = ("object", "array")
-
-
-def _lenient_type_ok(value: Any, declared: Any) -> bool:
-    """Scalar type check after lenient normalisation ("3" for integer etc.)."""
-    if _check_schema_type(value, declared):
-        return True
-    key = _lenient_key(value)
-    if key is None:
-        return False
-    names = [declared] if isinstance(declared, str) else list(declared) if _is_sequence(declared) else []
-    kind, normalised = key
-    for name in names:
-        if name == "number" and kind == "num":
-            return True
-        if name == "integer" and kind == "num" and float(normalised).is_integer():
-            return True
-        if name == "boolean" and kind == "bool":
-            return True
-        if name == "string" and kind in ("num", "bool"):
-            return True
-    return False
-
-
-def _validate_schema(schema: Any, value: Any, path: str,
-                     ctx: dict[str, Any]) -> bool:
-    if not isinstance(schema, Mapping) or not schema:
-        return True
-    mode = _mode_at(path, ctx) if ctx.get("rules") else "strict"
-    if mode == "ignore":
-        return True
-    if mode != ctx.get("mode"):
-        ctx = dict(ctx, mode=mode)
-    diags: list[dict[str, Any]] = ctx["diags"]
-    tool = ctx.get("tool")
-    case_id = ctx.get("case_id")
-    ok = True
-
-    declared_type = schema.get("type")
-    if declared_type is not None and not _check_schema_type(value, declared_type):
-        declared = [declared_type] if isinstance(declared_type, str) else list(declared_type) \
-            if _is_sequence(declared_type) else []
-        container_declared = any(name in _CONTAINER_TYPES for name in declared)
-        if mode == "keys" and not container_declared:
-            pass  # values (including their scalar type) are not compared
-        elif mode in ("lenient", "semantic") and _lenient_type_ok(value, declared_type):
-            pass
-        else:
-            diags.append(_diag("type_error", case_id=case_id, tool=tool,
-                               field_path=path, expected_value=declared_type,
-                               actual_value=_json_type(value)))
-            return False
-    if mode == "keys" and not isinstance(value, (Mapping, list, tuple)):
-        return ok  # enum / range are value checks
-
-    if isinstance(value, Mapping):
-        required = schema.get("required")
-        if _is_sequence(required):
-            for key in required:
-                if isinstance(key, str) and key not in value \
-                        and _mode_at(_child_path(path, key), ctx) != "ignore":
-                    diags.append(_diag("missing_arg", case_id=case_id, tool=tool,
-                                       field_path=_child_path(path, key),
-                                       expected_value="required"))
-                    ok = False
-        properties = schema.get("properties")
-        props = properties if isinstance(properties, Mapping) else {}
-        for key, sub_schema in props.items():
-            if key in value:
-                ok = _validate_schema(sub_schema, value[key],
-                                      _child_path(path, str(key)), ctx) and ok
-        additional = schema.get("additionalProperties")
-        if additional is False:
-            for key in value:
-                if str(key) in props:
-                    continue
-                diags.append(_diag("extra_arg", case_id=case_id, tool=tool,
-                                   field_path=_child_path(path, str(key)),
-                                   actual_value=value[key]))
-                ok = False
-        elif isinstance(additional, Mapping):
-            for key in value:
-                if str(key) in props:
-                    continue
-                ok = _validate_schema(additional, value[key],
-                                      _child_path(path, str(key)), ctx) and ok
-
-    if isinstance(value, (list, tuple)):
-        items = schema.get("items")
-        if isinstance(items, Mapping):
-            for index, item in enumerate(value):
-                ok = _validate_schema(items, item, f"{path}[{index}]", ctx) and ok
-        if mode == "keys":
-            return ok
-        min_items = schema.get("minItems")
-        if isinstance(min_items, int) and len(value) < min_items:
-            diags.append(_diag("value_error", case_id=case_id, tool=tool,
-                               field_path=path, expected_value=f">={min_items}",
-                               actual_value=len(value)))
-            ok = False
-        max_items = schema.get("maxItems")
-        if isinstance(max_items, int) and len(value) > max_items:
-            diags.append(_diag("value_error", case_id=case_id, tool=tool,
-                               field_path=path, expected_value=f"<={max_items}",
-                               actual_value=len(value)))
-            ok = False
-
-    enum = schema.get("enum")
-    if mode == "semantic" and _is_sequence(enum):
-        return ok  # the judge decides whether the value means one of them
-    if mode == "lenient":
-        enum_hit = _is_sequence(enum) and any(_lenient_equal(item, value, ctx.get("rules") or {})
-                                              for item in enum)
-    else:
-        enum_hit = _is_sequence(enum) and any(json_deep_equal(value, item) for item in enum)
-    if _is_sequence(enum) and not enum_hit:
-        diags.append(_diag("value_error", case_id=case_id, tool=tool,
-                           field_path=path, expected_value=list(enum),
-                           actual_value=value))
-        ok = False
-
-    minimum = schema.get("minimum")
-    maximum = schema.get("maximum")
-    if mode in ("lenient", "semantic") and not _is_number(value):
-        key = _lenient_key(value)
-        if key and key[0] == "num":
-            value = key[1]
-    if _is_number(value):
-        if _is_number(minimum) and value < minimum:
-            diags.append(_diag("value_error", case_id=case_id, tool=tool,
-                               field_path=path, expected_value=f">={minimum}",
-                               actual_value=value))
-            ok = False
-        if _is_number(maximum) and value > maximum:
-            diags.append(_diag("value_error", case_id=case_id, tool=tool,
-                               field_path=path, expected_value=f"<={maximum}",
-                               actual_value=value))
-            ok = False
-    return ok
-
-
 # --------------------------------------------------------------------------- #
 # tool-call sequence comparison
 # --------------------------------------------------------------------------- #
@@ -1330,7 +1106,7 @@ def _evaluate_routing(candidate: Mapping[str, Any], actual_route: Sequence[str],
 
 def _evaluate_tool_args(candidate: Mapping[str, Any],
                         actual_calls: Sequence[Mapping[str, Any]],
-                        schema_ok: bool, case_id: str | None,
+                        case_id: str | None,
                         rules: Mapping[str, Any],
                         tool_capable: bool = True) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     expected_calls = candidate["tool_calls"]
@@ -1355,13 +1131,11 @@ def _evaluate_tool_args(candidate: Mapping[str, Any],
         compared = _compare_calls_unordered(list(expected_calls), list(actual_calls), ctx)
     else:
         compared = _compare_calls_ordered(list(expected_calls), list(actual_calls), ctx)
-    passed = bool(compared and schema_ok)
+    passed = bool(compared)
     if passed:
         reason = "业务工具调用与参数完全匹配"
-    elif not compared:
-        reason = "业务工具调用名、数量、顺序或参数不匹配"
     else:
-        reason = "业务工具参数未通过 JSON Schema 校验"
+        reason = "业务工具调用名、数量、顺序或参数不匹配"
     return ({
         "evaluable": True,
         "passed": passed,
@@ -1506,22 +1280,6 @@ def _compare_basis(diag: Mapping[str, Any], rules: Mapping[str, Any]) -> str:
     return basis
 
 
-def _schema_basis(diag: Mapping[str, Any]) -> str:
-    category = diag.get("category")
-    expected = diag.get("expected_value")
-    if category == "type_error":
-        return f"工具 Schema 规定类型为 {_short(expected)}"
-    if category == "missing_arg":
-        return "工具 Schema 把这个字段列为必填（required）"
-    if category == "extra_arg":
-        return "工具 Schema 不允许额外字段（additionalProperties: false）"
-    if isinstance(expected, list):
-        return f"工具 Schema 只允许这些值：{_short(expected, 120)}"
-    if isinstance(expected, str) and expected[:2] in (">=", "<="):
-        return f"工具 Schema 要求取值 {expected}"
-    return "工具 Schema 校验未通过"
-
-
 def _plain(value: Any) -> str:
     if value is None or value == "":
         return "空"
@@ -1573,9 +1331,7 @@ def _annotate_basis(diags: list[dict[str, Any]], *, source: str,
             continue
         category = diag.get("category")
         basis = ""
-        if source == "schema":
-            basis = _schema_basis(diag)
-        elif source == "error":
+        if source == "error":
             if category == "fixture_miss":
                 basis = "数据集没有为这次工具调用准备匹配的模拟返回（工具名或 match 条件不符）"
             else:
@@ -1613,8 +1369,8 @@ def _annotate_basis(diags: list[dict[str, Any]], *, source: str,
 def _dedupe_diagnostics(diagnostics: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop duplicate ``(category, skill, tool, field, case)`` diagnostics.
 
-    The same problem can be reported by both schema validation and value
-    comparison; the aggregated diagnostics should count the field once.
+    The same problem can be reported by multiple comparison branches; the
+    aggregated diagnostics should count the field once.
     """
 
     seen: set[tuple[Any, ...]] = set()
@@ -1732,8 +1488,7 @@ def _expected_structure_errors(expected: Mapping[str, Any]) -> list[dict[str, An
     return errors
 
 
-def score_case(expected: Any, actual: Any, tool_schema: Any = None,
-               compare_rules: Any = None, *,
+def score_case(expected: Any, actual: Any, compare_rules: Any = None, *,
                judgments: Mapping[str, Mapping[str, Any]] | None = None,
                semantic_fallback: bool = False) -> dict[str, Any]:
     """Score one case with ``score-v1`` (see module docstring for the rules).
@@ -1785,17 +1540,6 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
 
     error_kind, error_code = _classify_error(actual)
 
-    schema_map = tool_schema_map(tool_schema)
-    schema_diags: list[dict[str, Any]] = []
-    schema_ok = True
-    for index, call in enumerate(actual_calls):
-        schema = schema_map.get(call.get("name") or "")
-        if not isinstance(schema, Mapping) or not schema:
-            continue
-        call_ctx = {"diags": schema_diags, "rules": rules, "case_id": case_id,
-                    "tool": call.get("name")}
-        schema_ok = _validate_schema(schema, call["arguments"], "$", call_ctx) and schema_ok
-
     action_ok = actual_action == action
 
     candidates = _expected_candidates(expected)
@@ -1804,7 +1548,7 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
         routing, routing_diags = _evaluate_routing(
             candidate, actual_route, action, routing_capable, case_id)
         tool_args, tool_diags = _evaluate_tool_args(
-            candidate, actual_calls, schema_ok, case_id, rules, tool_capable)
+            candidate, actual_calls, case_id, rules, tool_capable)
         joint_diags: list[dict[str, Any]] = []
         joint = _candidate_joint(
             candidate, action, action_ok, routing, tool_args,
@@ -1887,10 +1631,8 @@ def score_case(expected: Any, actual: Any, tool_schema: Any = None,
     _annotate_basis(diagnostics, source="compare", rules=rules,
                     candidate=chosen["candidate"], expected_action=action,
                     expected_missing=expected_missing)
-    _annotate_basis(schema_diags, source="schema", rules=rules)
     error = actual.get("error") if isinstance(actual.get("error"), Mapping) else None
     _annotate_basis(error_diags, source="error", rules=rules, error=error)
-    diagnostics.extend(schema_diags)
     diagnostics.extend(error_diags)
 
     if error_kind == "infrastructure":

@@ -327,7 +327,7 @@ def _version_texts(version_id: str) -> dict[str, str]:
 # environments
 # --------------------------------------------------------------------------- #
 _ENV_FIELDS = (
-    "prompt", "model_config", "optimizer_config", "tool_schema", "loader_config",
+    "prompt", "model_config", "optimizer_config", "loader_config",
     "run_config", "budget_config", "scorer_config", "acceptance_config",
     "adapter_hash", "reproducibility_note",
 )
@@ -340,7 +340,7 @@ def compute_environment_hash(payload: Mapping[str, Any]) -> str:
 def create_environment(project_id: str, payload: Mapping[str, Any], *,
                        parent_id: str | None = None, status: str = "published",
                        set_current: bool = False) -> dict[str, Any]:
-    missing = [field for field in ("prompt", "model_config", "tool_schema") if not payload.get(field)]
+    missing = [field for field in ("prompt", "model_config") if not payload.get(field)]
     if missing:
         raise ValidationError(f"执行环境缺少字段: {', '.join(missing)}", field_path=missing[0])
     env_hash = compute_environment_hash(payload)
@@ -353,16 +353,15 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
     with transaction() as conn:
         conn.execute(
             "INSERT INTO environments (id, project_id, parent_id, version_seq, status,"
-            " prompt, model_config_json, optimizer_config_json, tool_schema_json,"
-            " loader_config_json, run_config_json, budget_config_json, scorer_config_json,"
-            " acceptance_config_json, adapter_hash, hash, reproducibility_note, created_at,"
-            " published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " prompt, model_config_json, optimizer_config_json, loader_config_json,"
+            " run_config_json, budget_config_json, scorer_config_json, acceptance_config_json,"
+            " adapter_hash, hash, reproducibility_note, created_at, published_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 environment_id, project_id, parent_id, version_seq, status,
                 values["prompt"],
                 _dumps(values["model_config"] or {}),
                 _dumps(values["optimizer_config"] or {}),
-                _dumps(values["tool_schema"] or []),
                 _dumps(values["loader_config"] or {}),
                 _dumps(values["run_config"] or {}),
                 _dumps(values["budget_config"] or {}),

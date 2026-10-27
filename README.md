@@ -241,9 +241,9 @@ your-skill.zip
 | --- | --- |
 | 项目 | 列表/新建/归档/概览/版本记录；配置完整性与主按钮随状态变化 |
 | Skill 包 | ZIP 或文件夹 JSON 导入、SKILL.md + manifest 校验、21 子技能映射、缺失入口/重复 ID/失效引用/编码错误/路径穿越/绝对路径/符号链接检查、草稿编辑、发布不可变版本、导出还原 |
-| 执行环境 | 业务 Prompt 模板、业务/优化模型独立配置（标准 API / WebSocket 网关；优化模型另可选规则修复）、工具协议、上下文加载、运行参数、预算；配置发布后只读，修改创建草稿；业务/优化模型支持自定义输入连接测试 |
+| 执行环境 | 业务 Prompt 模板、业务/优化模型独立配置（标准 API / WebSocket 网关；优化模型另可选规则修复）、上下文加载、运行参数、预算；配置发布后只读，修改创建草稿；业务/优化模型支持自定义输入连接测试 |
 | 数据集 | JSONL/JSON 导入预检、稳定 case_id、按 group_id 固定种子划分、覆盖统计、重复 query 警告；已发布版本只读，可复制草稿在线修订案例并发布新版本；导出同结构 |
-| 评测 | 确定性评分器 R/A/J 独立计分、集合/有序路线、`ordered_exact`/`unordered` 调用、严格 JSON 深度比较、Schema 先校验、clarify/no_action、诊断分类与字段路径 |
+| 评测 | 确定性评分器 R/A/J 独立计分、集合/有序路线、`ordered_exact`/`unordered` 调用、严格 JSON 深度比较、clarify/no_action、诊断分类与字段路径 |
 | 单轮优化 | 预检 → 基线评测（兼容缓存复用）→ 错误分析（仅优化集）→ 单候选生成 → 静态检查 → 复测 + 3 次配对验证 → 冻结规则判定；候选不覆盖当前版本 |
 | 版本与应用 | 父版本/来源运行/指标/文件差异；应用、冲突校验、回滚（指针切回历史版本）、ZIP 导出与报告 JSON/CSV |
 | 实时运行记录 | 事件持久化 + SSE 回放/续接、问题摘要与定位、筛选、展开模型正文/工具参数、按需加载大内容、断线重连、终态历史回放；旧记录明确区分案例结果与逐次回复 |
@@ -272,7 +272,7 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 关键设计：
 
-- **执行环境冻结**：`EnvironmentVersion` 保存 Prompt、模型/优化器配置、工具协议、加载策略、
+- **执行环境冻结**：`EnvironmentVersion` 保存 Prompt、模型/优化器配置、加载策略、
   预算、评分器与接受规则及哈希；运行快照记录 Skill/环境/数据/评分器/重复次数指纹。
   基线缓存只在指纹完全一致时复用，否则重跑并说明原因。
 - **权限隔离**：业务执行器只收到 query、允许的上下文、Skill 内容、工具定义与模拟返回，
@@ -288,7 +288,7 @@ Worker 线程（租约 + 心跳）── app/single_round.py
 
 | 阶段 | 内容 | 产物 |
 | --- | --- | --- |
-| preflight | 文件完整性、工具协议、数据划分、预算、fixture 覆盖 | 预检事件与运行快照 |
+| preflight | 文件完整性、数据划分、预算、fixture 覆盖 | 预检事件与运行快照 |
 | baseline_eval | 优化集基线；兼容缓存则复用，否则新跑 | 轨迹、基线指标 |
 | error_analysis | 仅优化集失败案例与诊断聚合 | 归因证据 |
 | candidate_generation | 模型/启发式生成一个补丁；失败时先记录直接原因再回退 | 候选定义 |
@@ -454,7 +454,7 @@ app/
   worker.py          租约 + 心跳后台执行器
   adapters/          demo_scripted / openai_http / enterprise_ws / 流事件
   obs_tools.py       select_skill / read_skill / finish 协议
-  samples/           示例 Skill 包、工具协议、Prompt、数据集、环境
+  samples/           示例 Skill 包、Prompt、数据集、环境
   seed.py            演示项目初始化
 start.sh             一键启动（macOS/Linux；自动装依赖/初始化示例/启动/打开浏览器）
 start.command        macOS 双击启动入口

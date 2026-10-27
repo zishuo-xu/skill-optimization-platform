@@ -51,7 +51,7 @@ def rules(mode: str, **extra) -> dict:
 
 
 def score(result, compare=None, expected=None, **kwargs):
-    return score_case(expected or EXPECTED, result, SCHEMA, compare, **kwargs)
+    return score_case(expected or EXPECTED, result, compare, **kwargs)
 
 
 # --------------------------------------------------------------------------- #

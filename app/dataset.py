@@ -30,7 +30,7 @@ from collections import Counter
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .errors import ValidationError
-from .evaluation import compare_rules_error, normalise_judge_criteria, tool_names
+from .evaluation import compare_rules_error, normalise_judge_criteria
 from .ids import stable_case_id
 
 SPLITS = ("optimize", "validation", "final_test")
@@ -231,31 +231,6 @@ def _skill_aliases(manifest: Any) -> dict[str, str]:
             if len(ids) == 1}
 
 
-def _tool_name_list(tools: Any) -> list[str]:
-    if tools is None:
-        return []
-    if isinstance(tools, Mapping):
-        declared = tool_names(tools)
-        if declared:
-            return declared
-    if isinstance(tools, str):
-        return [tools]
-    if _is_sequence(tools):
-        result: list[str] = []
-        for entry in tools:
-            if isinstance(entry, str):
-                name = entry
-            elif isinstance(entry, Mapping):
-                name = entry.get("name")
-            else:
-                continue
-            if isinstance(name, str) and name and name not in result:
-                result.append(name)
-        if result:
-            return result
-    return tool_names(tools)
-
-
 def _split_ratios(config: Any) -> dict[str, float]:
     ratios = dict(DEFAULT_SPLIT_RATIOS)
     if isinstance(config, Mapping):
@@ -412,7 +387,7 @@ def _validate_routes_value(routes: Any, field_path: str,
     return result
 
 
-def _validate_calls_value(calls: Any, field_path: str, tools: Sequence[str],
+def _validate_calls_value(calls: Any, field_path: str,
                           add: _Add, line: int | None,
                           case_id: str | None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -430,9 +405,6 @@ def _validate_calls_value(calls: Any, field_path: str, tools: Sequence[str],
         if not isinstance(name, str) or not name:
             add(f"{call_path}.name", "invalid_tool_call",
                 "工具调用缺少 name/functionName")
-            continue
-        if tools and name not in tools:
-            add(f"{call_path}.name", "unknown_tool", f"未知的工具: {name}")
             continue
         arguments = call.get("arguments")
         if arguments is None:
@@ -464,7 +436,7 @@ def _validate_calls_value(calls: Any, field_path: str, tools: Sequence[str],
     return result
 
 
-def _validate_fixtures(fixtures: Any, tools: Sequence[str], line: int | None,
+def _validate_fixtures(fixtures: Any, line: int | None,
                        case_id: str | None,
                        add: _Add) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -481,9 +453,6 @@ def _validate_fixtures(fixtures: Any, tools: Sequence[str], line: int | None,
         name = fixture.get("name")
         if not isinstance(name, str) or not name:
             add(f"{fixture_path}.name", "invalid_fixture", "fixture 缺少 name")
-            continue
-        if name != "*" and tools and name not in tools:
-            add(f"{fixture_path}.name", "unknown_tool", f"未知的工具: {name}")
             continue
         match = fixture.get("match")
         if match is None:
@@ -571,8 +540,7 @@ def _normalise_tool_list(value: Any, fallback_arguments: Any = None) -> Any:
     return [_normalise_tool_entry(entry, fallback_arguments) for entry in value]
 
 
-def _auto_fixtures(calls: Any, raw: Mapping[str, Any],
-                   tools: Sequence[str] | None = None) -> list[dict[str, Any]]:
+def _auto_fixtures(calls: Any, raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     mocks = raw.get("mocks")
     has_default_mock = "mock" in raw
     default_response = raw["mock"] if has_default_mock else {"ok": True}
@@ -625,8 +593,7 @@ def _normalise_fixtures_shorthand(value: Any) -> Any:
     return value
 
 
-def _normalise_compact_case(raw: Mapping[str, Any],
-                            tools: Sequence[str] | None = None) -> Mapping[str, Any]:
+def _normalise_compact_case(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     """Expand compact dataset shorthand into the canonical case shape.
 
     Compact example::
@@ -710,20 +677,19 @@ def _normalise_compact_case(raw: Mapping[str, Any],
     if "fixtures" not in data:
         calls = exp.get("tool_calls")
         if (isinstance(calls, list) and calls) or "mock" in data or "mocks" in data:
-            data["fixtures"] = _auto_fixtures(calls, data, tools)
+            data["fixtures"] = _auto_fixtures(calls, data)
     else:
         data["fixtures"] = _normalise_fixtures_shorthand(data["fixtures"])
     return data
 
 
 def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
-                   tools: Sequence[str],
                    line_fallback: int | None = None,
                    skill_aliases: Mapping[str, str] | None = None
                    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Validate and normalise one raw case object."""
 
-    raw = _normalise_compact_case(raw, tools)
+    raw = _normalise_compact_case(raw)
     aliases = skill_aliases or {}
     errors: list[dict[str, Any]] = []
     line = raw.get("_line") if isinstance(raw.get("_line"), int) else line_fallback
@@ -812,8 +778,7 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
                                         "expected.routes", skill_ids,
                                         add, line, case_id, aliases)
     calls_out = _validate_calls_value(expected.get("tool_calls"),
-                                      "expected.tool_calls", tools,
-                                      add, line, case_id)
+                                      "expected.tool_calls", add, line, case_id)
 
     missing_fields_raw = expected.get("missing_fields")
     missing_fields: list[str] = []
@@ -845,7 +810,7 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
                 if "tool_calls" in variant:
                     variant_out["tool_calls"] = _validate_calls_value(
                         variant.get("tool_calls"), f"{variant_path}.tool_calls",
-                        tools, add, line, case_id)
+                        add, line, case_id)
                 if "call_match" in variant:
                     mode = variant.get("call_match")
                     if mode not in CALL_MATCH_MODES:
@@ -922,7 +887,7 @@ def _validate_case(raw: Mapping[str, Any], skill_ids: Sequence[str],
         add("expected.action", "conflicting_expected",
             "tool_call 案例不能声明 missing_fields")
 
-    fixtures_out = _validate_fixtures(raw.get("fixtures"), tools, line, case_id, add)
+    fixtures_out = _validate_fixtures(raw.get("fixtures"), line, case_id, add)
 
     if errors:
         return None, errors
@@ -1064,13 +1029,18 @@ def _skill_id_list(skill_ids: Any) -> list[str]:
     return []
 
 
-def coverage(cases: Iterable[Mapping[str, Any]], skill_ids: Any = None,
-             tools: Any = None) -> dict[str, Any]:
+def coverage(cases: Iterable[Mapping[str, Any]], skill_ids: Any = None) -> dict[str, Any]:
     """Coverage statistics; mirrors ``persistence.dataset_coverage`` structure."""
 
     rows = list(cases)
     skill_list = _skill_id_list(skill_ids)
-    tool_list = _tool_name_list(tools)
+    # Tool names are data-set expectations, not environment declarations.
+    tool_list: list[str] = []
+    for case in rows:
+        for call in _case_tool_calls(case):
+            name = call.get("name")
+            if isinstance(name, str) and name and name not in tool_list:
+                tool_list.append(name)
 
     skill_counts: dict[str, dict[str, int]] = {
         skill_id: {"optimize": 0, "validation": 0, "final_test": 0, "total": 0}
@@ -1119,7 +1089,7 @@ def coverage(cases: Iterable[Mapping[str, Any]], skill_ids: Any = None,
 # preflight entry point
 # --------------------------------------------------------------------------- #
 def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
-                         manifest: Any = None, tool_schema: Any = None,
+                         manifest: Any = None,
                          split_config: Mapping[str, Any] | None = None,
                          seed: int = DEFAULT_SEED) -> dict[str, Any]:
     """Validate raw items, generate ids, assign splits and compute statistics.
@@ -1133,7 +1103,8 @@ def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
 
     skill_ids = _manifest_skill_ids(manifest)
     skill_aliases = _skill_aliases(manifest)
-    tools = _tool_name_list(tool_schema)
+    # Tool names and argument rules come from the selected skill at execution
+    # time. Dataset validation only checks the call shape and expected values.
 
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -1157,7 +1128,7 @@ def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
                                  str(message), None))
             continue
 
-        case, case_errors = _validate_case(raw, skill_ids, tools, index + 1,
+        case, case_errors = _validate_case(raw, skill_ids, index + 1,
                                             skill_aliases)
         if case_errors:
             errors.extend(case_errors)
@@ -1196,7 +1167,7 @@ def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
         split = case.get("split") or "optimize"
         split_counts[split] = split_counts.get(split, 0) + 1
 
-    coverage_stats = coverage(cases, skill_ids, tools)
+    coverage_stats = coverage(cases, skill_ids)
     stats = {
         "total": total,
         "valid": len(cases),

@@ -76,7 +76,7 @@ flowchart LR
 
 1. 创建项目。
 2. 导入 Skill ZIP（或文件夹 JSON）→ 安全检查 → manifest 校验 → 发布不可变 `SkillVersion`。
-3. 创建执行环境：业务 Prompt、业务模型、优化模型、工具协议、加载策略、运行参数、预算、
+3. 创建执行环境：业务 Prompt、业务模型、优化模型、加载策略、运行参数、预算、
    评分器与接受规则 → 发布 `EnvironmentVersion`（哈希冻结）。
 4. 导入数据集 JSONL/JSON → 预检（行号/错误/字段路径）→ 按 group 固定种子划分 →
    发布 `DatasetVersion`（不可原地修改）。
@@ -105,7 +105,7 @@ stateDiagram-v2
 
 `optimize` 运行的阶段：
 
-1. `preflight`：Skill 完整性、工具协议、数据划分、预算、fixture 覆盖（按本次运行涉及划分）。
+1. `preflight`：Skill 完整性、数据划分、预算、fixture 覆盖（按本次运行涉及划分）。
 2. `baseline_eval`：优化集基线；若存在指纹完全一致的 completed 基线则复制结果复用，否则新跑。
 3. `error_analysis`：只聚合优化集失败案例（含 expected、实际结果、评分诊断、可观察事件）。
 4. `candidate_generation`：优化模型或冻结启发式生成**一个**补丁；失败时先记录直接原因，
@@ -140,7 +140,7 @@ erDiagram
 | --- | --- |
 | `projects` | 当前 Skill/环境/数据集指针（指针切换只影响平台，不修改外部目录） |
 | `skill_versions` | 不可变包版本：manifest、文件哈希、content_hash、父版本、来源运行、status |
-| `environments` | Prompt、模型/优化器配置、工具协议、加载/运行/预算/评分器/接受规则、hash |
+| `environments` | Prompt、模型/优化器配置、加载/运行/预算/评分器/接受规则、hash |
 | `datasets` / `cases` | 数据版本与案例（expected/fixtures/split/group/tags/validation） |
 | `runs` | 运行快照、指纹、状态/阶段/进度、预算、决策、租约与心跳、指标/成本 |
 | `case_results` | 每轮 × 阶段 × 案例 × 变体 × 重复序号唯一；actual/scores/error/usage |

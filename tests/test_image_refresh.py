@@ -16,7 +16,6 @@ def existing_image_project():
         project['id'], files, package['manifest'], status='published', set_current=True)
     template = json.loads((config.SAMPLES_DIR / 'image_environment.json').read_text())
     template['prompt'] = 'Previous business prompt'
-    template['tool_schema'] = json.loads((config.SAMPLES_DIR / 'image_tool_schema.json').read_text())
     template['model_config']['api_key_ref'] = 'env:IMAGE_SAMPLE_TEST_KEY'
     template['loader_config']['max_steps'] = 8
     env = services.create_environment(project['id'], template)

@@ -12,7 +12,6 @@ from app.obs_tools import ObsToolError, ObsToolRuntime
 from tests.test_a13_capabilities import (
     NATIVE_CAPS,
     ScriptedAdapter,
-    TOOL_SCHEMA,
     finish_response,
     make_request,
     package,
@@ -57,8 +56,8 @@ def test_select_and_read_same_batch_do_not_duplicate_body(package):
             ScriptedAdapter.tool("select_skill", {"skill_id": "task_query"}, "s1"),
             ScriptedAdapter.tool("read_skill", {"path": "references/task_query.md"}, "r1"),
         ]},
-        {"tool_calls": [ScriptedAdapter.tool(
-            "list_tasks", {"project_id": "P123", "status": "in_progress"}, "b1")]},
+            {"tool_calls": [ScriptedAdapter.tool(
+                "call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}}, "b1")]},
         finish_response(),
     ], capabilities=NATIVE_CAPS)
 
@@ -89,9 +88,10 @@ def test_adaptive_model_skips_read_roundtrip_and_scores_same(package):
                 return {"tool_calls": [self.tool("select_skill", {"skill_id": "task_query"})]}
             if any("【文件 references/task_query.md】" in message.get("content", "")
                    for message in tool_messages):
-                if not any(message.get("name") == "list_tasks" for message in tool_messages):
-                    return {"tool_calls": [self.tool("list_tasks", {
-                        "project_id": "P123", "status": "in_progress"})]}
+                if not any(message.get("name") == "call_tool" for message in tool_messages):
+                    return {"tool_calls": [self.tool("call_tool", {
+                        "name": "list_tasks",
+                        "arguments": {"project_id": "P123", "status": "in_progress"}})]}
                 return finish_response()
             return {"tool_calls": [self.tool("read_skill", {"path": "references/task_query.md"})]}
 
@@ -169,7 +169,7 @@ def test_prompt_marker_does_not_falsely_mark_skill_loaded(package):
 
 def test_new_three_turn_flow_and_legacy_four_turn_flow_score_equally(package):
     root, manifest = package
-    business = {"tool_calls": [ScriptedAdapter.tool("list_tasks", {"project_id": "P123", "status": "in_progress"})]}
+    business = {"tool_calls": [ScriptedAdapter.tool("call_tool", {"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}})]}
     sequences = [
         [select_response("task_query"), business, finish_response()],
         [select_response("task_query"), {"tool_calls": [ScriptedAdapter.tool("read_skill", {"path": "references/task_query.md"})]}, business, finish_response()],
@@ -178,7 +178,7 @@ def test_new_three_turn_flow_and_legacy_four_turn_flow_score_equally(package):
         adapter = ScriptedAdapter(sequence, capabilities=NATIVE_CAPS)
         actual = execution.run_case(make_request(root, manifest), adapter)
         expected = {"action": "tool_call", "routes": [["task_query"]], "tool_calls": [{"name": "list_tasks", "arguments": {"project_id": "P123", "status": "in_progress"}}]}
-        assert evaluation.score_case(expected, actual, TOOL_SCHEMA)["passed"]
+        assert evaluation.score_case(expected, actual, None)["passed"]
         assert len(adapter.calls) == len(sequence)
         assert sum(m.get("content", "").count("任务查询：查询项目任务。") for m in adapter.calls[-1]["messages"]) == 1
 

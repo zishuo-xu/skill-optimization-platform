@@ -23,23 +23,22 @@ def _samples() -> Path:
     return Path(__file__).resolve().parent.parent / "app" / "samples"
 
 
-def _image_fixture_data() -> tuple[list[dict], dict, list[dict]]:
+def _image_fixture_data() -> tuple[list[dict], dict]:
     samples = _samples()
     items, fmt = dataset.parse_payload(
         (samples / "image_dataset.jsonl").read_bytes(), "image_dataset.jsonl")
     assert fmt == "jsonl"
     manifest = json.loads(
         (samples / "image_skill_package" / "manifest.json").read_text(encoding="utf-8"))
-    tools = json.loads((samples / "image_tool_schema.json").read_text(encoding="utf-8"))
     prepared = dataset.validate_and_prepare(
-        items, manifest=manifest, tool_schema=tools,
+        items, manifest=manifest,
         split_config={"optimize": 0.7, "validation": 0.2, "final_test": 0.1},
         seed=42)
     assert prepared["errors"] == []
-    return prepared["cases"], manifest, tools
+    return prepared["cases"], manifest
 
 
-def _case_request(case: dict, manifest: dict, tools: list[dict], root: Path) -> dict:
+def _case_request(case: dict, manifest: dict, root: Path) -> dict:
     return {
         "query": case["query"],
         "context": case.get("context") or {},
@@ -47,7 +46,6 @@ def _case_request(case: dict, manifest: dict, tools: list[dict], root: Path) -> 
         "system_prompt": (_samples() / "image_system_prompt.md").read_text(encoding="utf-8"),
         "model_config": {"provider": "demo_scripted", "model": "demo-image-v1", "domain": "image"},
         "request_template": {},
-        "tool_schema": tools,
         "fixtures": case.get("fixtures") or [],
         "limits": {"max_model_calls": 20, "max_steps": 20, "case_timeout_s": 10,
                    "max_context_chars": 60000},
@@ -74,7 +72,7 @@ def test_image_package_import_export_contains_all_references():
 
 
 def test_image_dataset_coverage_and_protocol_shape():
-    cases, manifest, tools = _image_fixture_data()
+    cases, manifest = _image_fixture_data()
     by_split = {split: sum(case["split"] == split for case in cases)
                 for split in ("optimize", "validation", "final_test")}
     assert len(cases) == 62
@@ -100,20 +98,20 @@ def test_image_dataset_coverage_and_protocol_shape():
 
 @pytest.mark.parametrize("case_index", range(62))
 def test_each_image_case_executes_and_scores_full_protocol(case_index: int):
-    cases, manifest, tools = _image_fixture_data()
+    cases, manifest = _image_fixture_data()
     case = cases[case_index]
     root = _samples() / "image_skill_package"
-    actual = execution.run_case(_case_request(case, manifest, tools, root),
+    actual = execution.run_case(_case_request(case, manifest, root),
                                 build_adapter({"provider": "demo_scripted",
                                                "model": "demo-image-v1", "domain": "image"}))
     assert actual["error"] is None, (case["case_id"], actual.get("error"))
-    score = score_case(case["expected"], actual, tools)
+    score = score_case(case["expected"], actual)
     assert score["status"] == "pass", (case["case_id"], score)
     assert score["joint"] is True
 
 
 def test_wrong_method_and_script_are_rejected_by_full_protocol_score():
-    cases, _manifest, tools = _image_fixture_data()
+    cases, _manifest = _image_fixture_data()
     case = next(case for case in cases if case["case_id"] == "image_color_transfer_opt_1")
     actual = {
         "action": "tool_call", "selected_skills": ["image_color_transfer"],
@@ -122,15 +120,15 @@ def test_wrong_method_and_script_are_rejected_by_full_protocol_score():
             "request": {"query": case["query"]},
             "args": case["expected"]["tool_calls"][0]["arguments"]["args"]}}],
     }
-    score = score_case(case["expected"], actual, tools)
+    score = score_case(case["expected"], actual)
     assert score["status"] == "fail"
     assert score["tool_args"]["passed"] is False
 
 
 def test_sky_region_does_not_invent_a_target_color():
-    _cases, manifest, tools = _image_fixture_data()
+    _cases, manifest = _image_fixture_data()
     request = _case_request({"case_id": "missing-color", "query": "把天空换个颜色"},
-                            manifest, tools, _samples() / "image_skill_package")
+                            manifest, _samples() / "image_skill_package")
     actual = execution.run_case(request, build_adapter({"provider": "demo_scripted", "domain": "image"}))
     assert actual["action"] == "clarify"
     assert actual["selected_skills"] == ["image_color_transfer"]
@@ -139,12 +137,12 @@ def test_sky_region_does_not_invent_a_target_color():
 
 
 def test_clarify_and_too_many_operations_never_execute_business_tool():
-    cases, manifest, tools = _image_fixture_data()
+    cases, manifest = _image_fixture_data()
     root = _samples() / "image_skill_package"
     for case in cases:
         if case["expected"]["action"] != "clarify":
             continue
-        actual = execution.run_case(_case_request(case, manifest, tools, root),
+        actual = execution.run_case(_case_request(case, manifest, root),
                                     build_adapter({"provider": "demo_scripted",
                                                    "model": "demo-image-v1", "domain": "image"}))
         assert actual["tool_calls"] == [], case["case_id"]
@@ -152,10 +150,10 @@ def test_clarify_and_too_many_operations_never_execute_business_tool():
 
 
 def test_three_operations_load_only_the_required_references_before_business_calls():
-    cases, manifest, tools = _image_fixture_data()
+    cases, manifest = _image_fixture_data()
     case = next(case for case in cases if case['case_id'] == 'multi_three_ops')
     actual = execution.run_case(
-        _case_request(case, manifest, tools, _samples() / 'image_skill_package'),
+        _case_request(case, manifest, _samples() / 'image_skill_package'),
         build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
     paths = {s['skill_id']: s['path'] for s in manifest['subskills']}
     expected_ids = case['expected']['routes'][0]
@@ -192,7 +190,7 @@ def test_v1_minimal_skill_package_remains_importable(tmp_path):
     request = {
         "query": "帮我换色成夕阳", "skill_snapshot_path": str(root),
         "system_prompt": "legacy", "manifest": manifest,
-        "allowed_skill_ids": ["legacy_color"], "tool_schema": [{"name": "imageEditWorkflow", "parameters": {"type": "object"}}],
+        "allowed_skill_ids": ["legacy_color"],
         "fixtures": [{"name": "imageEditWorkflow", "match": {}, "response": {"ok": True}}],
         "limits": {"max_model_calls": 6, "max_steps": 6, "case_timeout_s": 5},
         "loader_config": {"mode": "on_demand"}, "run_id": "legacy", "case_id": "legacy-1",
@@ -217,7 +215,6 @@ def test_image_baseline_and_noop_optimize_lifecycle_is_isolated():
                                   status="published", set_current=True, message="image test")
     env_template = json.loads((root / "image_environment.json").read_text(encoding="utf-8"))
     env_template["prompt"] = (root / "image_system_prompt.md").read_text(encoding="utf-8")
-    env_template["tool_schema"] = json.loads((root / "image_tool_schema.json").read_text(encoding="utf-8"))
     env_template["run_config"].update({"concurrency": 1, "base_repeats": 1, "validation_repeats": 1})
     services.create_environment(project["id"], env_template, status="published", set_current=True)
     lines = (root / "image_dataset.jsonl").read_text(encoding="utf-8").splitlines()
@@ -259,11 +256,10 @@ def test_legacy_mapping_repair_changes_actual_execution(tmp_path):
                 "missing_fields": []}
     case = {"case_id": "legacy-color-repair", "query": query,
             "fixtures": [{"name": "imageEditWorkflow", "match": {}, "response": {"ok": True}}]}
-    tools = json.loads((_samples() / "image_tool_schema.json").read_text())
-    request = _case_request(case, manifest, tools, root)
+    request = _case_request(case, manifest, root)
     adapter = build_adapter({"provider": "demo_scripted", "model": "demo-image-v1", "domain": "image"})
     actual = execution.run_case(request, adapter)
-    score = score_case(expected, actual, tools)
+    score = score_case(expected, actual)
     assert score["status"] == "fail"
     outcome = optimizer.generate_candidate({
         "baseline_skill_version": {"manifest": manifest, "files": files},
@@ -277,4 +273,4 @@ def test_legacy_mapping_repair_changes_actual_execution(tmp_path):
         (root / name).write_bytes(content.encode() if isinstance(content, str) else content)
     repaired = execution.run_case(request, adapter)
     assert repaired["error"] is None
-    assert score_case(expected, repaired, tools)["joint"] is True
+    assert score_case(expected, repaired)["joint"] is True

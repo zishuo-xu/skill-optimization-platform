@@ -77,7 +77,7 @@ def test_validation_and_final_answers_not_leaked_to_execution():
         "skill_snapshot_path": str(snapshot),
         "system_prompt": (config.SAMPLES_DIR / "system_prompt.md").read_text(
             encoding="utf-8"),
-        "model_config": {"provider": "demo_scripted"}, "tool_schema": [],
+        "model_config": {"provider": "demo_scripted"},
         "fixtures": case["fixtures"], "limits": {"max_model_calls": 6},
         "run_id": "run_a20", "case_id": "case_a20",
         "manifest": package["manifest"],

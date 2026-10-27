@@ -214,18 +214,6 @@ def _case_request(skill_root, manifest, config: dict, *, limits=None,
         "system_prompt": "你是使用 Skill 包完成用户任务的执行 Agent。",
         "model_config": config,
         "request_template": {},
-        "tool_schema": [{
-            "name": "list_tasks",
-            "description": "按项目与状态查询任务列表",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "project_id": {"type": "string"},
-                    "status": {"type": "string"},
-                },
-                "required": ["project_id", "status"],
-            },
-        }],
         "fixtures": [{
             "name": "list_tasks",
             "match": {"project_id": "P123", "status": "in_progress"},
@@ -265,9 +253,9 @@ def _case_scripts() -> dict[int, list[str]]:
             usage={"prompt_tokens": 120, "completion_tokens": 12}),
         # turn 2: business tool call
         2: _stream(tool_calls=[
-            {"index": 0, "id": "call_task",
-             "function": {"name": "list_tasks",
-                          "arguments": '{"project_id":"P123","status":"in_progress"}'}},
+             {"index": 0, "id": "call_task",
+             "function": {"name": "call_tool",
+                          "arguments": '{"name":"list_tasks","arguments":{"project_id":"P123","status":"in_progress"}}'}},
         ], finish_reason="tool_calls",
             usage={"prompt_tokens": 150, "completion_tokens": 20}),
         # turn 3: finish

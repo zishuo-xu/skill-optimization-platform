@@ -41,7 +41,6 @@ from .adapters.base import (
     emit_event,
     json_dumps,
     normalize_capabilities,
-    normalize_tool_definitions,
     normalize_usage,
     parse_tool_arguments,
     redact,
@@ -83,6 +82,7 @@ TEXT_PROTOCOL_ADDENDUM = """
 工具：<工具名> {"参数": "值"}        （每次业务工具调用一行，按调用顺序排列）
 结束：{"action": "tool_call|clarify|no_action", "selected_skills": ["<skill_id>"], "missing_fields": [], "summary": "<简短摘要>"}
 """
+
 
 
 class _Failure(Exception):
@@ -259,6 +259,10 @@ NATIVE_PROTOCOL_ADDENDUM = (
     "\n\n【内部工具协议补充】\n"
     "调用 select_skill 后，所选技能正文已在当前上下文中：首次加载直接返回正文，预加载或重复选择不重复注入；"
     "无需再调用 read_skill 读取同一路径。read_skill 仅用于读取尚未加载的其他引用文件。"
+    "\n\n【原生业务工具调用协议】\n"
+    "平台只提供一个业务入口 call_tool。业务工具名称和参数格式来自已加载的子技能；"
+    "调用时必须传入 JSON：{\"name\": \"<Skill 中的业务工具名>\", \"arguments\": {<工具参数>}}。"
+    "不要直接调用业务工具名，也不要把 select_skill、read_skill、finish 或 call_tool 放入 name。"
 )
 
 
@@ -397,7 +401,6 @@ class _CaseRunner:
         self.model_config: dict[str, Any] = dict(self.request.get("model_config") or {})
         self.request_template: dict[str, Any] = _scrub(
             dict(self.request.get("request_template") or {}))
-        self.tool_schema: list[dict[str, Any]] = list(self.request.get("tool_schema") or [])
         self.fixtures = _FixtureHandle(self.request.get("fixtures") or [])
         self.capabilities = normalize_capabilities(
             getattr(adapter, "capabilities", {}) or {})
@@ -416,8 +419,6 @@ class _CaseRunner:
             self.request.get("tool_protocol")
             or self.model_config.get("tool_protocol")
             or ("native" if self.capabilities.get("native_tools") else "text")).lower()
-        self.business_tools = normalize_tool_definitions(self.tool_schema)
-        self.business_tool_names = [tool["function"]["name"] for tool in self.business_tools]
         self.obs = ObsToolRuntime(
             skill_snapshot_path=str(self.request.get("skill_snapshot_path") or ""),
             manifest=manifest,
@@ -552,7 +553,27 @@ class _CaseRunner:
     def tools_for_call(self) -> list[dict[str, Any]]:
         if self.tool_protocol != "native" or not self.capabilities.get("native_tools"):
             return []
-        return self.business_tools + self.obs.tool_definitions()
+        # Business tools are declared by the loaded Skill, so the environment
+        # does not carry a second tool registry.  Native providers still need
+        # one stable callable shape; the model supplies the actual business
+        # name and arguments in the call payload.
+        business = {
+            "type": "function",
+            "function": {
+                "name": "call_tool",
+                "description": "调用子技能中定义的业务工具。name 填工具名，arguments 填工具参数。",
+                "parameters": {
+                    "type": "object",
+                    "required": ["name", "arguments"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "arguments": {"type": "object"},
+                    },
+                },
+            },
+        }
+        return [business, *self.obs.tool_definitions()]
 
     def _invoke_config(self) -> dict[str, Any]:
         config = dict(self.model_config)
@@ -744,8 +765,27 @@ class _CaseRunner:
                     "content": json.dumps({"ok": False, "error": "案例已结束，未执行该调用"},
                                           ensure_ascii=False)})
                 continue
-            name = call["name"]
+            protocol_name = call["name"]
+            name = protocol_name
             arguments = call["arguments"]
+            wrapped_business = False
+            if name == "call_tool":
+                if set(arguments) != {"name", "arguments"}:
+                    raise _Failure("format_error",
+                                   "call_tool 只允许 name 与 arguments 字段")
+                business_name = arguments.get("name")
+                business_arguments = arguments.get("arguments")
+                if not isinstance(business_name, str) or not business_name.strip():
+                    raise _Failure("format_error", "call_tool 缺少业务工具名称")
+                business_name = business_name.strip()
+                if business_name == "call_tool" or business_name in _INTERNAL:
+                    raise _Failure("protocol_error",
+                                   f"call_tool 不能调用内部工具: {business_name}")
+                if not isinstance(business_arguments, Mapping):
+                    raise _Failure("format_error", "call_tool.arguments 必须是 JSON 对象")
+                name = business_name
+                arguments = dict(business_arguments)
+                wrapped_business = True
             if name in _INTERNAL:
                 self._count_step(name)
                 try:
@@ -756,12 +796,15 @@ class _CaseRunner:
                 self.messages.append({"role": "tool", "tool_call_id": call["id"],
                                       "name": name, "content": tool_text})
                 continue
-            if name in self.business_tool_names:
-                self._execute_business_tool(name, arguments, call_id=call_id,
-                                            tool_call_id=call["id"])
-                continue
-            raise _Failure("protocol_error",
-                           f"模型调用了未在工具协议中声明的工具: {name}")
+            if self.tool_protocol == "native" and not wrapped_business:
+                raise _Failure("protocol_error",
+                               f"原生协议必须通过 call_tool 调用业务工具: {name}")
+            # All non-internal names come from the loaded Skill.  Fixtures are
+            # the execution boundary; an unknown name fails there without
+            # contacting a real service or consulting a hidden registry.
+            self._execute_business_tool(name, arguments, call_id=call_id,
+                                        tool_call_id=call["id"],
+                                        message_name=protocol_name)
 
     @staticmethod
     def _internal_tool_message(name: str, outcome: Mapping[str, Any]) -> str:
@@ -783,7 +826,8 @@ class _CaseRunner:
         return json_dumps({"ok": True, "action": outcome.get("action")})
 
     def _execute_business_tool(self, name: str, arguments: Mapping[str, Any], *,
-                               call_id: str, tool_call_id: str) -> None:
+                               call_id: str, tool_call_id: str,
+                               message_name: str | None = None) -> None:
         self._count_step(name)
         safe_arguments = redact(dict(arguments))
         started = time.monotonic()
@@ -822,7 +866,8 @@ class _CaseRunner:
                             "consume": hit.get("consume")})
         self.tool_calls.append({"name": name, "arguments": dict(arguments)})
         self.messages.append({
-            "role": "tool", "tool_call_id": tool_call_id, "name": name,
+            "role": "tool", "tool_call_id": tool_call_id,
+            "name": message_name or name,
             "content": json_dumps(payload_response),
         })
 
@@ -835,7 +880,7 @@ class _CaseRunner:
                 content, self.capabilities,
                 known_skill_ids=self.obs.known_skill_ids,
                 aliases=self.aliases,
-                known_tool_names=self.business_tool_names,
+                known_tool_names=None,
                 require_routing=require_routing,
                 allow_missing_routing=allow_missing_routing)
         except text_parse.TextParseError as exc:
