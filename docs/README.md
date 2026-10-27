@@ -26,5 +26,5 @@
 | --- | --- |
 | [PLATFORM_REVIEW_RSI_2026-10-25.md](PLATFORM_REVIEW_RSI_2026-10-25.md) | RSI 方向的平台评审、问题与后续建议 |
 | [MINIMAL_REDESIGN.md](MINIMAL_REDESIGN.md) | 已选“最小改版”的范围与验收；保留单轮内核和简洁页面 |
-| [IMAGE_SKILL_EXPANSION.md](IMAGE_SKILL_EXPANSION.md) | 修图主技能分发、12 类参数子技能与示例验证 |
+| [IMAGE_SKILL_EXPANSION.md](IMAGE_SKILL_EXPANSION.md) | 修图主技能分发、13 类参数子技能与示例验证 |
 | [ENTERPRISE_GATEWAY_REVIEW.md](ENTERPRISE_GATEWAY_REVIEW.md) | 网关专项问题、修复与本地验收边界 |

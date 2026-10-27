@@ -57,7 +57,7 @@ bash scripts/setup.sh
 ./run.sh
 ```
 
-已有修图示例可使用 `.venv/bin/python -m app.seed --refresh-image` 更新为 12 类语流参数技能；
+已有修图示例可使用 `.venv/bin/python -m app.seed --refresh-image` 更新为 13 类语流参数技能；
 它发布新版本并保留模型接入、预算和历史，不清空数据，也不发起模型调用。
 
 ### Skill 包格式
@@ -110,7 +110,7 @@ your-skill.zip
 **推荐用下面的简化写法**，只写你关心的“选中哪个子技能 + 调什么工具/参数”：
 
 ```json
-{"query":"帮我修一修眼睛，让它更有神采","skill":"references/image-one-word-fix.md","tool":{"functionName":"imageEditWorkflow","skillName":"gallery-image-editor","arguments":{"args":{"useOneWordFixPicture":"帮我修一修眼睛，让它更有神采"},"method":"imageOneWordFixPicture","request":{"query":"帮我修一修眼睛，让它更有神采"},"script":"scripts/ImageEditorAdaptor.ets"}},"mock":{"ok":true}}
+{"query":"帮我修一修眼睛，让它更有神采","skill":"references/image-one-word-fix.md","tool":{"functionName":"editImage","skillName":"sample-photo-editor","arguments":{"args":{"instruction":"帮我修一修眼睛，让它更有神采"},"method":"retouch_from_text","request":{"query":"帮我修一修眼睛，让它更有神采","totalSteps":1,"currentStep":1},"script":"handlers/photo_ops.py"}},"mock":{"code":0}}
 ```
 
 简化字段：
@@ -127,7 +127,7 @@ your-skill.zip
 
 #### 渐进式 Skill 的写法
 
-渐进式 Skill 的特点是先选中子技能，再按需通过 `read_skill` 读取更多 reference。
+渐进式 Skill 先选中子技能：`select_skill` 返回选中正文；如需其他 reference，可再按需使用 `read_skill`。
 平台**只把显式子技能选择计入 R**，读取更多 reference 不计分、也不需要写进数据集：
 
 - 只选一次子技能（最常见）：用上面的最小示例即可，`skill` 写那一个子技能。
@@ -145,7 +145,7 @@ your-skill.zip
   `mocks` 按工具配置的返回优先于通配返回。想故意测试缺模拟返回，请显式写 `"fixtures": []`。
 - 只关心工具内部参数子树时，可显式使用 `args`：
   ```json
-  {"query":"把这张图调成蓝色","skill":"image_color_transfer","tool":{"name":"imageEditWorkflow","args":{"targetColor":"蓝色"}},"mock":{"ok":true}}
+  {"query":"把这张图调成蓝色","skill":"image_color_transfer","tool":{"name":"editImage","args":{"targetColor":"蓝色"}},"mock":{"code":0}}
   ```
   平台会只比较实际调用的 `arguments.args`，外层 `method`/`script`/`request` 不参与 A 评分。
   当前修图示例使用完整 `arguments`；同一工具承载多种 method 时应同时检查方法和包装，避免调用错方法仍通过。
@@ -168,7 +168,7 @@ your-skill.zip
 - 重复 `case_id` 会阻止发布；重复 query 仅警告；无效应修复或在导入时明确剔除
 
 仓库示例 `app/samples/dataset.jsonl`（45 条任务管理）与
-`app/samples/image_dataset.jsonl`（12 类语流修图，含澄清与多操作）都使用上述简化写法，
+`app/samples/image_dataset.jsonl`（13 类语流修图，含澄清与多操作）都使用上述简化写法，
 可直接打开参考；导入后平台内部自动展开为完整的 `expected`/`fixtures`。
 
 打开页面左侧的「示例项目：任务管理」或「示例项目：修图」，进入「运行详情」查看基线与优化运行。
@@ -200,7 +200,7 @@ your-skill.zip
 
 ## 2. 演示结果（确定性示例环境）
 
-示例环境使用确定性模拟器与冻结启发式优化器，保证离线可重复。
+示例环境使用确定性模拟器与冻结启发式优化器。下表是历史任务管理演示结果；当前 seed 命令运行优化后，候选验收需单独启动。
 
 **示例项目：任务管理**（45 条：33 优化 / 8 验证 / 4 最终测试）：
 
@@ -210,8 +210,9 @@ your-skill.zip
 | 工具入参准确率 A | 63.33%（19/30） | **100%**（30/30） | 42.9%（9/21） | **100%** |
 | 联合通过率 J | 60.61%（20/33） | **100%**（33/33） | 37.5%（9/24） | **100%** |
 
-**示例项目：修图**现为完整的语流路由示例：主 Skill 分发 12 类子技能，子技能定义参数。
-覆盖口语、否定改口、澄清及最多三步有序任务，工具期望值校验完整的 method/script/request/args。
+**示例项目：修图**现为完整的语流路由示例：主 Skill 分发 13 类子技能，子技能定义参数。
+117 条合成案例覆盖口语、参数边界、否定改口、澄清及最多三步有序任务；校验 method/script/request/args，排除图片定位符。
+修图示例的技能文案与接口标识使用合成教学协议，含背景去色；request 只保留当前步骤片段并携带步骤编号。
 标准包不再故意缺参数或包含错误映射；基线已通过时不会伪造优化提升。
 离线模拟器、真实模型抽查与新增业务方法的真实 SDK 支持必须分别验证。
 具体结构见 [修图扩展设计](docs/IMAGE_SKILL_EXPANSION.md) 和 [示例说明](app/samples/README.md)。

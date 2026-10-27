@@ -1566,7 +1566,7 @@ export default async function environmentView(container, ctx) {
           'div.stack.stack--sm',
           null,
           h('p.small', { text: '语义比较时，可以给某个字段写关键词或一句要求，评分模型据此判断；关键词按字面全部出现时直接算对。也可以在单个案例里用 compare 覆盖这里的设置。' }),
-          h('pre.code-block', { text: '{"query": "把图调成蓝色", "skill": "image_color_transfer",\n "tool": {"name": "imageEditWorkflow", "args": {"targetColor": "蓝色"}},\n "judge": {"$.args.targetColor": {"keywords": ["蓝"], "requirement": "表示蓝色系即可"}}}' })
+          h('pre.code-block', { text: '{"query": "把图调成蓝色", "skill": "image_color_transfer",\n "tool": {"name": "editImage", "args": {"targetColor": "蓝色"}},\n "judge": {"$.args.targetColor": {"keywords": ["蓝"], "requirement": "表示蓝色系即可"}}}' })
         )
       )
     );

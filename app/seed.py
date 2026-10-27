@@ -73,9 +73,9 @@ DEMO_SPECS = [
     },
     {
         "name": DEMO_IMAGE_PROJECT_NAME,
-        "description": "将用户修图语流分发到 12 类子技能，生成有序、完整的工作流参数。",
+        "description": "将用户修图语流分发到 13 类子技能，生成有序、完整的工作流参数。",
         "zip": build_image_package_zip,
-        "version_message": "语流修图 Skill 包（主技能路由 + 12 类参数子技能）",
+        "version_message": "语流修图 Skill 包（主技能路由 + 13 类参数子技能）",
         "environment": "image_environment.json",
         "prompt": "image_system_prompt.md",
         "dataset": "image_dataset.jsonl",
@@ -184,7 +184,7 @@ def refresh_image_sample() -> dict:
             env_payload[key][field] = max(int(env_payload[key].get(field) or 0),
                                           int(template[key][field]))
     env_payload["reproducibility_note"] = (
-        "12 类修图示例；模型接入配置沿用既有版本。新增 method 需由真实业务 SDK 实现；"
+        "13 类修图示例；模型接入配置沿用既有版本。新增 method 需由真实业务 SDK 实现；"
         "demo_scripted 成绩只代表确定性模拟器。")
     model = env_payload["model_config"]
     env_payload["adapter_hash"] = hashing.hash_json({
@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         refreshed = refresh_image_sample()
         project = refreshed["project"]
         print(f"修图示例{'已更新' if refreshed['updated'] else '已是最新'}: {project['id']}"
-              f"（12 个子技能 / {refreshed['case_count']} 个案例；未发起模型调用）")
+              f"（13 个子技能 / {refreshed['case_count']} 个案例；未发起模型调用）")
         return 0
     if args.reset:
         reset_data()

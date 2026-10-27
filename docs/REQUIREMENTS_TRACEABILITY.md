@@ -75,7 +75,7 @@
 | A19 | `tests/test_a19_cancel_restart.py` | 通过 |
 | A20 | `tests/test_a20_security.py` | 通过 |
 
-最近全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **446 passed**，1 个已有 Starlette/httpx 弃用提示。
+历史全量验收（2026-10-26）：`.venv/bin/python -m pytest -q` → **446 passed**，1 个已有 Starlette/httpx 弃用提示。
 覆盖修图语流扩展、最小界面改版、HTTP 网关、模型输出查看、自定义输入连接测试与数据集在线修订。
 各批次原始结果见 [VERIFICATION.md](VERIFICATION.md)。
 
@@ -106,7 +106,7 @@
 10. **A 评分的参数子树扩展**：在需求 §15 的完整工具参数比较之外，增加可选的
    `tool_calls[].arguments_path`（简化写法 `tool.args`），仅当数据集显式声明时生效；
    默认仍比较完整 `arguments`。当前修图示例完整校验方法与参数包装；子树比较作为显式选项继续兼容。
-11. **第二个示例项目**：修图 Skill 已扩展为 12 类语流参数子技能，数据集覆盖口语、否定改口、
+11. **第二个示例项目**：修图 Skill 已扩展为 13 类语流参数子技能，数据集覆盖口语、否定改口、
     澄清与最多三步有序任务，逐项比较 method/script/request/args；不改变 A01–A20 的通用验收口径。
 12. **参数值可由评分模型判断（2026-10-26）**：需求 §15/§16 要求确定性评分与严格 JSON 比较。按产品决定，
     参数比较方式改为可配置（`compare-v2`：语义 / 宽松 / 只看字段 / 严格，含字段单独规则），新环境默认宽松，

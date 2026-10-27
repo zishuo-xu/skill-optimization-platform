@@ -28,8 +28,8 @@ from .demo_scripted import (
 )
 from .image_params import contract_params, parse_contract
 
-SCRIPT_PATH = "scripts/ImageEditorAdaptor.ets"
-BUSINESS_TOOL = "imageEditWorkflow"
+SCRIPT_PATH = "handlers/photo_ops.py"
+BUSINESS_TOOL = "editImage"
 COLORS = ("红色", "蓝色", "绿色", "紫色", "黑色", "白色", "粉色", "橙色",
           "黄色", "灰色", "暖色", "冷色", "胶片", "电影感")
 
@@ -65,10 +65,24 @@ def _parse_image_params(text: str) -> dict[str, Any]:
     return {"fields": fields, "defaults": defaults, "mappings": mappings}
 
 
+def _loaded_image_files(messages: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Collect both preloaded references and bodies returned by select_skill."""
+    files = _read_files(messages)
+    for message in messages:
+        if message.get("role") != "system" or not isinstance(message.get("content"), str):
+            continue
+        content = message["content"]
+        headers = list(re.finditer(r"【子技能内容 ([^】]+)】\n", content))
+        for index, header in enumerate(headers):
+            end = headers[index + 1].start() if index + 1 < len(headers) else len(content)
+            files.setdefault(header.group(1), content[header.end():end])
+    return files
+
+
 def _extract_value(field: str, query: str, params: Mapping[str, Any]) -> Any:
     defaults = params.get("defaults") or {}
     mappings = params.get("mappings") or {}
-    if field == "useOneWordFixPicture":
+    if field == "instruction":
         return query.strip()
     if field == "targetColor":
         for key in sorted(mappings, key=len, reverse=True):
@@ -140,7 +154,8 @@ class DemoImageScriptedAdapter(ModelAdapter):
         main_skill = _extract_section(text, "【主 SKILL.md】", "【子技能清单】")
         manifest = _parse_manifest(text)
         query = _user_query(messages)
-        read_files = _read_files(messages)
+        business_tool, script_path = BUSINESS_TOOL, SCRIPT_PATH
+        read_files = _loaded_image_files(messages)
         assistant_calls = [message for message in messages
                            if message.get("role") == "assistant"
                            and message.get("tool_calls")]
@@ -155,11 +170,9 @@ class DemoImageScriptedAdapter(ModelAdapter):
                         "action": "no_action", "selected_skills": [],
                         "missing_fields": [], "summary": "未匹配任何图片编辑子技能"}, 0)],
                     usage=usage)
-            skill_path = self._skill_path(manifest, chosen["skill_id"])
             return self._response(
                 tool_calls=[
                     _tool_call("select_skill", {"skill_id": chosen["skill_id"]}, 0),
-                    _tool_call("read_skill", {"path": skill_path}, 1),
                 ], usage=usage)
 
         chosen = self._chosen_from_messages(messages, manifest)
@@ -187,18 +200,20 @@ class DemoImageScriptedAdapter(ModelAdapter):
         if len(assistant_calls) < 2:
             arg_values: dict[str, Any] = {}
             for field in params["fields"]:
-                value = _extract_value(field, query, params)
+                value = query if skill_id == "image_one_word_fix" else _extract_value(field, query, params)
                 if value is not None:
                     arg_values[field] = value
             method = _tool_for(main_skill, skill_id)
             arguments = {
                 "method": method,
-                "script": SCRIPT_PATH,
+                "script": script_path,
                 "request": {"query": query},
                 "args": arg_values,
             }
             return self._response(
-                tool_calls=[_tool_call("call_tool", {"name": BUSINESS_TOOL, "arguments": arguments}, 0)],
+                tool_calls=[_tool_call("call_tool", {
+                    "name": business_tool, "arguments": arguments,
+                }, 0)],
                 usage=usage, finish_reason="tool_calls")
 
         return self._response(
@@ -216,8 +231,11 @@ class DemoImageScriptedAdapter(ModelAdapter):
         manifest = _parse_manifest(text)
         if int(manifest.get("version", 1)) < 2:
             return self._invoke_legacy(messages, config, tools, emit=emit)
+        if int(manifest.get("version", 1)) >= 3:
+            return self._invoke_parameter_sample(messages, main_skill, manifest)
+        business_tool, script_path = BUSINESS_TOOL, SCRIPT_PATH
         query = _user_query(messages)
-        read_files = _read_files(messages)
+        read_files = _loaded_image_files(messages)
         assistant_calls = [message for message in messages
                            if message.get("role") == "assistant"
                            and message.get("tool_calls")]
@@ -239,11 +257,9 @@ class DemoImageScriptedAdapter(ModelAdapter):
                         "action": "no_action", "selected_skills": [],
                         "missing_fields": [], "summary": "未匹配任何图片编辑子技能"}, 0)],
                     usage=usage)
-            skill_path = self._skill_path(manifest, chosen_skills[0]["skill_id"])
             return self._response(
                 tool_calls=[
                     _tool_call("select_skill", {"skill_id": chosen_skills[0]["skill_id"]}, 0),
-                    _tool_call("read_skill", {"path": skill_path}, 1),
                 ], usage=usage)
 
         # Progressive loading: one reference per model turn, in user order.
@@ -253,13 +269,12 @@ class DemoImageScriptedAdapter(ModelAdapter):
             if item["skill_id"] not in loaded_ids:
                 return self._response(tool_calls=[
                     _tool_call("select_skill", {"skill_id": item["skill_id"]}, 0),
-                    _tool_call("read_skill", {"path": self._skill_path(manifest, item["skill_id"])}, 1),
                 ], usage=usage)
 
         if not chosen_skills:
             return self._response(tool_calls=[], usage=usage)
         business_sent = any(
-            _is_business_call(call, BUSINESS_TOOL)
+            _is_business_call(call, business_tool)
             for message in messages if message.get("role") == "assistant"
             for call in (message.get("tool_calls") or [])
         )
@@ -285,9 +300,9 @@ class DemoImageScriptedAdapter(ModelAdapter):
                 if missing:
                     continue
                 calls.append(_tool_call("call_tool", {
-                    "name": BUSINESS_TOOL,
+                    "name": business_tool,
                     "arguments": {
-                        "method": method, "script": SCRIPT_PATH,
+                        "method": method, "script": script_path,
                         "request": {"query": query}, "args": arg_values,
                     },
                 }, len(calls)))
@@ -303,6 +318,90 @@ class DemoImageScriptedAdapter(ModelAdapter):
                 "action": "tool_call", "selected_skills": [x["skill_id"] for x in chosen_skills],
                 "missing_fields": [], "summary": "已完成图片编辑工作流调用"}, 0)],
             usage=usage, finish_reason="tool_calls")
+
+    def _invoke_parameter_sample(self, messages, main_skill, manifest):
+        """Execute the public sample one operation at a time, checking results."""
+        query = _user_query(messages)
+        context = {}
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                content = str(message.get("content") or "")
+                if "\n上下文：" in content:
+                    try:
+                        context = json.loads(content.split("\n上下文：", 1)[1])
+                    except json.JSONDecodeError:
+                        pass
+                break
+        source = context.get("source") if isinstance(context, dict) else None
+        try:
+            structured = json.loads(query)
+        except json.JSONDecodeError:
+            structured = None
+        if isinstance(structured, dict) and isinstance(structured.get("query"), str):
+            query = structured["query"]
+            if "source" in structured:
+                source = structured["source"]
+        chosen = self._choose_skills(main_skill, query)
+        selected = self._selected_from_messages(messages, manifest)
+        read_files = _loaded_image_files(messages)
+        usage = {"input_tokens": max(1, len(_messages_text(messages)) // USAGE_DIVISOR),
+                 "output_tokens": 16, "model": self.model}
+
+        def finish(action, summary, missing=None):
+            return self._response(tool_calls=[_tool_call("finish", {
+                "action": action, "selected_skills": [x["skill_id"] for x in selected],
+                "missing_fields": missing or [], "summary": summary}, 0)], usage=usage)
+
+        if len(chosen) > 3:
+            return finish("clarify", "请选择本轮要保留的三个操作", ["operations"])
+        if not chosen:
+            return finish("no_action", "请从已支持的编辑功能中选择")
+        for item in chosen:
+            path = self._skill_path(manifest, item["skill_id"])
+            if not any(entry["skill_id"] == item["skill_id"] for entry in selected):
+                return self._response(tool_calls=[
+                    _tool_call("select_skill", {"skill_id": item["skill_id"]}, 0)], usage=usage)
+            if path not in read_files:
+                return finish("clarify", "参数契约不可用", ["contract"])
+
+        planned = []
+        missing = []
+        contracts = []
+        for index, item in enumerate(chosen, 1):
+            contract = parse_contract(read_files[self._skill_path(manifest, item["skill_id"])])
+            if contract is None:
+                return finish("clarify", "参数契约不可用", ["contract"])
+            clause = item["_clause"]
+            args, absent = contract_params(contract, clause)
+            missing.extend(absent)
+            request = {"query": clause, "totalSteps": len(chosen), "currentStep": index}
+            if source == "drag":
+                request["source"] = "drag"
+            planned.append({"method": contract["method"], "script": SCRIPT_PATH,
+                            "request": request, "args": args})
+            contracts.append(contract)
+        if missing:
+            return finish("clarify", "请补充或修正所需参数", list(dict.fromkeys(missing)))
+
+        results = [message for message in messages
+                   if message.get("role") == "tool"
+                   and message.get("name") in {BUSINESS_TOOL, "call_tool"}]
+        for result in results:
+            try:
+                payload = json.loads(result.get("content") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            code = payload.get("code")
+            if isinstance(code, bool) or not isinstance(code, (int, float)) or code != 0:
+                return finish("tool_call", str(payload.get("message") or "操作未确认完成，请检查服务返回"))
+        if len(results) >= len(planned):
+            summary = contracts[0]["success_message"] if len(planned) == 1 else "所选编辑步骤已完成"
+            return finish("tool_call", summary)
+        return self._response(tool_calls=[_tool_call("call_tool", {
+            "name": BUSINESS_TOOL, "arguments": planned[len(results)],
+        }, len(results))], usage=usage)
 
     @staticmethod
     def _selected_from_messages(messages: Sequence[Mapping[str, Any]],
@@ -335,6 +434,7 @@ class DemoImageScriptedAdapter(ModelAdapter):
         """
         rows = {row["skill_id"]: row for row in _parse_dispatch(main_skill)}
         patterns = (
+            ("image_background_decolor", r"背景(?:变为|变成|变)?(?:黑白|灰度)|背景去色|背景失去颜色|主体突出"),
             ("image_background_remove", r"抠图|去背景|去掉.*背景|去除.*(?:背景|底色)|透明底|透明背景"),
             ("image_background_replace", r"换背景|替换背景|背景.*(?:换成|替换为)|(?:换成|改成|替换为).*背景"),
             ("image_tone_adjust", r"亮度|对比度|饱和度|曝光"),
@@ -357,7 +457,14 @@ class DemoImageScriptedAdapter(ModelAdapter):
         for chunk in chunks:
             if re.match(r"(?:先)?(?:不要|别|不是|不做)", chunk) or re.search(r"(?:不要|别做)[。！!]*$", chunk):
                 continue
-            skill_id = next((sid for sid, pattern in patterns if sid in rows and re.search(pattern, chunk)), None)
+            if re.search(r"背景.*(?:模糊|虚化)", chunk):
+                continue
+            # An explicit filter belongs to the preset operation, even if the
+            # phrase also mentions a background or subject.
+            if "滤镜" in chunk and "image_filter" in rows:
+                skill_id = "image_filter"
+            else:
+                skill_id = next((sid for sid, pattern in patterns if sid in rows and re.search(pattern, chunk)), None)
             if skill_id is None:
                 fallback, _ = _choose_skill(main_skill, chunk)
                 if fallback and fallback["skill_id"] == "image_one_word_fix":
@@ -378,7 +485,8 @@ class DemoImageScriptedAdapter(ModelAdapter):
     def _response(self, *, tool_calls: list[dict[str, Any]],
                   usage: dict[str, Any], finish_reason: str = "tool_calls") -> dict[str, Any]:
         return {
-            "content": "",
+            "content": next((call["arguments"].get("summary", "") for call in tool_calls
+                             if call.get("name") == "finish"), ""),
             "tool_calls": tool_calls,
             "finish_reason": finish_reason,
             "usage": usage,

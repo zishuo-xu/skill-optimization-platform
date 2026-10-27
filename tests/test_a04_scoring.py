@@ -587,7 +587,7 @@ def test_arguments_path_compares_only_the_args_subtree():
         "action": "tool_call",
         "routes": [["gallery_image_editor"]],
         "tool_calls": [{
-            "name": "imageEditWorkflow",
+            "name": "editImage",
             "arguments": {"targetColor": "蓝色"},
             "arguments_path": "args",
         }],
@@ -597,10 +597,10 @@ def test_arguments_path_compares_only_the_args_subtree():
         "selected_skills": ["gallery_image_editor"],
         "action": "tool_call",
         "tool_calls": [{
-            "name": "imageEditWorkflow",
+            "name": "editImage",
             "arguments": {
-                "method": "imageColorTransfer",
-                "script": "scripts/ImageEditorAdaptor.ets",
+                "method": "recolor_region",
+                "script": "handlers/photo_ops.py",
                 "request": {"query": "调成蓝色"},
                 "args": {"targetColor": "蓝色"},
             },
@@ -617,7 +617,7 @@ def test_arguments_path_failure_reports_nested_field_path():
         "action": "tool_call",
         "routes": [["gallery_image_editor"]],
         "tool_calls": [{
-            "name": "imageEditWorkflow",
+            "name": "editImage",
             "arguments": {"targetColor": "蓝色"},
             "arguments_path": "args",
         }],
@@ -627,10 +627,10 @@ def test_arguments_path_failure_reports_nested_field_path():
         "selected_skills": ["gallery_image_editor"],
         "action": "tool_call",
         "tool_calls": [{
-            "name": "imageEditWorkflow",
+            "name": "editImage",
             "arguments": {
-                "method": "imageColorTransfer",
-                "script": "scripts/ImageEditorAdaptor.ets",
+                "method": "recolor_region",
+                "script": "handlers/photo_ops.py",
                 "request": {"query": "调成红色"},
                 "args": {"targetColor": "红色"},
             },

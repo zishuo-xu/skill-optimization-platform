@@ -1,27 +1,76 @@
-# 移除物体（image_object_remove）
+# 移除物体示例
 
-## 含义
-删除用户明确指出的画面物体，并尽量保留其余背景。`target` 是用户明确描述的必填字符串；`preserveBackground` 固定为 true。缺少目标物时澄清，不能猜测。
+这是为参数评测重新编写的公开合成技能，不包含生产接口或图片定位信息。
+
+## 使用边界
+删除用户明确指出的画面物体，target 保存物体描述，preserveBackground 固定 true。指代不明确时先询问，不猜测对象。
 
 ## 参数契约
+以下字段定义业务 args；不得补入契约之外的字段。required 表示必填项，defaults 表示允许补齐的默认值。
+
 ```json
 {
-  "method": "imageRemoveObject",
-  "fields": {"target": {"type": "string", "minLength": 1}, "preserveBackground": {"type": "boolean", "enum": [true]}},
-  "required": ["target", "preserveBackground"],
-  "defaults": {"preserveBackground": true},
-  "mappings": {"target": {}, "preserveBackground": {"保留背景": true}}
+  "method": "erase_object",
+  "fields": {
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preserveBackground": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "target",
+    "preserveBackground"
+  ],
+  "defaults": {
+    "preserveBackground": true
+  },
+  "mappings": {
+    "target": {},
+    "preserveBackground": {
+      "保留背景": true
+    }
+  },
+  "success_message": "移除物体已完成"
 }
 ```
 
-## 澄清
-“清理一下”没有目标物时澄清；删除人物、主体或整片背景应转到对应技能并确认范围。
+## 执行约束
+1. 从当前有效意图取值，忽略已被否定或改口撤销的操作；缺参、无法解析或越界时先询问。
+2. 使用 `editImage`，其参数对象包含 `script`、`method`、`args`、`request`。method 是操作标识，不能作为工具名。
+3. `request.query` 只保留当前操作相关的原话；`totalSteps` 是合并同类操作后的总数，`currentStep` 从 1 开始。从上下文读取 `source`，用户消息 JSON 显式包含该字段时以其覆盖；仅当最终 `source` 为 `drag` 时附带 `request.source="drag"`。
+4. 多步骤逐个发起。检查当前返回后才执行下一步；`code` 严格等于数字 0 才算成功，其他返回按 `message` 说明问题并停止，缺少状态码也不能报告成功。
+5. 单独成功执行本功能时仅回复“移除物体已完成”。已成功的步骤不再重复调用；多步骤全部成功后用简短结果说明结束。
 
-## 正反例
-- 正例：“移除左下角的路人”。
-- 反例：“去掉全部背景”应使用 `image_background_remove`。
+## 参数示例
+用户：“擦除左侧的纸箱”。
 
-## 工作流例子
 ```json
-{"functionName":"imageEditWorkflow","skillName":"gallery-image-editor","arguments":{"method":"imageRemoveObject","script":"scripts/ImageEditorAdaptor.ets","request":{"query":"移除左下角的路人"},"args":{"target":"左下角的路人","preserveBackground":true}}}
+{
+  "functionName": "editImage",
+  "skillName": "sample-photo-editor",
+  "arguments": {
+    "script": "handlers/photo_ops.py",
+    "method": "erase_object",
+    "args": {
+      "target": "左侧的纸箱",
+      "preserveBackground": true
+    },
+    "request": {
+      "query": "擦除左侧的纸箱",
+      "totalSteps": 1,
+      "currentStep": 1
+    }
+  }
+}
 ```
+
+## 易混意图
+去掉背景 → 背景移除；删除那个 → 询问 target。
+
+共享路由与组合约束见 [主技能](../SKILL.md)。

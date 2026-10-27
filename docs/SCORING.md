@@ -64,7 +64,7 @@
 
 ```json
 {"query": "把图调成蓝色", "skill": "image_color_transfer",
- "tool": {"name": "imageEditWorkflow", "args": {"targetColor": "蓝色"}},
+ "tool": {"name": "editImage", "args": {"targetColor": "蓝色"}},
  "judge": {"$.args.targetColor": {"keywords": ["蓝"], "requirement": "表示蓝色系即可"}}}
 ```
 

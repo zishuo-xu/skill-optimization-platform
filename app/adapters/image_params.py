@@ -23,7 +23,10 @@ def parse_contract(text: str) -> dict[str, Any] | None:
         start += len("```json")
     if start < 0:
         return None
-    start += block[start:].find("{")
+    object_start = block[start:].find("{")
+    if object_start < 0:
+        return None
+    start += object_start
     try:
         value, _ = json.JSONDecoder().raw_decode(block[start:])
     except (json.JSONDecodeError, TypeError):
@@ -153,14 +156,15 @@ def _extract_target(query: str, replace: bool = False) -> str | None:
 def contract_params(contract: Mapping[str, Any], query: str) -> tuple[dict[str, Any], list[str]]:
     fields = contract.get("fields") if isinstance(contract.get("fields"), Mapping) else {}
     defaults = contract.get("defaults") if isinstance(contract.get("defaults"), Mapping) else {}
-    method = str(contract.get("method") or "")
     args: dict[str, Any] = {}
     invalid: list[str] = []
 
     for field, raw_schema in fields.items():
         schema = raw_schema if isinstance(raw_schema, Mapping) else {}
         value = _mapping_value(field, query, contract)
-        if field == "useOneWordFixPicture":
+        if field == "instruction" or (len(fields) == 1 and schema.get("type") == "string"
+                                      and not schema.get("enum")
+                                      and not any((contract.get("mappings") or {}).values())):
             value = query.strip()
         elif field == "targetColor":
             # Mapping wins; otherwise only consume a clean color token after a color verb.
@@ -171,7 +175,7 @@ def contract_params(contract: Mapping[str, Any], query: str) -> tuple[dict[str, 
                     short = re.search(r"调([红蓝绿紫黑白粉橙黄灰暖冷])(?:色)?", query)
                     value = short.group(1) + "色" if short else None
         elif field == "region" and value is None:
-            value = "entire" if field in defaults else None
+            value = defaults.get(field)
         elif field in ("width", "height"):
             value = _extract_dimension(field, query)
         elif field in ("brightness", "contrast", "saturation", "exposure"):
@@ -219,10 +223,10 @@ def contract_params(contract: Mapping[str, Any], query: str) -> tuple[dict[str, 
                 value = _mapping_value(field, query, contract)
                 if "轻微" in query and value is not None:
                     value = {"smoothSkin": 0.2, "whiten": 0.1, "slimFace": 0.15}[field]
-        elif field == "keepSubject":
-            value = True
-        elif field == "outputBackground":
-            value = defaults.get(field, "transparent")
+            label = {"smoothSkin": "磨皮", "whiten": "美白", "slimFace": "瘦脸"}[field]
+            explicit = re.search(rf"{label}\s*(?:强度|力度)?\s*([-+]?\d+(?:\.\d+)?)\s*(%)?", query)
+            if explicit:
+                value = float(explicit.group(1)) / (100 if explicit.group(2) else 1)
         elif value is None and field in defaults:
             value = defaults[field]
         if value is None and field in defaults and field not in ("smoothSkin", "whiten", "slimFace"):
@@ -234,7 +238,10 @@ def contract_params(contract: Mapping[str, Any], query: str) -> tuple[dict[str, 
                 invalid.append(str(field))
 
     # Resize sets aspect preservation based on the number of explicit dimensions.
-    if method == "imageResize":
+    is_resize = {"width", "height", "keepAspectRatio"}.issubset(fields)
+    is_tone = {"brightness", "contrast", "saturation", "exposure"}.issubset(fields)
+    is_transform = {"angle", "flip"}.issubset(fields)
+    if is_resize:
         dimensions = sum(field in args for field in ("width", "height"))
         if dimensions == 2 and "keepAspectRatio" in fields:
             args["keepAspectRatio"] = False
@@ -246,10 +253,10 @@ def contract_params(contract: Mapping[str, Any], query: str) -> tuple[dict[str, 
     for field in required:
         if field not in args:
             missing.append(str(field))
-    if method == "imageResize" and not invalid and not any(field in args for field in ("width", "height")):
+    if is_resize and not invalid and not any(field in args for field in ("width", "height")):
         missing.append("width_or_height")
-    if method == "imageAdjustTone" and not args:
+    if is_tone and not args:
         missing.append("tone_value")
-    if method == "imageTransform" and args.get("angle", 0) == 0 and args.get("flip", "none") == "none":
+    if is_transform and args.get("angle", 0) == 0 and args.get("flip", "none") == "none":
         missing.append("angle_or_flip")
     return args, list(dict.fromkeys(missing))

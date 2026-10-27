@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from app import config, dataset, execution, optimizer, patch, persistence, servi
 from app.adapters.registry import build_adapter
 from app.evaluation import score_case
 from app.worker import Worker
+from app.adapters.image_params import contract_params, parse_contract
 
 
 def _samples() -> Path:
@@ -65,9 +67,9 @@ def test_image_package_import_export_contains_all_references():
     with zipfile.ZipFile(io.BytesIO(archive)) as package:
         names = set(package.namelist())
         assert "SKILL.md" in names and "manifest.json" in names
-        assert len([name for name in names if name.startswith("references/")]) == 12
+        assert len([name for name in names if name.startswith("references/")]) == 13
         manifest = json.loads(package.read("manifest.json"))
-        assert len(manifest["subskills"]) == 12
+        assert len(manifest["subskills"]) == 13
         assert all(item["path"] in names for item in manifest["subskills"])
 
 
@@ -75,8 +77,8 @@ def test_image_dataset_coverage_and_protocol_shape():
     cases, manifest = _image_fixture_data()
     by_split = {split: sum(case["split"] == split for case in cases)
                 for split in ("optimize", "validation", "final_test")}
-    assert len(cases) == 62
-    assert by_split == {"optimize": 24, "validation": 21, "final_test": 17}
+    assert len(cases) == 117
+    assert by_split == {"optimize": 52, "validation": 34, "final_test": 31}
     skill_ids = [item["skill_id"] for item in manifest["subskills"]]
     for skill_id in skill_ids:
         assert sum(case["split"] == "optimize" and skill_id in case["expected"]["routes"][0]
@@ -85,18 +87,37 @@ def test_image_dataset_coverage_and_protocol_shape():
                    for case in cases if case["expected"]["routes"])
         assert any(case["split"] == "final_test" and skill_id in case["expected"]["routes"][0]
                    for case in cases if case["expected"]["routes"])
-    assert sum(case["expected"]["action"] == "clarify" for case in cases) == 8
-    assert sum(case["expected"]["action"] == "no_action" for case in cases) == 2
+    assert sum(case["expected"]["action"] == "clarify" for case in cases) == 18
+    assert sum(case["expected"]["action"] == "no_action" for case in cases) == 3
     assert any(case["expected"].get("route_ordered") and len(case["expected"]["routes"][0]) == 3
                for case in cases)
     # Compact tool entries use the user-facing wrapper and normalize to full arguments.
     for case in cases:
         for call in case["expected"]["tool_calls"]:
             assert set(call["arguments"]) == {"method", "script", "request", "args"}
-            assert call["arguments"]["script"] == "scripts/ImageEditorAdaptor.ets"
+            assert call["arguments"]["script"] == "handlers/photo_ops.py"
+            request = call["arguments"]["request"]
+            assert 1 <= request["currentStep"] <= request["totalSteps"] <= 3
+            assert "image_ids" not in call["arguments"]["args"]
 
 
-@pytest.mark.parametrize("case_index", range(62))
+@pytest.mark.parametrize('reference', sorted((_samples() / 'image_skill_package' / 'references').glob('*.md')),
+                         ids=lambda path: path.stem)
+def test_reference_example_is_executable_and_matches_declared_parameters(reference):
+    _cases, manifest = _image_fixture_data()
+    content = reference.read_text()
+    example = json.loads(re.search(r'## 参数示例.*?```json\s*(.*?)\s*```', content, re.S).group(1))
+    skill = next(item['skill_id'] for item in manifest['subskills'] if item['path'].endswith(reference.name))
+    case = {'case_id': reference.stem, 'query': example['arguments']['request']['query'],
+            'fixtures': [{'name': 'editImage', 'match': {}, 'response': {'code': 0}}]}
+    actual = execution.run_case(_case_request(case, manifest, _samples() / 'image_skill_package'),
+                                build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
+    assert actual['error'] is None
+    assert actual['selected_skills'] == [skill]
+    assert actual['tool_calls'] == [{'name': example['functionName'], 'arguments': example['arguments']}]
+
+
+@pytest.mark.parametrize("case_index", range(117))
 def test_each_image_case_executes_and_scores_full_protocol(case_index: int):
     cases, manifest = _image_fixture_data()
     case = cases[case_index]
@@ -108,6 +129,17 @@ def test_each_image_case_executes_and_scores_full_protocol(case_index: int):
     score = score_case(case["expected"], actual)
     assert score["status"] == "pass", (case["case_id"], score)
     assert score["joint"] is True
+    if case["expected"]["action"] == "tool_call":
+        responses = [event["payload"]["response"] for event in actual["events"]
+                     if event["type"] == "tool_result"]
+        failures = [response for response in responses if response.get("code") != 0]
+        if failures:
+            assert actual["raw_output"] == failures[0]["message"]
+        elif len(actual["tool_calls"]) == 1:
+            sid = case["expected"]["routes"][0][0]
+            path = next(item["path"] for item in manifest["subskills"] if item["skill_id"] == sid)
+            contract = parse_contract((root / path).read_text())
+            assert actual["raw_output"] == contract["success_message"]
 
 
 def test_wrong_method_and_script_are_rejected_by_full_protocol_score():
@@ -115,7 +147,7 @@ def test_wrong_method_and_script_are_rejected_by_full_protocol_score():
     case = next(case for case in cases if case["case_id"] == "image_color_transfer_opt_1")
     actual = {
         "action": "tool_call", "selected_skills": ["image_color_transfer"],
-        "tool_calls": [{"name": "imageEditWorkflow", "arguments": {
+        "tool_calls": [{"name": "editImage", "arguments": {
             "method": "wrongMethod", "script": "wrong.ets",
             "request": {"query": case["query"]},
             "args": case["expected"]["tool_calls"][0]["arguments"]["args"]}}],
@@ -162,9 +194,85 @@ def test_three_operations_load_only_the_required_references_before_business_call
     loaded_paths = [e['payload']['path'] for e in actual['events']
                     if e['type'] == 'skill_read' and not e['payload'].get('cached')]
     assert loaded_paths == [paths[sid] for sid in expected_ids]
+    assert all(not e['payload'].get('cached') for e in actual['events'] if e['type'] == 'skill_read')
     assert {path for _, path in reads} == set(loaded_paths)
     assert all(i < first_business for i, _ in reads)
     assert [event['skill_id'] for event in actual['route_events']] == expected_ids
+    execution_events = [event['type'] for event in actual['events']
+                        if event['type'] in ('tool_call_started', 'tool_result')]
+    assert execution_events == ['tool_call_started', 'tool_result'] * 3
+
+
+def test_preloaded_references_are_selected_and_executed_without_reloading():
+    cases, manifest = _image_fixture_data()
+    case = next(case for case in cases if case['case_id'] == 'multi_three_ops')
+    request = _case_request(case, manifest, _samples() / 'image_skill_package')
+    request['loader_config']['mode'] = 'preload_all'
+    actual = execution.run_case(request, build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
+    assert actual['error'] is None
+    assert score_case(case['expected'], actual)['status'] == 'pass'
+    assert all(event['payload'].get('cached') for event in actual['events'] if event['type'] == 'skill_read')
+
+
+@pytest.mark.parametrize('response', [{}, {'code': '0'}, {'code': False}, {'code': None}])
+def test_missing_or_invalid_status_cannot_report_success_or_continue(response):
+    cases, manifest = _image_fixture_data()
+    case = next(case for case in cases if case['case_id'] == 'multi_decolor_filter')
+    request = _case_request(case, manifest, _samples() / 'image_skill_package')
+    request['fixtures'] = [{'name': 'editImage', 'match': {}, 'response': response}]
+    actual = execution.run_case(request, build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
+    assert actual['error'] is None
+    assert len(actual['tool_calls']) == 1
+    assert actual['raw_output'] == '操作未确认完成，请检查服务返回'
+
+
+def test_structured_user_source_and_step_query_are_not_copied_wholesale():
+    cases, manifest = _image_fixture_data()
+    case = next(case for case in cases if case['case_id'] == 'multi_decolor_filter')
+    request = _case_request(case, manifest, _samples() / 'image_skill_package')
+    request['query'] = json.dumps({'query': case['query'], 'source': 'drag'}, ensure_ascii=False)
+    actual = execution.run_case(request, build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
+    assert actual['error'] is None
+    requests = [call['arguments']['request'] for call in actual['tool_calls']]
+    assert requests == [
+        {'query': '先让背景黑白', 'totalSteps': 2, 'currentStep': 1, 'source': 'drag'},
+        {'query': '加胶片滤镜', 'totalSteps': 2, 'currentStep': 2, 'source': 'drag'},
+    ]
+
+
+def test_context_source_is_retained_for_structured_query_without_source():
+    cases, manifest = _image_fixture_data()
+    case = next(case for case in cases if case['case_id'] == 'multi_decolor_filter')
+    request = _case_request(case, manifest, _samples() / 'image_skill_package')
+    request['query'] = json.dumps({'query': case['query']}, ensure_ascii=False)
+    request['context'] = {'source': 'drag'}
+    actual = execution.run_case(request, build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
+    assert actual['error'] is None
+    assert all(call['arguments']['request']['source'] == 'drag' for call in actual['tool_calls'])
+
+
+def test_failure_on_second_step_stops_before_third():
+    cases, manifest = _image_fixture_data()
+    case = next(case for case in cases if case['case_id'] == 'multi_three_ops')
+    request = _case_request(case, manifest, _samples() / 'image_skill_package')
+    request['fixtures'] = [
+        {'name': 'editImage', 'match': {'method': 'crop_frame'}, 'response': {'code': 0}},
+        {'name': 'editImage', 'match': {'method': 'recolor_region'}, 'response': {'code': 9, 'message': '第二步失败'}},
+        {'name': 'editImage', 'match': {'method': 'apply_preset'}, 'response': {'code': 0}},
+    ]
+    actual = execution.run_case(request, build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
+    assert actual['error'] is None
+    assert [call['arguments']['method'] for call in actual['tool_calls']] == ['crop_frame', 'recolor_region']
+    assert actual['raw_output'] == '第二步失败'
+
+
+def test_contract_defaults_are_respected_for_region_and_background_fields():
+    contract = {'fields': {'region': {'type': 'string'}, 'keepSubject': {'type': 'boolean'},
+                           'outputBackground': {'type': 'string'}},
+                'defaults': {'region': 'subject', 'keepSubject': False, 'outputBackground': 'white'}}
+    args, missing = contract_params(contract, '处理图片')
+    assert args == contract['defaults']
+    assert missing == []
 
 
 def test_v1_minimal_skill_package_remains_importable(tmp_path):
@@ -177,7 +285,7 @@ def test_v1_minimal_skill_package_remains_importable(tmp_path):
     # A legacy package still executes through the old dispatch/reference format.
     (root / "SKILL.md").write_text(
         "# legacy\n\n| skill_id | name | method | keywords |\n| --- | --- | --- | --- |\n"
-        "| legacy_color | 换色 | imageColorTransfer | 换色 |\n\n"
+        "| legacy_color | 换色 | recolor_region | 换色 |\n\n"
         "## 澄清条件\n当 legacy_color 缺少 targetColor 时需要澄清。\n",
         encoding="utf-8")
     (root / "references" / "legacy.md").write_text(
@@ -191,7 +299,7 @@ def test_v1_minimal_skill_package_remains_importable(tmp_path):
         "query": "帮我换色成夕阳", "skill_snapshot_path": str(root),
         "system_prompt": "legacy", "manifest": manifest,
         "allowed_skill_ids": ["legacy_color"],
-        "fixtures": [{"name": "imageEditWorkflow", "match": {}, "response": {"ok": True}}],
+        "fixtures": [{"name": "editImage", "match": {}, "response": {"ok": True}}],
         "limits": {"max_model_calls": 6, "max_steps": 6, "case_timeout_s": 5},
         "loader_config": {"mode": "on_demand"}, "run_id": "legacy", "case_id": "legacy-1",
     }
@@ -240,7 +348,7 @@ def test_legacy_mapping_repair_changes_actual_execution(tmp_path):
     """A real failed observation must become a passing execution after patching."""
     manifest = {"version": 1, "main": "SKILL.md", "subskills": [
         {"skill_id": "image_color_transfer", "name": "换色", "path": "references/color.md"}]}
-    main = "# editor\n\n| skill_id | name | method | keywords |\n| --- | --- | --- | --- |\n| image_color_transfer | 换色 | imageColorTransfer | 换色 |\n"
+    main = "# editor\n\n| skill_id | name | method | keywords |\n| --- | --- | --- | --- |\n| image_color_transfer | 换色 | recolor_region | 换色 |\n"
     reference = "# color\n\n## 参数\n- targetColor\n\n## 映射\n夕阳 -> 红色\n"
     files = {"SKILL.md": main, "references/color.md": reference}
     root = tmp_path / "legacy-color"
@@ -250,12 +358,12 @@ def test_legacy_mapping_repair_changes_actual_execution(tmp_path):
         dest.write_text(content)
     query = "帮我换色成夕阳色调"
     expected = {"action": "tool_call", "routes": [["image_color_transfer"]],
-                "tool_calls": [{"name": "imageEditWorkflow", "arguments": {
-                    "method": "imageColorTransfer", "script": "scripts/ImageEditorAdaptor.ets",
+                "tool_calls": [{"name": "editImage", "arguments": {
+                    "method": "recolor_region", "script": "handlers/photo_ops.py",
                     "request": {"query": query}, "args": {"targetColor": "橙色"}}}],
                 "missing_fields": []}
     case = {"case_id": "legacy-color-repair", "query": query,
-            "fixtures": [{"name": "imageEditWorkflow", "match": {}, "response": {"ok": True}}]}
+            "fixtures": [{"name": "editImage", "match": {}, "response": {"ok": True}}]}
     request = _case_request(case, manifest, root)
     adapter = build_adapter({"provider": "demo_scripted", "model": "demo-image-v1", "domain": "image"})
     actual = execution.run_case(request, adapter)
