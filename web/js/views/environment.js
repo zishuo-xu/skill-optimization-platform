@@ -197,6 +197,7 @@ function defaults() {
       headers: {},
       temperature: 0,
       max_tokens: 1024,
+      stream: true,
       connect_timeout_s: 10,
       first_packet_timeout_s: 30,
       idle_timeout_s: 60,
@@ -260,6 +261,14 @@ function toForm(env) {
   const compareMode = compareSource.mode || 'strict';
   const judgeSource = scorerSource.judge || {};
   const judgeConfig = { ...base.judge_config, ...judgeSource, provider: judgeSource.provider || 'none' };
+  // New semantic-judge configurations use streaming by default. Existing
+  // configured judges without an explicit flag keep the old non-streaming
+  // behavior until the user opts in from the form.
+  if (judgeSource.provider && !Object.prototype.hasOwnProperty.call(judgeSource, 'stream')) {
+    judgeConfig.stream = false;
+  } else if (Object.prototype.hasOwnProperty.call(judgeSource, 'stream')) {
+    judgeConfig.stream = Boolean(judgeSource.stream);
+  }
   judgeConfig.api_key_ref = publicCredential(judgeConfig.api_key_ref);
   // Standard API has a single URL field; a former full request URL moves into it.
   for (const config of [modelConfig, optimizerConfig, judgeConfig]) {
@@ -601,7 +610,7 @@ export default async function environmentView(container, ctx) {
       };
       if (judgeProvider === 'openai_http') {
         judgeConfig.base_url = String(judgeForm.base_url || '').trim();
-        judgeConfig.stream = false;
+        judgeConfig.stream = Boolean(judgeForm.stream);
         if (!judgeConfig.base_url) errors['judge_config.base_url'] = 'URL 不能为空';
       } else {
         judgeConfig.ws_url = String(judgeForm.ws_url || '').trim();
@@ -851,20 +860,21 @@ export default async function environmentView(container, ctx) {
     );
   }
 
-  function streamToggle() {
+  function streamToggle(target = 'business') {
     return h(
       'label.checkbox-line',
       null,
       h('input', {
         type: 'checkbox',
-        checked: Boolean(state.form.model_config.stream),
+        checked: Boolean(target === 'judge' ? state.form.judge_config?.stream : state.form.model_config.stream),
         disabled: !EDITABLE(),
         onchange: (event) => {
-          state.form.model_config.stream = event.target.checked;
+          if (target === 'judge') state.form.judge_config.stream = event.target.checked;
+          else state.form.model_config.stream = event.target.checked;
           markDirty();
         },
       }),
-      h('span', { text: '启用 SSE 式增量返回（usage 在尾部聚合）' })
+      h('span', { text: target === 'judge' ? '启用 SSE 式增量返回（usage 在尾部聚合）' : '启用 SSE 式增量返回（usage 在尾部聚合）' })
     );
   }
 
@@ -932,7 +942,18 @@ export default async function environmentView(container, ctx) {
               inputFor('model_config.temperature', { label: '温度', type: 'number', hint: '评测建议固定为 0。' }),
               inputFor('model_config.max_tokens', { label: '最大输出 Token', type: 'number' }),
               inputFor('model_config.timeout_s', { label: '超时（秒）', type: 'number' }),
-              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle())
+              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle('business'))
+            )
+          )
+        : null,
+      target === 'judge'
+        ? advancedSettings(
+            '高级：评分请求',
+            h(
+              'div.stack',
+              null,
+              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle('judge')),
+              h('p.form-field__hint', { text: '按评分模型服务支持的返回方式选择；网关只支持流式请求时，请开启此项。' })
             )
           )
         : null,
@@ -967,6 +988,7 @@ export default async function environmentView(container, ctx) {
       { label: 'URL', value: config.base_url || config.url || '—', mono: true },
       { label: '模型 ID', value: config.model || '—', mono: true },
       { label: 'API Key', value: envRef || (keyConfigured ? '已配置' : '未配置'), mono: Boolean(envRef) },
+      ...(group === 'judge_config' ? [{ label: '流式返回', value: config.stream ? '已启用' : '未启用' }] : []),
     ];
   }
 
