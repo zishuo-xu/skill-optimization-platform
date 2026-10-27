@@ -98,7 +98,7 @@ function buildShell() {
       'div.brand',
       null,
       h('span.brand-mark', { 'aria-hidden': 'true' }, 'S'),
-      h('span.brand-text', null, h('strong', { text: APP_TITLE }), h('small', { text: '单轮评测与优化' }))
+      h('span.brand-text', null, h('strong', { text: APP_TITLE }), h('small', { text: '评测与持续优化' }))
     ),
     h('div', { class: 'sidebar__scroll', id: 'sidebar-nav' }),
     h('div', { class: 'sidebar__footer', id: 'sidebar-footer' })
@@ -172,7 +172,7 @@ function buildSidebarNav() {
       h('div.nav-group__title', { text: '项目' }),
       navLink({ href: `${base}/overview`, iconName: 'overview', label: '工作台', active: activeFor('overview') || (route.name === 'run' && state.run) }),
       navLink({ href: `${base}/skill`, iconName: 'skill', label: 'Skill 包', active: activeFor('skill') }),
-      navLink({ href: `${base}/environment`, iconName: 'environment', label: '执行环境', active: activeFor('environment') }),
+      navLink({ href: `${base}/environment`, iconName: 'environment', label: 'Prompt 与模型', active: activeFor('environment') }),
       navLink({ href: `${base}/dataset`, iconName: 'dataset', label: '数据集', active: activeFor('dataset') }),
       navLink({ href: `${base}/versions`, iconName: 'versions', label: '版本记录', active: activeFor('versions') })
     );
@@ -212,7 +212,7 @@ function buildSidebarFooter() {
       h('span.footer-label', { text: state.health === 'online' ? '后端已连接' : state.health === 'offline' ? '后端未连接' : '正在检查后端…' })
     )
   );
-  fragment.appendChild(h('div.footer-label', { text: isMockMode() ? '演示数据（?mock=1）' : 'Web v1.1 · 单轮优化' }));
+  fragment.appendChild(h('div.footer-label', { text: isMockMode() ? '演示数据（?mock=1）' : '测试 · 优化 · 验收' }));
   return fragment;
 }
 
@@ -319,7 +319,7 @@ export function parseHash(hash) {
 const PROJECT_VIEWS = {
   overview: { label: '工作台', component: overviewView },
   skill: { label: 'Skill 包', component: skillView },
-  environment: { label: '执行环境', component: environmentView },
+  environment: { label: 'Prompt 与模型', component: environmentView },
   dataset: { label: '数据集', component: datasetView },
   versions: { label: '版本记录', component: versionsView },
 };

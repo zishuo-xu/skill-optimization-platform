@@ -16,7 +16,7 @@ def _case(case_id, query, split, expected, fixtures=None, tags=None, critical=Fa
     }
 
 
-def _edge_dataset() -> str:
+def _edge_dataset(*, missing_fixture=False) -> str:
     cases = [
         _case("edge_clarify", "帮我建任务", "optimize",
               {"action": "clarify", "routes": [["task_create"]],
@@ -30,7 +30,8 @@ def _edge_dataset() -> str:
               {"action": "tool_call", "routes": [["task_query"]],
                "tool_calls": [{"name": "list_tasks",
                                "arguments": {"task_id": "T99"}}]},
-              fixtures=[], tags=["fixture"]),
+              fixtures=[] if missing_fixture else [{"name": "list_tasks", "match": {},
+                                                       "response": {"ok": True}}], tags=["fixture"]),
         _case("edge_validation_ok", "查询项目 P123 的详情", "validation",
               {"action": "tool_call", "routes": [["project_query"]],
                "tool_calls": [{"name": "get_project",
@@ -41,31 +42,27 @@ def _edge_dataset() -> str:
     return "\n".join(json.dumps(case, ensure_ascii=False) for case in cases) + "\n"
 
 
-def test_clarify_no_action_and_fixture_miss_scoring():
+def test_uncovered_expected_fixture_blocks_evaluation():
+    demo = create_demo_project(dataset_content=_edge_dataset(missing_fixture=True))
+    baseline = complete_run(demo, "baseline")
+    assert baseline["status"] == "failed"
+    assert baseline["error_code"] == "fixture_coverage_incomplete"
+    assert "fixture" in baseline["error_message"]
+
+
+def test_clarify_and_no_action_scoring():
     demo = create_demo_project(dataset_content=_edge_dataset())
     baseline = complete_run(demo, "baseline")
     assert baseline["status"] == "completed"
     metrics = baseline["metrics"]["baseline"]
-    # clarify/no_action cases participate in J but not in R/A denominators.
     assert metrics["joint"]["total_cases"] == 3
     assert metrics["execution"]["infra_errors"] == 0
     clarify = persistence.get_case_result(baseline["id"], "baseline", "edge_clarify")
     assert clarify["scores"]["action_ok"] is False
     assert clarify["scores"]["routing"]["evaluable"] is False
     assert clarify["scores"]["tool_args"]["evaluable"] is False
-    no_action = persistence.get_case_result(baseline["id"], "baseline",
-                                            "edge_no_action")
-    # Demo adapter returns no_action when no subskill matches.
+    no_action = persistence.get_case_result(baseline["id"], "baseline", "edge_no_action")
     assert no_action["action"] == "no_action"
-    miss = persistence.get_case_result(baseline["id"], "baseline",
-                                       "edge_fixture_miss")
-    assert miss["error_code"] == "fixture_miss"
-    assert miss["scores"]["status"] == "fail"
-    assert miss["scores"]["error_kind"] == "capability"
-    events = persistence.list_events(baseline["id"], limit=1000)
-    miss_events = [event for event in events if event["type"] == "fixture_miss"]
-    assert miss_events
-    assert miss_events[0]["payload"]["issue"]["error_code"] == "fixture_miss"
 
 
 def test_budget_exhaustion_is_inconclusive_not_accept():

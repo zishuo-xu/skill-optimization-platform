@@ -152,8 +152,9 @@ export default async function datasetView(container, ctx) {
           : h('span.muted.small', { text: '尚无数据集版本' }),
         state.dataset ? statusBadge(state.dataset.status, 'version') : null,
         state.dataset && state.dataset.id === project.current_dataset_id ? chip('当前版本', 'accent') : null,
-        state.dataset ? h('span.mono.xsmall.muted', { text: state.dataset.hash || '' }) : null,
-        state.dataset ? h('span.xsmall.muted', { text: `导入于 ${formatDateTime(state.dataset.created_at)}` }) : null,
+        state.dataset ? h('details.small', null, h('summary', { text: '版本详情' }),
+          h('div.mono.xsmall.muted', { text: state.dataset.hash || '' }),
+          h('div.xsmall.muted', { text: `导入于 ${formatDateTime(state.dataset.created_at)}` })) : null,
         h('span.dataset-toolbar__spacer'),
         state.dataset && state.dataset.status === 'draft'
           ? button({ label: '发布数据集', variant: 'primary', size: 'sm', iconName: 'check', onClick: publishDataset })

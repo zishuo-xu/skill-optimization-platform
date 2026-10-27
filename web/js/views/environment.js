@@ -261,12 +261,8 @@ function toForm(env) {
   const compareMode = compareSource.mode || 'strict';
   const judgeSource = scorerSource.judge || {};
   const judgeConfig = { ...base.judge_config, ...judgeSource, provider: judgeSource.provider || 'none' };
-  // New semantic-judge configurations use streaming by default. Existing
-  // configured judges without an explicit flag keep the old non-streaming
-  // behavior until the user opts in from the form.
-  if (judgeSource.provider && !Object.prototype.hasOwnProperty.call(judgeSource, 'stream')) {
-    judgeConfig.stream = false;
-  } else if (Object.prototype.hasOwnProperty.call(judgeSource, 'stream')) {
+  // Use the same streaming default for new and existing model connections.
+  if (Object.prototype.hasOwnProperty.call(judgeSource, 'stream')) {
     judgeConfig.stream = Boolean(judgeSource.stream);
   }
   judgeConfig.api_key_ref = publicCredential(judgeConfig.api_key_ref);
@@ -311,7 +307,7 @@ function toForm(env) {
     acceptance_config: {
       ...base.acceptance_config,
       ...acceptanceConfig,
-      validation_repeats: acceptanceConfig.validation_repeats ?? 3,
+      validation_repeats: acceptanceConfig.validation_repeats ?? runConfig.validation_repeats ?? 3,
       require_critical_no_regression:
         acceptanceConfig.require_critical_no_regression ?? true,
     },
@@ -574,7 +570,7 @@ export default async function environmentView(container, ctx) {
       concurrency: num(form.run_config.concurrency, 3),
       case_timeout_s: num(form.run_config.case_timeout_s, 120),
       base_repeats: num(form.run_config.base_repeats, 1),
-      validation_repeats: num(form.run_config.validation_repeats, 3),
+      validation_repeats: num(form.acceptance_config.validation_repeats, 3),
     };
     const budgetConfig = {
       ...form.budget_config,
@@ -1440,8 +1436,7 @@ export default async function environmentView(container, ctx) {
     return factsList([
       { label: '并发案例数', value: String(run.concurrency ?? 3) },
       { label: '单案例超时', value: secondsText(run.case_timeout_s ?? 120) },
-      { label: '基线重复次数', value: String(run.base_repeats ?? 1) },
-      { label: '正式验收配对重复', value: `${run.validation_repeats ?? 3} 次` },
+      { label: '日常测试重复次数', value: String(run.base_repeats ?? 1) },
     ]);
   }
 
@@ -1454,13 +1449,12 @@ export default async function environmentView(container, ctx) {
           null,
           inputFor('run_config.concurrency', { label: '并发案例数', type: 'number' }),
           inputFor('run_config.case_timeout_s', { label: '单案例超时（秒）', type: 'number' }),
-          inputFor('run_config.base_repeats', { label: '基线重复次数', type: 'number' }),
-          inputFor('run_config.validation_repeats', { label: '正式验收配对重复次数', type: 'number' })
+          inputFor('run_config.base_repeats', { label: '日常测试重复次数', type: 'number', hint: '原版本与候选使用相同次数；正式验收次数在验收规则中设置。' })
         )
       : runFacts();
     return sectionCard({
       title: '运行参数',
-      description: `并发 ${run.concurrency ?? 3} · 单案例 ${secondsText(run.case_timeout_s ?? 120)} · 验证 ${run.validation_repeats ?? 3} 次`,
+      description: `并发 ${run.concurrency ?? 3} · 单案例 ${secondsText(run.case_timeout_s ?? 120)} · 日常测试 ${run.base_repeats ?? 1} 次`,
       collapsible: true,
       open: false,
       body,
@@ -1558,7 +1552,7 @@ export default async function environmentView(container, ctx) {
         hint: COMPARE_MODE_HINTS[compare.mode] || '',
       }),
       compare.mode === 'semantic' && !judgeReady
-        ? callout({ tone: 'warning', title: '还没有配置评分模型', body: '在下方「评分模型」中配置后才会调用大模型；未配置时这些值按宽松规则判断。' })
+        ? callout({ tone: 'warning', title: '需要评分模型', body: '当前选择了语义比较，请配置评分模型后再运行；平台不会自动换成其他评分方式。' })
         : null,
       inputFor('scorer_compare.allow_extra_keys', {
         label: '多余字段',
@@ -1740,7 +1734,7 @@ export default async function environmentView(container, ctx) {
       {
         label: '执行策略',
         value: `并发 ${run.concurrency ?? 3}`,
-        hint: `单案例 ${secondsText(run.case_timeout_s ?? 120)} · 验证 ${run.validation_repeats ?? 3} 次`,
+        hint: `单案例 ${secondsText(run.case_timeout_s ?? 120)} · 日常测试 ${run.base_repeats ?? 1} 次`,
       },
       {
         label: '预算',
@@ -1816,9 +1810,9 @@ export default async function environmentView(container, ctx) {
     const needsJudge = compare.mode === 'semantic' || (compare.field_rules || []).some((rule) => rule.mode === 'semantic');
     const hasJudge = ['openai_http', 'enterprise_ws'].includes(state.form.judge_config?.provider);
     const groups = [
-      ['任务必需', '配置执行模型、业务 Prompt、优化模型和预算。', [businessModelSection(), promptSection(), optimizerSection(), budgetSection()]],
-      ['按需配置', '查看评分规则；使用语义比较时配置评分模型。', [scoringRulesSection(), ...(needsJudge || hasJudge ? [judgeSection()] : [])]],
-      ['高级设置', '上下文加载、并发与接受条件可按需调整。', [advancedSettings('高级运行设置', h('div.stack', null, loaderSection(), runParamsSection(), acceptanceSection()))]],
+      ['执行与优化', 'Prompt 定义任务，执行模型运行 Skill，优化模型根据测试结果改进 Skill。', [promptSection(), businessModelSection(), optimizerSection()]],
+      ['评价与用量', '默认使用已保存的评分方式和预算；自由文本需要语义判断时再配置评分模型。', [scoringRulesSection(), ...(needsJudge || hasJudge ? [judgeSection()] : []), budgetSection()]],
+      ['高级设置', '加载方式、并发和验收规则通常无需调整。', [advancedSettings('高级运行设置', h('div.stack', null, loaderSection(), runParamsSection(), acceptanceSection()))]],
     ];
     const children = [
       banner,

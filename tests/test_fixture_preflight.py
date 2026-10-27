@@ -1,4 +1,4 @@
-"""Name coverage must use the same wildcard semantics as runtime matching."""
+"""Fixture coverage follows runtime name and argument matching."""
 from app.single_round import _fixture_gap_cases
 
 
@@ -17,8 +17,8 @@ def test_missing_alternative_tool_is_reported_once():
     assert _fixture_gap_cases([case([{'name': 'imageEditWorkflow'}])]) == ['image-case']
 
 
-def test_name_coverage_does_not_claim_argument_matching():
+def test_argument_mismatch_is_reported_as_uncovered():
     assert _fixture_gap_cases([case([
         {'name': 'imageEditWorkflow', 'match': {'method': 'specific'}, 'consume': 'once'},
         {'name': 'alternativeTool'},
-    ])]) == []
+    ])]) == ['image-case']

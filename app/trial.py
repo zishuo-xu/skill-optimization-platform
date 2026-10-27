@@ -225,6 +225,16 @@ def try_case(body: Mapping[str, Any], *, project_id: str | None = None,
     version = persistence.get_skill_version(picked["skill_version_id"])
     manifest = version.get("manifest") or {}
     case = _load_case(body, picked["dataset_id"])
+    if case.get("expected"):
+        from .single_round import _fixture_gap_cases
+        if _fixture_gap_cases([case]):
+            raise ValidationError("预期工具调用缺少可用 fixture，请修复数据集后重试",
+                                  code="fixture_coverage_incomplete")
+        compare = (env.get("scorer_config") or {}).get("compare") or {}
+        semantic = compare.get("mode") == "semantic" or any(
+            (item or {}).get("mode") == "semantic" for item in compare.get("field_rules") or [])
+        if semantic and judge_mod.judge_config_from_env(env) is None:
+            raise ValidationError("语义比较需要配置评分模型", code="judge_not_configured")
     credentials = {"model_config": env.get("model_config") or {},
                    "scorer_config": env.get("scorer_config") or {}}
     safe_callback = (lambda event: on_event(redact_output(event, credentials))) if on_event else None

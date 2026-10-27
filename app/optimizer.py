@@ -347,6 +347,12 @@ def _prompt_payload(context: Mapping[str, Any]) -> dict[str, Any]:
     files, manifest = _context_files(context)
     version = context.get("baseline_skill_version")
     version = version if isinstance(version, Mapping) else {}
+    passing = context.get("passing_summary") or {}
+    passing = dict(passing) if isinstance(passing, Mapping) else {}
+    if isinstance(passing.get("cases"), list):
+        passing["cases"] = [item for item in passing["cases"]
+                            if isinstance(item, Mapping) and
+                            item.get("split") not in ("validation", "final_test")][:5]
     return {
         "project": _jsonable(context.get("project") or {}),
         "baseline_skill_version": {
@@ -355,8 +361,9 @@ def _prompt_payload(context: Mapping[str, Any]) -> dict[str, Any]:
             "files": _jsonable(files),
         },
         "allowed_paths": _jsonable(context.get("allowed_paths") or []),
+        "business_execution_prompt": _jsonable(context.get("business_execution_prompt") or ""),
         "failures": _jsonable(_optimize_failures(context)),
-        "passing_summary": _jsonable(context.get("passing_summary") or {}),
+        "passing_summary": _jsonable(passing),
         "budget_remaining": _jsonable(context.get("budget_remaining") or {}),
         "diagnosis_hints": _jsonable(context.get("diagnosis_hints") or {}),
     }

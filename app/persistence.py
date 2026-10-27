@@ -752,19 +752,27 @@ def find_latest_evaluation(project_id: str, fingerprint: str) -> dict[str, Any] 
     )
 
 
-def find_cached_baseline(project_id: str, fingerprint: str) -> dict[str, Any] | None:
+def find_cached_baseline(project_id: str, fingerprint: str, rules_version: str | None = None) -> dict[str, Any] | None:
     candidates = _fetchall(
-        "SELECT * FROM runs WHERE project_id = ? AND fingerprint = ? AND mode = 'baseline'"
+        "SELECT * FROM runs WHERE project_id = ? AND fingerprint = ? AND mode IN ('baseline', 'evaluate')"
         " AND status = 'completed' AND decision IS NULL ORDER BY created_at DESC",
         (project_id, fingerprint),
     )
     for run in candidates:
+        if rules_version and run.get("rules_version") != rules_version:
+            continue
+        repeats = (run.get("snapshot") or {}).get("base_repeats")
+        if not isinstance(repeats, int) or repeats < 1:
+            continue
         expected = {case["case_id"] for case in all_cases(run["dataset_id"])
                     if (case.get("split") or "optimize") == "optimize"}
         rows = get_case_results_for_run(run["id"], "baseline")
-        actual = {row["case_id"] for row in rows}
-        if (expected and actual == expected
-                and all((row.get("scores") or {}).get("status") in ("pass", "fail", "invalid")
+        actual = {(row["case_id"], row.get("repeat_index")) for row in rows}
+        expected_rows = {(case_id, repeat) for case_id in expected for repeat in range(1, repeats + 1)}
+        if (expected and actual == expected_rows
+                and len(rows) == len(expected_rows)
+                and all(row.get("variant") == "main"
+                        and (row.get("scores") or {}).get("status") in ("pass", "fail")
                         for row in rows)):
             return run
     return None

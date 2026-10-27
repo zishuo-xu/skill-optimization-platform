@@ -138,7 +138,10 @@ export default async function versionsView(container, ctx) {
     });
     if (!ok) return;
     try {
-      if (version.type === 'skill') await api.publishSkillVersion(version.id);
+      if (version.type === 'skill') {
+        if (version.status === 'published') await api.activateSkillVersion(version.id, project.current_skill_version_id);
+        else await api.publishSkillVersion(version.id);
+      }
       else if (version.type === 'environment') await api.publishEnvironment(version.id);
       else await api.publishDataset(version.id);
       toast('已设为当前版本', { type: 'success' });

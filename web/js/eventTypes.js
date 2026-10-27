@@ -175,7 +175,7 @@ export function decisionKey(run) {
 export const MODE_META = {
   evaluate: { label: '普通评测', icon: 'play' },
   baseline: { label: '基线评测', icon: 'play' },
-  optimize: { label: '单轮优化', icon: 'spark' },
+  optimize: { label: '优化 Skill', icon: 'spark' },
   validate: { label: '正式验收', icon: 'shield' },
   final_test: { label: '最终测试', icon: 'shield' },
 };

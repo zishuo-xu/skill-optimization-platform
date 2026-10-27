@@ -1,6 +1,7 @@
 /** 运行详情：四标签页（结果概览 / 案例对比 / 文件差异 / 运行记录）与结论应用。 */
 
 import { api, download } from '../api_v3.js';
+import { optimizationRequest, toolCallSummary } from '../optimizationFlow.js';
 import { h, mount, icon } from '../dom.js';
 import {
   button,
@@ -111,6 +112,8 @@ export default async function runDetailsView(container, ctx) {
     log: null,
     applyBusy: false,
     validateBusy: false,
+    optimizeBusy: false,
+    optimizationRequest: null,
     validationRequest: null,
     pollTimer: null,
     tickTimer: null,
@@ -630,7 +633,7 @@ export default async function runDetailsView(container, ctx) {
       };
     }
     if (run.mode === 'optimize' && candidateVersionId()) {
-      return { tone: 'info', title: '候选已完成测试集重跑，待正式验收', text: '下方对比仅反映已知测试集表现，尚未完成独立验收，不能据此应用。' };
+      return { tone: 'info', title: '候选已完成测试集重跑', text: '可以基于此候选继续优化；准备好后再进行独立验收。正式版本保持不变，验收通过后才能应用。' };
     }
     if (run.mode !== 'evaluate' && decisionErrorCode === 'no_failures') {
       return { tone: 'success', title: '没有发现需要改进的问题', text: run.decision_reason || '当前案例都已通过，优化器没有可依据的失败案例。' };
@@ -680,7 +683,9 @@ export default async function runDetailsView(container, ctx) {
       : null;
     if (run.mode === 'optimize' && run.status === 'completed' && candVersion) {
       return [
-        button({ label: state.validateBusy ? '正在启动验收…' : '正式验收', variant: 'primary', iconName: 'shield', disabled: state.validateBusy || run.can_validate === false, onClick: startValidation }),
+        button({ label: state.optimizeBusy ? '正在启动…' : '基于此候选继续优化', variant: 'primary', iconName: 'spark', disabled: state.optimizeBusy || !run.can_continue_optimization, onClick: () => startOptimization(true) }),
+        button({ label: state.validateBusy ? '正在启动验收…' : '独立验收', variant: 'secondary', iconName: 'shield', disabled: state.validateBusy || run.can_validate === false, onClick: startValidation }),
+        button({ label: '看改了什么', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') }),
         button({ label: '查看案例对比', variant: 'secondary', iconName: 'run', onClick: () => switchTab('cases') }),
         run.can_validate === false ? h('span.small.muted', { text: '当前版本或运行条件已变化，请返回工作台重新优化。' }) : null,
       ];
@@ -698,9 +703,18 @@ export default async function runDetailsView(container, ctx) {
         appliedElsewhere ? h('span.small.muted', { text: '当前版本已变化，不能从本轮候选重复恢复。' }) : null,
       ];
     }
+    if (run.decision_code === 'no_failures'
+        || run.decision_record?.rationale?.error_code === 'no_failures') {
+      return [
+        run.source_run_id ? button({ label: '返回来源候选，继续或验收', variant: 'primary', iconName: 'arrowLeft', href: `#/runs/${encodeURIComponent(run.source_run_id)}/result` }) : null,
+        button({ label: '补充测试案例', variant: 'secondary', iconName: 'plus', href: `#/projects/${encodeURIComponent(run.project_id)}/dataset` }),
+      ];
+    }
     if (run.mode !== 'evaluate' && (run.decision === 'reject' || run.decision === 'inconclusive')) {
       const counts = computeTransitions();
       return [
+        run.mode === 'optimize' && run.source_run_id
+          ? button({ label: '返回来源候选，继续或验收', variant: 'primary', iconName: 'arrowLeft', href: `#/runs/${encodeURIComponent(run.source_run_id)}` }) : null,
         counts.regressed
           ? button({ label: `看变差的 ${counts.regressed} 个案例`, variant: 'primary', iconName: 'alert', onClick: () => openCases('regressed') })
           : button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }),
@@ -710,7 +724,8 @@ export default async function runDetailsView(container, ctx) {
     }
     if (isBaselineRun() && run.status === 'completed') {
       return [
-        baselineCounts().failed ? button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }) : null,
+        baselineCounts().failed ? button({ label: state.optimizeBusy ? '正在启动…' : '根据测试结果优化', variant: 'primary', iconName: 'spark', disabled: state.optimizeBusy, onClick: () => startOptimization(false) }) : null,
+        baselineCounts().failed ? button({ label: '看失败案例', variant: 'secondary', iconName: 'alert', onClick: () => openCases('failed') }) : null,
         button({ label: '回工作台', variant: baselineCounts().failed ? 'secondary' : 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
       ];
     }
@@ -888,6 +903,38 @@ export default async function runDetailsView(container, ctx) {
       )
     );
     mount(resultHost, h('div.stack', null, verdictCard(), changeSummaryCard(), caseChangeCard(), metricDetails));
+  }
+
+  async function startOptimization(fromCandidate) {
+    if (state.optimizeBusy) return;
+    state.optimizeBusy = true;
+    renderResult();
+    try {
+      const project = await api.getProject(state.run.project_id);
+      const payload = optimizationRequest(state.run, project, fromCandidate);
+      const confirmed = await confirmDialog({
+        title: fromCandidate ? '基于此候选继续优化' : '根据测试结果优化',
+        message: fromCandidate
+          ? '以此候选为起点，使用当前日常测试集优化并重跑。不会发布候选或改变当前正式版本；整条迭代链的测试数据都将与独立验收隔离。'
+          : '使用本次评测的 Skill、模型配置与测试集生成候选并重跑。完整且兼容的测试结果会自动复用。',
+        confirmText: '开始优化',
+      });
+      if (!confirmed) return;
+      const signature = JSON.stringify(payload);
+      if (state.optimizationRequest?.signature !== signature) {
+        state.optimizationRequest = { signature, key: `optimize-${crypto.randomUUID()}` };
+      }
+      const result = await api.createRun(payload, { idempotencyKey: state.optimizationRequest.key });
+      const id = result?.run_id || result?.id;
+      if (!id) throw new Error('服务未返回优化运行 ID');
+      toast('优化已启动', { type: 'success' });
+      ctx.navigate(`#/runs/${encodeURIComponent(id)}`);
+    } catch (error) {
+      toast(`启动优化失败：${error.message}`, { type: 'error' });
+    } finally {
+      state.optimizeBusy = false;
+      renderResult();
+    }
   }
 
   async function startValidation() {
@@ -1292,6 +1339,7 @@ export default async function runDetailsView(container, ctx) {
               h('th', { text: '案例' }),
               baselineOnly ? h('th.case-table__status', { text: '结果' }) : h('th.case-table__status', { text: '基线' }),
               baselineOnly ? null : h('th.case-table__status', { text: '候选' }),
+              h('th', { text: '工具调用：预期 → 实际' }),
               h('th', { text: '原因' })
             )
           ),
@@ -1325,6 +1373,9 @@ export default async function runDetailsView(container, ctx) {
                 ),
                 h('td.case-table__status', null, sideBadge(item.baseline)),
                 baselineOnly ? null : h('td.case-table__status', null, sideBadge(item.candidate)),
+                h('td.small', null,
+                  h('div', { text: `预期：${toolCallSummary(item.expected)}` }),
+                  h('div', { text: `实际：${toolCallSummary(item.candidate || item.baseline)}` })),
                 reasonCell(item)
               )
             )

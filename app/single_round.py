@@ -22,7 +22,8 @@ from typing import Any, Callable, Mapping, Sequence
 
 from . import config, event_types, evaluation, execution, hashing, persistence, patch
 from . import judge as judge_mod
-from . import optimizer, services, skill_package
+from . import optimizer, services, skill_package, fixtures
+from .model_output import redact_output
 from .adapters.registry import build_adapter
 from .errors import AppError
 from .run_events import EventEmitter
@@ -64,6 +65,13 @@ def execute_run(run_id: str) -> None:
         persistence.finish_run(run_id, status="completed", decision="inconclusive",
                                decision_reason=f"证据不足：预算用尽（{exc}）",
                                stage="decision")
+    except AppError as exc:
+        emitter.issue("run_failed", error_code=exc.code,
+                      title="运行预检或配置失败", message=str(exc),
+                      impact="本次运行未产生有效结论。",
+                      next_action="修复提示中的配置后重新启动运行。", level="error")
+        persistence.finish_run(run_id, status="failed", error_code=exc.code,
+                               error_message=str(exc), decision_reason="运行预检或配置失败")
     except Exception as exc:  # noqa: BLE001 - persisted for the run log
         log.exception("pipeline failed: %s", run_id)
         emitter.issue("run_failed", error_code="platform_error",
@@ -133,7 +141,7 @@ def _run_evaluate(run: Mapping[str, Any], env: Mapping[str, Any],
     _preflight(run, env, dataset, cases, emitter, mode="evaluate")
     _stage(emitter, "baseline_eval", "执行普通评测")
     metrics = _evaluate_split(
-        run, env, evaluation_cases, phase="baseline", repeats=1, adapter=adapter,
+        run, env, evaluation_cases, phase="baseline", repeats=services._baseline_repeats(env), adapter=adapter,
         emitter=emitter, budget=budget, cancel=cancel)
     persistence.finish_run(
         run["id"], status="completed", decision=None, decision_reason="普通评测完成",
@@ -158,7 +166,7 @@ def _run_baseline(run: Mapping[str, Any], env: Mapping[str, Any],
     _preflight(run, env, dataset, cases, emitter, mode="baseline")
     _stage(emitter, "baseline_eval", "执行优化集基线评测")
     metrics = _evaluate_split(
-        run, env, optimize_cases, phase="baseline", repeats=1, adapter=adapter,
+        run, env, optimize_cases, phase="baseline", repeats=services._baseline_repeats(env), adapter=adapter,
         emitter=emitter, budget=budget, cancel=cancel)
     cost = _cost(metrics)
     persistence.finish_run(
@@ -218,24 +226,39 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     if not optimize_cases:
         raise AppError("优化运行需要测试集")
     _preflight(run, env, dataset, cases, emitter, mode="optimize")
+    snapshot = run.get("snapshot") or {}
+    if snapshot.get("source_run_id"):
+        source, _ = services._validate_source(
+            persistence.get_project(run["project_id"]), snapshot["source_run_id"])
+        frozen = snapshot.get("skill_version") or {}
+        current = persistence.get_skill_version(run["baseline_skill_version_id"])
+        root = (source.get("snapshot") or {}).get("root_skill_version_id") or source["baseline_skill_version_id"]
+        if (source.get("candidate_skill_version_id") != current["id"]
+                or frozen.get("id") != current["id"]
+                or frozen.get("content_hash") != current.get("content_hash")
+                or snapshot.get("root_skill_version_id") != root):
+            raise AppError("继续优化预检失败：来源或冻结版本已变化")
 
     # -- baseline ---------------------------------------------------------
     cached_rows = persistence.get_case_results_for_run(run_id, "baseline")
     cached_case_ids = {row["case_id"] for row in cached_rows}
-    if cached_rows and cached_case_ids >= {case["case_id"] for case in optimize_cases}:
+    if (cached_rows and cached_case_ids >= {case["case_id"] for case in optimize_cases}
+            and {(case["case_id"], repeat) for case in optimize_cases
+                 for repeat in range(1, services._baseline_repeats(env) + 1)}
+                <= {(row["case_id"], row.get("repeat_index", 1)) for row in cached_rows}):
         emitter.set_stage("baseline_eval", message="复用兼容基线结果")
         emitter.emit(event_types.STAGE_STARTED, {
             "message": "复用兼容基线", "baseline_run_id": run.get("baseline_run_id"),
             "cases": len(cached_rows)}, stage="baseline_eval")
         baseline_metrics = _metrics_from_rows(run, optimize_cases, cached_rows,
-                                              planned=len(optimize_cases))
+                                              planned=len(optimize_cases) * services._baseline_repeats(env))
         emitter.emit(event_types.STAGE_COMPLETED, {
             "metrics": _metric_summary(baseline_metrics), "cache_hit": True,
         }, stage="baseline_eval")
     else:
         _stage(emitter, "baseline_eval", "执行优化集基线评测")
         baseline_metrics = _evaluate_split(
-            run, env, optimize_cases, phase="baseline", repeats=1,
+            run, env, optimize_cases, phase="baseline", repeats=services._baseline_repeats(env),
             adapter=adapter, emitter=emitter, budget=budget, cancel=cancel)
 
     # -- error analysis ---------------------------------------------------
@@ -273,9 +296,10 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         },
         "allowed_paths": sorted(path for path in files
                                 if path.lower().endswith((".md", ".markdown"))),
+        "business_execution_prompt": env.get("prompt") or "",
         "failures": failures,
         "passing_summary": {"count": len(passing),
-                            "sample_case_ids": [row["case_id"] for row in passing[:10]]},
+                            "cases": _passing_examples(optimize_cases, passing)},
         "budget_remaining": {"tokens": budget.remaining_tokens()},
         "optimizer_config": env.get("optimizer_config") or {},
         "model_config": env.get("optimizer_config") or {},
@@ -283,6 +307,10 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         "scorer_version": (env.get("scorer_config") or {}).get(
             "version", config.SCORER_VERSION),
     }
+    credentials = env
+    for key in ("project", "baseline_skill_version", "allowed_paths",
+                "business_execution_prompt", "failures", "passing_summary"):
+        context[key] = redact_output(context[key], credentials)
     optimizer_adapter = None
     opt_config = env.get("optimizer_config") or {}
     if opt_config.get("provider") not in (None, "", "heuristic", "none"):
@@ -379,7 +407,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     # -- retest -----------------------------------------------------------
     _stage(emitter, "retest", "在测试集重跑候选")
     candidate_optimize = _evaluate_split(
-        run, env, optimize_cases, phase="candidate", repeats=1,
+        run, env, optimize_cases, phase="candidate", repeats=services._baseline_repeats(env),
         adapter=adapter, emitter=emitter, budget=budget, cancel=cancel,
         skill_version_id=candidate_version["id"])
     metrics = {"baseline": baseline_metrics, "candidate": candidate_optimize,
@@ -407,7 +435,8 @@ def _run_validate(run: Mapping[str, Any], env: Mapping[str, Any],
     if not validation_cases:
         raise AppError("正式验收需要独立验收集")
     _preflight(run, env, dataset, cases, emitter, mode="validate")
-    source = persistence.get_run(run["parent_run_id"])
+    source, _ = services._validate_source(
+        persistence.get_project(run["project_id"]), run["parent_run_id"])
     candidate_version = persistence.get_skill_version(run["candidate_skill_version_id"])
     candidate = persistence.get_candidate_for_run(run_id)
     source_candidate = persistence.get_candidate_for_run(source["id"])
@@ -418,7 +447,8 @@ def _run_validate(run: Mapping[str, Any], env: Mapping[str, Any],
     consistent = (source.get("project_id") == run["project_id"]
                   and source.get("mode") == "optimize" and source.get("status") == "completed"
                   and source.get("decision") is None
-                  and source.get("baseline_skill_version_id") == run["baseline_skill_version_id"]
+                  and ((source.get("snapshot") or {}).get("root_skill_version_id")
+                       or source.get("baseline_skill_version_id")) == run["baseline_skill_version_id"]
                   and source.get("environment_id") == run["environment_id"]
                   and source.get("candidate_skill_version_id") == candidate_version["id"]
                   and candidate_version.get("source_run_id") == source["id"]
@@ -630,12 +660,14 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                       error_code="fixture_miss",
                       title="部分业务调用缺少模拟返回",
                       message=f"{len(fixture_cases)} 个案例的预期工具调用没有对应 fixture。",
-                      impact="这些案例会按 fixture_miss 能力失败计分，不会访问真实服务。",
+                      impact="预期调用缺少可用模拟返回，运行不能产生可靠能力结论。",
                       next_action="补充 fixtures 后发布新数据集版本。",
-                      level="warning", stage="preflight",
+                      level="error", stage="preflight",
                       extra={"case_ids": fixture_cases[:20]})
+        raise AppError("预检失败：预期工具调用缺少可用 fixture，请修复数据集后重试",
+                       code="fixture_coverage_incomplete")
     else:
-        check("fixture_coverage", True, "预期业务工具名均有模拟返回配置；参数条件与消费次数在执行时校验")
+        check("fixture_coverage", True, "预期业务调用已检查模拟覆盖；部分参数及调用顺序以执行时结果为准")
     compare = (env.get("scorer_config") or {}).get("compare") or {}
     semantic = compare.get("mode") == "semantic" or any(
         (item or {}).get("mode") == "semantic" for item in compare.get("field_rules") or [])
@@ -645,9 +677,10 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                       error_code="judge_not_configured",
                       title="未配置评分模型",
                       message="评分规则使用了语义比较，但执行环境没有配置评分模型。",
-                      impact="需要语义判断的参数值会按宽松规则判定（归一化后相等才算对）。",
+                      impact="语义评分无法执行，本次运行不能继续。",
                       next_action="在执行环境「评分模型」中配置标准 API 或 WebSocket 网关后发布新版本。",
-                      level="warning", stage="preflight")
+                      level="error", stage="preflight")
+        raise AppError("预检失败：语义比较需要配置评分模型", code="judge_not_configured")
     else:
         check("scoring_rules", True,
               f"参数比较：{mode_label}" + ("，评分模型已配置" if semantic else ""))
@@ -659,22 +692,59 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
 
 
 def _fixture_gap_cases(cases: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Check complete expected call sequences; partial argument paths are unknown."""
     missing: list[str] = []
     for case in cases:
         expected = case.get("expected") or {}
-        expected_calls = list(expected.get("tool_calls") or [])
-        for variant in expected.get("variants") or []:
-            expected_calls.extend(variant.get("tool_calls") or [])
-        fixtures = case.get("fixtures") or []
-        names = {fixture.get("name") for fixture in fixtures
-                 if isinstance(fixture, Mapping)}
-        if "*" in names:
-            continue
-        for call in expected_calls:
-            if call.get("name") and call["name"] not in names:
-                missing.append(case["case_id"])
+        candidates = evaluation._expected_candidates(expected)
+        for candidate in candidates:
+            matcher = fixtures.FixtureMatcher(case.get("fixtures") or [])
+            sequence_known = candidate.get("call_match") == "ordered_exact"
+            for call in candidate["tool_calls"]:
+                name = call.get("name")
+                if not name:
+                    continue
+                if call.get("arguments_path"):
+                    # Expected values only constrain a subtree. Their remaining
+                    # runtime arguments and consumption order are not knowable.
+                    names = {f.get("name") for f in case.get("fixtures") or []
+                             if isinstance(f, Mapping)}
+                    if name not in names and "*" not in names:
+                        missing.append(case["case_id"])
+                        break
+                    # Do not infer consumption across a partial call.
+                    sequence_known = False
+                    continue
+                if not sequence_known:
+                    matcher = fixtures.FixtureMatcher(case.get("fixtures") or [])
+                if not matcher.match(name, call.get("arguments"))["matched"]:
+                    missing.append(case["case_id"])
+                    break
+            if case["case_id"] in missing:
                 break
     return missing
+
+
+def _passing_examples(cases: Sequence[Mapping[str, Any]],
+                      rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {case["case_id"]: case for case in cases}
+    examples: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        case_id = row["case_id"]
+        case = by_id.get(case_id)
+        if not case or case_id in seen:
+            continue
+        seen.add(case_id)
+        examples.append({"case_id": case_id, "split": case.get("split") or "optimize",
+                         "query": case.get("query"), "context": case.get("context") or {},
+                         "expected": case.get("expected") or {},
+                         "fixtures": case.get("fixtures") or [],
+                         "actual": {key: (row.get("actual") or {}).get(key)
+                                    for key in ("action", "selected_skills", "tool_calls", "missing_fields")}})
+        if len(examples) == 5:
+            break
+    return examples
 
 
 # --------------------------------------------------------------------------- #
@@ -977,6 +1047,8 @@ def _build_failures(run_id: str, cases: Sequence[Mapping[str, Any]],
         failures.append({
             "case_id": row["case_id"],
             "query": case["query"],
+            "context": case.get("context") or {},
+            "fixtures": case.get("fixtures") or [],
             "split": case.get("split") or "optimize",
             "tags": case.get("tags") or [],
             "group_id": case.get("group_id"),

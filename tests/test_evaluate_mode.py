@@ -27,15 +27,14 @@ def test_evaluate_only_runs_test_cases():
     assert run['decision'] is None and run['metrics']['final'] is None
 
 
-def test_evaluate_does_not_supply_optimization_baseline(demo):
+def test_evaluate_supplies_compatible_optimization_baseline(demo):
     run = complete_run(demo, 'evaluate')
     assert run['status'] == 'completed'
     overview = services.overview(demo['project']['id'])
-    assert not overview['baseline']['compatible']
-    assert overview['metrics']['mode'] == 'evaluate' and overview['metrics']['run_id'] == run['id']
+    assert overview['baseline']['compatible']
     optimize = services.create_run({'project_id': demo['project']['id'], 'mode': 'optimize'})
-    assert not optimize['baseline_cache_hit'] and optimize['baseline_run_id'] is None
-    assert not persistence.get_case_results_for_run(optimize['id'])
+    assert optimize['baseline_cache_hit'] and optimize['baseline_run_id'] == run['id']
+    assert persistence.get_case_results_for_run(optimize['id'], 'baseline')
 
 
 def test_daily_requires_test_set():

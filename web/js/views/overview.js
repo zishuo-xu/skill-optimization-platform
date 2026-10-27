@@ -74,6 +74,12 @@ export default async function overviewView(container, ctx) {
       );
     }
 
+    if (primary?.mode === 'continue' && primary.run_id) {
+      return h('div.primary-action-block', null,
+        button({ label: primary.label, variant: 'primary', iconName: 'spark', href: `#/runs/${encodeURIComponent(primary.run_id)}/result` }),
+        h('span.start-hint', { text: primary.reason }));
+    }
+
     if (primary?.mode === 'add_cases') {
       return h(
         'div.primary-action-block',
@@ -83,7 +89,7 @@ export default async function overviewView(container, ctx) {
           'span.start-hint',
           null,
           '基线在测试集上已全部通过，没有可改进的失败案例。',
-          h('button.link-button', { type: 'button', onClick: () => openStartDrawer('optimize') }, '仍要运行单轮优化')
+          h('button.link-button', { type: 'button', onClick: () => openStartDrawer('optimize') }, '仍要运行优化 Skill')
         )
       );
     }
@@ -91,8 +97,8 @@ export default async function overviewView(container, ctx) {
     return h(
       'div.primary-action-block',
       null,
-      button({ label: '运行评测', variant: 'primary', iconName: 'play', onClick: () => openStartDrawer('evaluate') }),
-      h('span.start-hint', { text: '只评测测试集；独立验收集和最终测试集不参与。' })
+      button({ label: primary?.mode === 'optimize' ? '根据测试结果优化' : '运行测试集', variant: 'primary', iconName: 'play', onClick: () => openStartDrawer(primary?.mode === 'optimize' ? 'optimize' : 'evaluate') }),
+      h('span.start-hint', { text: primary?.mode === 'optimize' ? '复用兼容测试结果，生成候选并重跑。' : '只评测测试集；独立验收集和最终测试集不参与。' })
     );
   }
 
@@ -315,8 +321,8 @@ export default async function overviewView(container, ctx) {
     const stageHost = h('p.start-summary__note', { role: 'status' });
     const startButton = button({ label: '开始运行', variant: 'primary', iconName: 'play', disabled: true });
     const drawer = openDrawer({
-      title: mode === 'evaluate' ? '运行普通评测' : mode === 'baseline' ? '运行基线评测' : '启动单轮优化',
-      subtitle: '选择本轮使用的版本；草稿会先发布，再冻结版本启动。', size: 'md',
+      title: mode === 'optimize' ? '优化 Skill' : '运行测试集',
+      subtitle: '默认使用当前版本；需要修改时展开版本选择。', size: 'md',
       body: h('div.start-summary', null, body, stageHost, errorHost),
       footer: h('div.btn-row', null, button({ label: '取消', variant: 'ghost', onClick: () => drawer.close() }), startButton),
     });
@@ -328,11 +334,12 @@ export default async function overviewView(container, ctx) {
       const asItems = (value) => Array.isArray(value) ? value : (value?.items || []);
       const groups = [
         ['skill', 'Skill', asItems(skills), fresh.current_skill_version_id],
-        ['environment', '配置 Prompt', asItems(environments), fresh.current_environment_id],
+        ['environment', 'Prompt 与模型', asItems(environments), fresh.current_environment_id],
         ['dataset', '测试集', asItems(datasets), fresh.current_dataset_id],
       ];
       const selects = {};
       const details = h('div');
+      const currentSummary = h('div');
       const advanced = h('div');
       const prepare = createRunPreparation(api);
       let submitting = false;
@@ -341,6 +348,9 @@ export default async function overviewView(container, ctx) {
       const update = async () => {
         const chosen = selection();
         const valid = groups.every(([kind]) => chosen[kind]);
+        mount(currentSummary, kvList(groups.map(([kind, label]) => ({
+          label, value: chosen[kind] ? `${chosen[kind].label || (chosen[kind].version_seq ? `v${chosen[kind].version_seq}` : shortenId(chosen[kind].id, 14))}${chosen[kind].status === 'draft' ? '（草稿）' : ''}` : '未配置',
+        }))));
         startButton.disabled = !valid || submitting;
         startButton.textContent = groups.some(([kind]) => chosen[kind]?.status === 'draft') ? '发布并开始' : '开始运行';
         mount(details, h('p.start-summary__note', { text: mode === 'evaluate' ? '只评测测试集，不生成候选；独立验收集和最终测试集不参与。' : mode === 'baseline' ? '基线只评测测试集；独立验收集和最终测试集保持隔离。' : '优化会在需要时自动运行测试集基线并重跑候选；正式验收需另行启动。' }));
@@ -371,7 +381,9 @@ export default async function overviewView(container, ctx) {
         return h('label.form-field', null, h('span', { text: label }), select,
           !eligible.length ? h('a', { href: `#/projects/${encodeURIComponent(project.id)}/${kind === 'environment' ? 'environment' : kind}`, onClick: () => drawer.close() }, '去配置') : null);
       });
-      mount(body, h('div.start-summary__section', null, h('h3', { text: '本轮使用' }), ...controls),
+      mount(body, h('div.start-summary__section', null, h('h3', { text: '本轮使用' }), currentSummary,
+          h('details', { open: groups.some(([, , , current]) => !current) },
+            h('summary', { text: '切换版本或选择草稿' }), ...controls)),
         details, h('div.start-summary__section', null, advanced),
         h('p.start-summary__note', { text: '运行会产生模型调用费用；后台运行不依赖页面保持打开。' }));
       startButton.addEventListener('click', async () => {
@@ -448,8 +460,10 @@ export default async function overviewView(container, ctx) {
       description: project.description || '从失败案例改进 Skill，再用独立案例验证',
       actions: [
         loading ? null : primaryActionView(),
-        loading || (!overview?.active_run && overview?.primary_action?.mode !== 'apply' && overview?.primary_action?.mode !== 'add_cases') ? null : button({ label: '运行评测', variant: 'ghost', iconName: 'play', onClick: () => openStartDrawer('evaluate') }),
-        loading ? null : button({ label: '单轮优化', variant: 'secondary', iconName: 'spark', onClick: () => openStartDrawer('optimize') }),
+        !loading && !overview?.active_run && ['optimize', 'continue', 'apply', 'add_cases'].includes(overview?.primary_action?.mode)
+          ? button({ label: '重新运行测试集', variant: 'ghost', iconName: 'play', onClick: () => openStartDrawer('evaluate') }) : null,
+        !loading && !overview?.active_run && overview?.completeness?.ready && overview?.primary_action?.mode === 'baseline'
+          ? button({ label: '直接优化 Skill', variant: 'secondary', iconName: 'spark', onClick: () => openStartDrawer('optimize') }) : null,
       ].filter(Boolean),
     });
   }

@@ -111,6 +111,8 @@ def save_draft_file(version_id: str, relpath: str, content: str) -> dict[str, An
 
 def publish_skill_version(version_id: str, *, set_current: bool = True) -> dict[str, Any]:
     version = persistence.get_skill_version(version_id)
+    if version.get("status") == "candidate" or version.get("source_run_id"):
+        raise ConflictError("优化候选只能通过正式验收后应用", code="candidate_requires_acceptance")
     files = _read_version_files(version_id)
     errors, _warnings = skill_package.validate_manifest(version["manifest"], files)
     if errors:
@@ -787,6 +789,7 @@ def run_fingerprint(skill_version_id: str, environment_id: str, dataset_id: str,
         # A baseline produced before read-before-act enforcement and per-turn
         # context checks is not evidence for the current execution contract.
         "skill_load_policy": "progressive-loop-v2",
+        "evaluation_policy": "rsi-v2-fixture-and-judge-preflight",
     })
 
 
@@ -807,7 +810,8 @@ def _validate_source(project: Mapping[str, Any], source_run_id: str) -> tuple[di
     if (source.get("project_id") != project["id"] or source.get("mode") != "optimize"
             or source.get("status") != "completed" or source.get("decision") is not None):
         raise ConflictError("验收来源必须是本项目已完成测试集重跑的优化运行", code="invalid_source_run")
-    if (project.get("current_skill_version_id") != source.get("baseline_skill_version_id")
+    root_id = (source.get("snapshot") or {}).get("root_skill_version_id") or source.get("baseline_skill_version_id")
+    if (project.get("current_skill_version_id") != root_id
             or project.get("current_environment_id") != source.get("environment_id")):
         raise ConflictError("当前 Skill 或环境与优化运行不一致，请重新优化", code="version_conflict")
     candidate = persistence.get_candidate_for_run(source_run_id)
@@ -826,8 +830,17 @@ def _check_validation_independence(source: Mapping[str, Any], cases: Sequence[Ma
     validation = [case for case in cases if case.get("split") == "validation"]
     if not validation:
         raise ValidationError("正式验收需要独立验收集，请先补充验收案例", code="dataset_incomplete")
-    source_cases = persistence.all_cases(source["dataset_id"])
-    others = [case for case in source_cases if (case.get("split") or "optimize") != "validation"]
+    others = []
+    seen = set()
+    current = source
+    while current:
+        if current["id"] in seen:
+            raise ConflictError("优化来源链存在循环", code="invalid_source_run")
+        seen.add(current["id"])
+        others.extend(case for case in persistence.all_cases(current["dataset_id"])
+                      if (case.get("split") or "optimize") != "validation")
+        parent_id = (current.get("snapshot") or {}).get("source_run_id")
+        current = persistence.get_run(parent_id) if parent_id else None
     others += [case for case in cases if (case.get("split") or "optimize") != "validation"]
     ids = {case.get("case_id") for case in others}
     queries = {" ".join((case.get("query") or "").casefold().split()) for case in others}
@@ -884,12 +897,18 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     if mode in ("optimize", "baseline", "evaluate") and "optimize" not in split_names:
         raise ValidationError("日常评测和优化需要测试集案例", code="dataset_incomplete")
     source = candidate = None
-    if mode == "validate":
-        source_run_id = payload.get("source_run_id")
-        if not source_run_id:
-            raise ValidationError("正式验收需要 source_run_id", field_path="source_run_id")
+    source_run_id = payload.get("source_run_id")
+    if source_run_id and mode not in ("optimize", "validate"):
+        raise ValidationError("只有优化和正式验收支持 source_run_id", field_path="source_run_id")
+    if mode == "validate" and not source_run_id:
+        raise ValidationError("正式验收需要 source_run_id", field_path="source_run_id")
+    if source_run_id:
         source, candidate = _validate_source(project, source_run_id)
-        _check_validation_independence(source, cases)
+        if mode == "validate":
+            _check_validation_independence(source, cases)
+            skill_version_id = (source.get("snapshot") or {}).get("root_skill_version_id") or source["baseline_skill_version_id"]
+        else:
+            skill_version_id = source["candidate_skill_version_id"]
     if mode == "final_test" and "final_test" not in split_names:
         raise ValidationError("最终测试运行需要最终测试集", code="dataset_incomplete")
     if mode == "final_test" and payload.get("skill_version_id"):
@@ -915,7 +934,7 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     baseline_cache_hit = False
     if mode == "optimize":
         reuse = payload.get("reuse_baseline", True)
-        cached = persistence.find_cached_baseline(project_id, fingerprint) if reuse else None
+        cached = persistence.find_cached_baseline(project_id, fingerprint, acceptance["rules_version"]) if reuse else None
         if cached:
             baseline_run_id = cached["id"]
             baseline_cache_hit = True
@@ -939,18 +958,20 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         "adapter_hash": env.get("adapter_hash"),
         "reproducibility_note": env.get("reproducibility_note") or "",
     }
+    snapshot["root_skill_version_id"] = ((source.get("snapshot") or {}).get("root_skill_version_id") or source["baseline_skill_version_id"]) if source else project["current_skill_version_id"]
     if source:
         snapshot["source_run_id"] = source["id"]
+        snapshot["ancestor_run_ids"] = [*((source.get("snapshot") or {}).get("ancestor_run_ids") or []), source["id"]]
         snapshot["candidate_skill_version"] = _version_snapshot(source["candidate_skill_version_id"])
     run = persistence.create_run(
         project_id, mode=mode, baseline_skill_version_id=skill_version_id,
         environment_id=environment_id, dataset_id=dataset_id,
-        candidate_skill_version_id=(source.get("candidate_skill_version_id") if source else None), parent_run_id=parent_run_id,
+        candidate_skill_version_id=(source.get("candidate_skill_version_id") if mode == "validate" and source else None), parent_run_id=parent_run_id,
         baseline_run_id=baseline_run_id, budget=budget, acceptance=acceptance,
         snapshot=snapshot, idempotency_key=idempotency_key,
         fingerprint=fingerprint)
     persistence.update_run(run["id"], rules_version=acceptance["rules_version"])
-    if candidate:
+    if candidate and mode == "validate":
         persistence.create_candidate(
             run["id"], skill_version_id=candidate["skill_version_id"],
             diagnosis=candidate.get("diagnosis") or {}, hypotheses=candidate.get("hypotheses") or [],
@@ -1081,7 +1102,8 @@ def overview(project_id: str) -> dict[str, Any]:
         scorer_version = (env.get("scorer_config") or {}).get("version") or config.SCORER_VERSION
         fingerprint = run_fingerprint(skill_version["id"], env["id"], dataset["id"],
                                       scorer_version, _baseline_repeats(env))
-        baseline = persistence.find_cached_baseline(project_id, fingerprint)
+        baseline = persistence.find_cached_baseline(project_id, fingerprint,
+            (env.get("acceptance_config") or {}).get("rules_version") or config.ACCEPTANCE_RULES_VERSION)
         compatible = baseline is not None
         reason = "" if compatible else "当前 Skill 包/环境/数据集/评分器/重复次数组合尚无兼容基线"
     items["baseline"] = {
@@ -1115,6 +1137,21 @@ def overview(project_id: str) -> dict[str, Any]:
         item["decision_code"] = run_decision_code(item)
     pending_candidate = (_pending_candidate(project, recent["items"])
                          if ready else None)
+    iteration_source = None
+    if ready and not pending_candidate:
+        latest = next((item for item in recent["items"]
+                       if item.get("mode") in ("optimize", "validate")
+                       and item.get("status") in config.TERMINAL_RUN_STATUSES), None)
+        source_id = None
+        if latest and latest.get("mode") == "optimize":
+            source_id = latest["id"] if latest.get("candidate_skill_version_id") else (
+                (latest.get("snapshot") or {}).get("source_run_id")
+                if latest.get("decision_code") == "no_failures" else None)
+        if source_id:
+            try:
+                iteration_source, _ = _validate_source(project, source_id)
+            except (ConflictError, NotFoundError):
+                pass
     no_failures = bool(ready and compatible and _baseline_has_no_failures(metrics))
     if pending_candidate:
         primary_action = {
@@ -1123,6 +1160,12 @@ def overview(project_id: str) -> dict[str, Any]:
             "enabled": True,
             "run_id": pending_candidate["run_id"],
             "reason": "上一轮候选已通过评测，应用后才会成为当前版本。",
+        }
+    elif iteration_source:
+        primary_action = {
+            "mode": "continue", "label": "查看候选，继续优化或验收",
+            "enabled": True, "run_id": iteration_source["id"],
+            "reason": "日常候选尚未改变正式版本，可继续迭代或独立验收。",
         }
     elif no_failures:
         primary_action = {
@@ -1244,6 +1287,8 @@ def run_view(run_id: str) -> dict[str, Any]:
             "current_environment_id": "environment_id",
             "current_dataset_id": "dataset_id",
         }[field])
+        if field == "current_skill_version_id":
+            expected = snapshot.get("root_skill_version_id") or expected
         if project and project.get(field) != expected:
             stale_reasons.append(f"{label}已变更")
     acceptance_config = dict(run.get("acceptance") or {})
@@ -1305,12 +1350,14 @@ def run_view(run_id: str) -> dict[str, Any]:
         "valid": execution.get("valid") or stats.get("scored"),
         "errors": execution.get("infra_errors") or 0,
     }
-    run["source_run_id"] = run.get("parent_run_id") if run.get("mode") == "validate" else None
+    run["source_run_id"] = snapshot.get("source_run_id") or (run.get("parent_run_id") if run.get("mode") == "validate" else None)
     run["can_validate"] = False
+    run["can_continue_optimization"] = False
     if project and run.get("mode") == "optimize":
         try:
             _validate_source(project, run_id)
             run["can_validate"] = True
+            run["can_continue_optimization"] = True
         except (ConflictError, NotFoundError):
             pass
     run["can_apply"] = (
@@ -1433,6 +1480,7 @@ def run_cases(run_id: str, *, phase: str | None = None,
         item = {
             "case_id": case_id,
             "query": case.get("query"),
+            "expected": case.get("expected") or {},
             "split": case.get("split"),
             "group_id": case.get("group_id"),
             "tags": case.get("tags") or [],

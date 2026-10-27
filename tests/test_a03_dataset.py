@@ -554,9 +554,9 @@ def test_sample_dataset_is_valid_compact_input():
                    if case["case_id"] == "opt_010")
     assert clarify["expected"]["action"] == "clarify"
     assert clarify["fixtures"], "clarify 基线调用仍应有模拟返回"
-    missing = next(case for case in result["cases"]
+    final_case = next(case for case in result["cases"]
                    if case["case_id"] == "fin_003")
-    assert missing["fixtures"] == []
+    assert final_case["fixtures"], "默认示例的最终测试应具有完整模拟返回"
 
 
 def test_wildcard_fixture_matches_any_business_tool():
