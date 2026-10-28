@@ -64,6 +64,13 @@ def test_native_fixture_miss_event_contains_reason_without_fixture_response(tmp_
         "response": {"private": "must-not-leak"},
     }])
     result = run_case(request, adapter)
+    assert result["error"]["code"] == "fixture_miss"
+    assert result["error_kind"] == "capability"
+    assert result["action"] == "tool_call"
+    assert result["tool_calls_include_failed_attempts"] is True
+    assert result["tool_calls"] == [{"name": "imageEditWorkflow", "arguments": {"args": {"strength": "3"}}}]
+    assert result["tool_results"] == []
+    assert not any(event["type"] == "tool_result" for event in result["events"])
     issue_events = [event for event in result["events"] if event["type"] == "fixture_miss"]
     assert issue_events
     issue = issue_events[0]["payload"]["issue"]
@@ -89,6 +96,12 @@ def test_text_fixture_miss_reports_argument_reason(tmp_path):
     }])
     result = run_case(request, adapter)
     assert result["error"]["code"] == "fixture_miss"
+    assert result["error_kind"] == "capability"
+    assert result["action"] == "tool_call"
+    assert result["tool_calls_include_failed_attempts"] is True
+    assert result["tool_calls"] == [{"name": "imageEditWorkflow", "arguments": {}}]
+    assert result["tool_results"] == []
+    assert not any(event["type"] == "tool_result" for event in result["events"])
     issue = next(event["payload"]["issue"] for event in result["events"]
                  if event["type"] == "fixture_miss")
     assert "参数不匹配" in issue["message"]
@@ -109,6 +122,13 @@ def test_native_fixture_miss_reports_consumed_once_reason(tmp_path):
         "name": "imageEditWorkflow", "match": {}, "consume": "once", "response": {"ok": True},
     }])
     result = run_case(request, adapter)
+    assert result["error"]["code"] == "fixture_miss"
+    assert result["action"] == "tool_call"
+    assert result["tool_calls"] == [
+        {"name": "imageEditWorkflow", "arguments": {}},
+        {"name": "imageEditWorkflow", "arguments": {}},
+    ]
+    assert result["tool_results"] == [{"name": "imageEditWorkflow", "arguments": {}, "response": {"ok": True}}]
     issue = next(event["payload"]["issue"] for event in result["events"]
                  if event["type"] == "fixture_miss")
     assert "consume=once" in issue["message"]

@@ -1577,6 +1577,29 @@ def _side(row: Mapping[str, Any] | None, events: list[dict[str, Any]] | None = N
                         if event.get("type") == "tool_result"
                         for payload in [event.get("payload") or {}]
                         if "response" in payload]
+    tool_calls = list(row.get("tool_calls") or [])
+    action = row.get("action")
+    diagnostics = list(scores.get("diagnostics") or [])
+    misses = list(actual.get("fixture_misses") or [])
+    if not misses and (row.get("error_code") or (actual.get("error") or {}).get("code")) == "fixture_miss":
+        misses = [{"tool": e["payload"].get("tool"), "arguments": e["payload"].get("arguments")}
+                  for e in matching_events if e.get("type") == "fixture_miss"
+                  and isinstance(e.get("payload"), Mapping)
+                  and isinstance(e["payload"].get("arguments"), Mapping)]
+    recovered = bool(misses and not actual.get("tool_calls_include_failed_attempts"))
+    if recovered:
+        # Older executors saved only successful fixture calls. A miss stops the
+        # case immediately, so its attempted call follows the saved successes.
+        tool_calls.extend({"name": miss.get("tool"), "arguments": miss.get("arguments") or {}}
+                          for miss in misses)
+        action = "tool_call"
+        attempted_names = {miss.get("tool") for miss in misses}
+        diagnostics = [d for d in diagnostics if not (
+            d.get("category") == "action_mismatch" and d.get("expected_value") == "tool_call"
+            or d.get("category") == "missing_tool" and d.get("expected_value") in attempted_names)]
+    tool_results = list(tool_results or [])
+    tool_results.extend({"name": miss.get("tool"), "arguments": miss.get("arguments") or {},
+                         "error": "fixture_miss"} for miss in misses)
     summary = ""
     for event in matching_events if actual.get("finish_protocol") == "ok" else []:
         if event.get("type") != "model_call_finished":
@@ -1609,15 +1632,15 @@ def _side(row: Mapping[str, Any] | None, events: list[dict[str, Any]] | None = N
     if actual.get("finish_protocol") == "error":
         final_response = ""
     output = {"final_response": final_response or summary or actual.get("raw_output") or "",
-              "raw_output": actual.get("raw_output") or "", "tool_results": tool_results}
+              "raw_output": actual.get("raw_output") or "", "tool_results": tool_results,
+              "tool_calls": tool_calls}
     output = redact_output(output, credentials)
     return {
         **output,
         "phase": row.get("phase"),
         "repeat_index": row.get("repeat_index"),
         "selected_skills": row.get("selected_skills") or [],
-        "action": row.get("action"),
-        "tool_calls": row.get("tool_calls") or [],
+        "action": action,
         "missing_fields": row.get("missing_fields") or [],
         "passed": scores.get("passed"),
         "status": scores.get("status"),
@@ -1631,7 +1654,8 @@ def _side(row: Mapping[str, Any] | None, events: list[dict[str, Any]] | None = N
         "routing": scores.get("routing"),
         "tool_args": scores.get("tool_args"),
         "action_ok": scores.get("action_ok"),
-        "diagnostics": scores.get("diagnostics") or [],
+        "diagnostics": diagnostics,
+        "display_note": "已从失败记录补齐调用尝试；原始评分保留。" if recovered else "",
         "judgments": scores.get("judgments") or [],
     }
 

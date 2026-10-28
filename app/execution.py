@@ -930,6 +930,7 @@ class _CaseRunner:
         started = time.monotonic()
         self._emit(event_types.TOOL_CALL_STARTED, call_id=call_id,
                    payload={"tool": name, "arguments": safe_arguments})
+        self.tool_calls.append({"name": name, "arguments": dict(arguments)})
         hit = self.fixtures.resolve(name, dict(arguments))
         duration_ms = int((time.monotonic() - started) * 1000)
         if hit is None:
@@ -963,7 +964,6 @@ class _CaseRunner:
                             "response": payload_response,
                             "fixture_index": hit.get("fixture_index"),
                             "consume": hit.get("consume")})
-        self.tool_calls.append({"name": name, "arguments": dict(arguments)})
         self.tool_results.append(redact_output({"name": name, "arguments": dict(arguments),
                                                 "response": response}, self.model_config))
         self.messages.append({
@@ -1079,6 +1079,7 @@ class _CaseRunner:
         self._emit(event_types.TOOL_CALL_STARTED, call_id=call_id,
                    payload={"tool": name, "arguments": safe_arguments,
                             "source": "text_parse"})
+        self.tool_calls.append({"name": name, "arguments": dict(arguments)})
         hit = self.fixtures.resolve(name, dict(arguments))
         duration_ms = int((time.monotonic() - started) * 1000)
         if hit is None:
@@ -1109,7 +1110,6 @@ class _CaseRunner:
                             "response": response,
                             "fixture_index": hit.get("fixture_index"),
                             "consume": hit.get("consume")})
-        self.tool_calls.append({"name": name, "arguments": dict(arguments)})
         self.tool_results.append(redact_output({"name": name, "arguments": dict(arguments),
                                                 "response": response}, self.model_config))
         results.append({"index": index, "tool": name, "arguments": dict(arguments),
@@ -1190,6 +1190,7 @@ class _CaseRunner:
             "action": action,
             "tool_calls": [{"name": call["name"], "arguments": dict(call.get("arguments") or {})}
                            for call in tool_calls if isinstance(call, Mapping)],
+            "tool_calls_include_failed_attempts": True,
             "missing_fields": list(missing_fields),
             "error": error,
             "error_kind": error_kind,

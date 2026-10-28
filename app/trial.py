@@ -212,7 +212,9 @@ def _side(actual: Mapping[str, Any], score: Mapping[str, Any] | None) -> dict[st
         "judgments": scores.get("judgments") or [],
         "raw_output": str(actual.get("raw_output") or "")[:4000],
         "final_response": actual.get("final_response") or "",
-        "tool_results": actual.get("tool_results") or [],
+        "tool_results": list(actual.get("tool_results") or []) + [
+            {"name": miss.get("tool"), "arguments": miss.get("arguments") or {},
+             "error": "fixture_miss"} for miss in actual.get("fixture_misses") or []],
     }
 
 

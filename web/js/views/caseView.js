@@ -63,6 +63,7 @@ export function matchToolResults(calls = [], results = []) {
 }
 
 function resultBlock(result) {
+  if (result?.error === 'fixture_miss') return h('div.small', { text: '模拟返回未匹配：已尝试调用，未取得工具返回。' });
   if (!result || !Object.hasOwn(result, 'response')) return h('div.xsmall.muted', { text: '未记录工具返回' });
   return h('details.case-more', null,
     h('summary', { text: '工具返回（执行记录，不计入参数评分）' }),
@@ -157,6 +158,7 @@ export function actualColumn(side, label) {
           resultBlock(result)))) : null,
       h('div', null, h('span.xsmall.muted', { text: '最终回复（展示，不计入参数评分）' }),
         h('div.small', { text: typeof side.final_response === 'string' && side.final_response ? side.final_response : '未记录最终回复', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } })),
+      side.display_note ? h('div.xsmall.muted', { text: side.display_note }) : null,
       h('div.xsmall.muted', { text: `耗时 ${formatDuration(side.duration_ms)} · Token ${formatNumber(tokens)}` })),
   });
 }

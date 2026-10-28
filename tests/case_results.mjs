@@ -44,4 +44,7 @@ test('actual column shows final response for clarification and null return separ
   assert.match(text, /工具返回（执行记录，不计入参数评分）/);
   assert.match(text, /null/);
   assert.match(text, /未记录工具返回/);
+  const failed = content(actualColumn({action: 'tool_call', tool_calls: [{name: 'edit', arguments: {}}], tool_results: [{name: 'edit', arguments: {}, error: 'fixture_miss'}]}, '实际'));
+  assert.match(failed, /模拟返回未匹配：已尝试调用/);
+  assert.doesNotMatch(failed, /未记录工具返回/);
 });

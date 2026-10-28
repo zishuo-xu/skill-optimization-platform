@@ -125,3 +125,39 @@ def test_unaccepted_finish_summary_never_overrides_raw_output(package):
     row['actual']['finish_protocol'] = 'missing'
     row['actual'].pop('final_response')
     assert services._side(row)['final_response'] == 'previous answer'
+
+
+def test_legacy_fixture_miss_recovers_attempt_without_changing_scores():
+    import copy
+    call = {'name': 'imageEditWorkflow', 'arguments': {'method': 'imageOneWordFixPicture'}}
+    row = {'action': 'no_action', 'tool_calls': [], 'error_code': 'fixture_miss',
+           'scores': {'passed': False, 'diagnostics': [
+               {'category': 'fixture_miss', 'tool': call['name']},
+               {'category': 'action_mismatch', 'expected_value': 'tool_call', 'actual_value': 'no_action'},
+               {'category': 'missing_tool', 'expected_value': call['name']} ]},
+           'actual': {'fixture_misses': [{'tool': call['name'], 'arguments': call['arguments']}]}}
+    before = copy.deepcopy(row)
+    side = services._side(row)
+    assert side['action'] == 'tool_call'
+    assert side['tool_calls'] == [call]
+    assert side['passed'] is False
+    assert [d['category'] for d in side['diagnostics']] == ['fixture_miss']
+    assert side['tool_results'] == [{**call, 'error': 'fixture_miss'}]
+    assert side['final_response'] == ''
+    assert row == before
+    # Identical successful and failed attempts must both remain visible.
+    row['tool_calls'] = [call]
+    assert services._side(row)['tool_calls'] == [call, call]
+    row['actual']['tool_calls_include_failed_attempts'] = True
+    row['tool_calls'] = [call, call]
+    assert services._side(row)['tool_calls'] == [call, call]
+
+
+def test_old_fixture_miss_can_recover_from_execution_events():
+    row = {'action': 'no_action', 'tool_calls': [], 'error_code': 'fixture_miss',
+           'actual': {'events': [{'type': 'fixture_miss', 'payload': {
+               'tool': 'edit', 'arguments': {'method': 'wrong'}}}]}}
+    side = services._side(row)
+    assert side['tool_calls'] == [{'name': 'edit', 'arguments': {'method': 'wrong'}}]
+    assert side['action'] == 'tool_call'
+    assert 'response' not in side['tool_results'][0]
