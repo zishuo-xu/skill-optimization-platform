@@ -17,7 +17,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import api_v3, config, db, worker
+from . import api_v3, config, db, onboarding, worker
 from .errors import AppError
 
 log = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ async def generic_error_handler(request, exc: Exception) -> JSONResponse:
 async def lifespan(app):
     db.init_db()
     config.ensure_dirs()
+    onboarding.ensure_guide()
     started = False
     disable = os.environ.get("SKILLOPT_DISABLE_WORKER", "").lower() in ("1", "true", "yes")
     if not disable:

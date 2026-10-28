@@ -1168,7 +1168,10 @@ def overview(project_id: str) -> dict[str, Any]:
                          if fingerprint else None)
     display_run = latest_evaluation or baseline
     display_metrics = ((display_run.get("metrics") or {}).get("baseline") or {}) if display_run else {}
+    from . import onboarding
+    guide = onboarding.guide_for_project(project_id)
     return {
+        **({"guide": guide} if guide else {}),
         "project": project,
         "completeness": {"ready": ready, "missing": missing, "items": items},
         "metrics": (None if not display_run else {

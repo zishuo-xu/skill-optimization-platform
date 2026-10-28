@@ -614,6 +614,10 @@ export default async function environmentView(container, ctx) {
       },
     };
     if (judgeConfig) scorerConfig.judge = judgeConfig;
+    if (includeStatus === 'published' && !judgeConfig &&
+        (compareForm.mode === 'semantic' || fieldRules.some((rule) => rule.mode === 'semantic'))) {
+      errors['judge_config.provider'] = '语义比较需要配置评分模型';
+    }
 
     for (const [group, config] of [['model_config', modelConfig], ['optimizer_config', optimizerConfig], ['judge_config', judgeConfig]]) {
       if (!config) continue;
@@ -1793,6 +1797,14 @@ export default async function environmentView(container, ctx) {
 
   async function publishDraft() {
     if (!state.env) return;
+    // Pre-filled or previously saved drafts still need validation before publish.
+    const { errors } = serialize({ includeStatus: 'published' });
+    state.fieldErrors = { ...errors };
+    if (Object.keys(errors).length) {
+      renderForm();
+      toast('请先修正标红的字段', { type: 'warning' });
+      return;
+    }
     const ok = await confirmDialog({
       title: '发布执行环境',
       message: '发布后将设为项目当前环境，并冻结本轮使用的 Prompt 与模型参数。已有运行保留原快照。',

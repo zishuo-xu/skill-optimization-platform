@@ -1,6 +1,7 @@
 /** 项目列表：新建、进入、归档，空态给导入引导。 */
 
 import { api } from '../api_v3.js';
+import { isTaskGuide, orderGuideFirst } from '../onboarding.js';
 import { h, mount, icon, debounce } from '../dom.js';
 import {
   button,
@@ -54,7 +55,7 @@ export default async function projectsView(container, ctx) {
   );
 
   function visibleProjects() {
-    return state.projects.filter((project) => {
+    return orderGuideFirst(state.projects.filter((project) => {
       const archived = project.archived === 1 || project.archived === '1' || project.archived === true;
       if (!state.includeArchived && archived) return false;
       if (state.search) {
@@ -62,7 +63,7 @@ export default async function projectsView(container, ctx) {
         if (!haystack.includes(state.search)) return false;
       }
       return true;
-    });
+    }));
   }
 
   function openCreateDialog() {
@@ -162,6 +163,7 @@ export default async function projectsView(container, ctx) {
   }
 
   function projectCard(project) {
+    const guide = isTaskGuide(project);
     const latest = project.latest_run;
     const version = project.current_skill_version;
     const archived = project.archived === 1 || project.archived === '1' || project.archived === true;
@@ -182,6 +184,7 @@ export default async function projectsView(container, ctx) {
       h(
         'div.project-card__meta',
         null,
+        guide ? chip('入门引导', 'accent') : null,
         version ? chip(`Skill ${shortenId(version.id, 10)}`, 'accent', { iconName: 'skill' }) : chip('未导入 Skill 包', 'warning', { iconName: 'alert' }),
         latest ? statusBadge(latest.status, 'run') : chip('尚无运行', 'neutral', { iconName: 'clock' }),
         h('span', { text: `${project.run_count || 0} 次运行` })
@@ -201,7 +204,7 @@ export default async function projectsView(container, ctx) {
             ? button({ label: '恢复', variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => restoreProject(project) })
             : iconButton('archive', { label: '归档项目', title: '归档项目', onClick: () => archiveProject(project) }),
           button({
-            label: archived ? '查看' : '进入',
+            label: archived ? '查看' : guide ? '从这里开始' : '进入',
             variant: archived ? 'secondary' : 'primary',
             size: 'sm',
             iconName: 'arrowRight',

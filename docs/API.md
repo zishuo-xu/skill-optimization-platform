@@ -41,6 +41,8 @@
 | GET | `/projects/{pid}/versions` | `{skill_versions, environments, datasets, audit}` |
 | GET | `/projects/{pid}/export-summary` | 导出说明与版本数量 |
 
+引导项目的列表项、详情及概览额外包含 `guide`：`key`（稳定标识 `task-collaboration-v1`）、`title`、`environment_draft_id`（初始草稿）、`skill_count` 与 `split_counts`（初始资产规模，并非修改后的实时统计）。普通项目省略该字段。引导身份不依赖可修改的项目名称。
+
 `overview` 关键字段：
 
 ```json

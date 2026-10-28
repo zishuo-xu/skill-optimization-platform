@@ -1,6 +1,7 @@
 /** 项目概览：配置完整性、最近指标、最近运行、随状态变化的主操作。 */
 
 import { api } from '../api_v3.js';
+import { isTaskGuide, guideNextAction } from '../onboarding.js';
 import { createRunPreparation } from '../runPreparation.js';
 import { h, mount, icon } from '../dom.js';
 import {
@@ -53,6 +54,12 @@ export default async function overviewView(container, ctx) {
       );
     }
 
+    if (!ready && isTaskGuide(overview)) {
+      return h('div.primary-action-block', null,
+        button({ label: '配置模型并发布', variant: 'primary', iconName: 'environment', href: `#/projects/${encodeURIComponent(project.id)}/environment` }),
+        h('span.start-hint', { text: '先配置业务、优化和评分模型，保存并发布环境。' }));
+    }
+
     if (!ready) {
       return h('div.primary-action-block', null,
         button({ label: '选择版本并运行评测', variant: 'primary', iconName: 'play', onClick: () => openStartDrawer('evaluate') }),
@@ -93,12 +100,48 @@ export default async function overviewView(container, ctx) {
       );
     }
 
+    if (isTaskGuide(overview) && primary?.mode === 'baseline') {
+      return h('div.primary-action-block', null,
+        button({ label: '运行当前版本基线', variant: 'primary', iconName: 'play', onClick: () => openStartDrawer('baseline') }),
+        h('span.start-hint', { text: '评测当前版本的日常测试集，查看失败依据。' }));
+    }
+
     return h(
       'div.primary-action-block',
       null,
       button({ label: primary?.mode === 'optimize' ? '根据测试结果优化' : '运行测试集', variant: 'primary', iconName: 'play', onClick: () => openStartDrawer(primary?.mode === 'optimize' ? 'optimize' : 'evaluate') }),
       h('span.start-hint', { text: primary?.mode === 'optimize' ? '复用兼容测试结果，生成候选并重跑。' : '只评测测试集；独立验收集和最终测试集不参与。' })
     );
+  }
+
+  function guideSection() {
+    if (!isTaskGuide(overview)) return null;
+    const next = guideNextAction(overview);
+    const nextText = {
+      configure: '下一步：配置并发布模型', active: '运行进行中，请查看进度',
+      evaluate: '下一步：运行当前版本的测试集', optimize: '下一步：根据测试结果优化',
+      continue: '下一步：查看候选，继续优化或启动独立验收',
+      apply: '下一步：查看验收结果并应用候选', add_cases: '当前测试集已全部通过，可查看结果或补充案例',
+    }[next];
+    const steps = [
+      ['配置并发布环境', '业务、优化和评分模型需接入真实服务；Prompt 已预填。'],
+      ['运行基线', '运行日常测试集，查看失败依据。'],
+      ['优化并重跑', '生成候选，在日常集重跑并检查差异。'],
+      ['独立验收', '在候选结果页启动独立验收，默认各重复 3 次配对比较。'],
+      ['应用候选', '验收通过后，在结果页应用候选版本。'],
+    ];
+    return sectionCard({
+      title: '任务协作入门',
+      description: '跟随一个完整示例，体验从发现问题到验收应用。',
+      body: h('div.guide', null,
+        h('p.guide__next', { text: nextText }),
+        h('ol.guide__steps', null, ...steps.map(([title, description]) =>
+          h('li', null, h('strong', { text: title }), h('span', { text: description })))),
+        h('p.guide__note', { text: '示例有两处刻意设置的映射错误；工具返回由 fixture 模拟，测试答案固定。不会自动调用模型。' }),
+        h('details', null, h('summary', { text: '数据与评分说明' }),
+          h('p', { text: '初始预置 3 个子技能、24 条日常案例、12 条独立验收案例和 6 条最终留出案例。最终留出集供 API 教程使用，不参与日常优化和独立验收。description 参数按语义比较，其余参数严格比较。' }))
+      ),
+    });
   }
 
   function completenessSection() {
@@ -292,6 +335,7 @@ export default async function overviewView(container, ctx) {
     if (header) header.replaceWith(makeHeader());
     mount(
       contentHost,
+      guideSection(),
       completenessSection(),
       metricSection(),
       recentRunsSection()

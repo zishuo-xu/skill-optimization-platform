@@ -56,6 +56,10 @@ bash scripts/setup.sh
 
 `make setup/seed/demo/start/run/test` 提供同样的快捷入口。
 
+服务启动（包括直接 `python -m app.server`）会幂等安装「入门引导：任务协作」，已有数据库升级后也能看到。它只准备初始 Skill、固定划分的数据集和无凭据的环境草稿，不发起模型调用，不改动已有项目和历史运行。安装标记与项目数据在同一事务中提交；重复启动不覆盖用户对引导项目的修改或归档。不要使用 `--reset` 获取新示例。
+
+若只需提前安装引导，可运行 `.venv/bin/python -m app.seed --ensure-guide`。部署时应保留 `docs/examples/task-collaboration/` 输入资产；引导安装直接使用它们，与教程保持一致。
+
 ## 3. 配置
 
 | 环境变量 | 默认 | 说明 |

@@ -15,7 +15,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import config, dataset as dataset_module, db, hashing, persistence, services, single_round, skill_package
+from . import config, dataset as dataset_module, db, hashing, onboarding, persistence, services, single_round, skill_package
 from .errors import ConflictError, ValidationError
 from .worker import Worker
 
@@ -144,6 +144,7 @@ def _seed_project(spec: dict, with_optimize: bool) -> dict:
 
 def seed(with_optimize: bool) -> dict:
     db.init_db()
+    onboarding.ensure_guide()
     results = [_seed_project(spec, with_optimize) for spec in DEMO_SPECS]
     print()
     for item in results:
@@ -262,7 +263,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="创建并执行一次单轮优化")
     parser.add_argument("--refresh-image", action="store_true",
                         help="为已有修图示例发布新版 Skill 包和数据集，保留模型配置和历史；不调用模型")
+    parser.add_argument("--ensure-guide", action="store_true", help="仅准备任务协作引导，不调用模型")
     args = parser.parse_args(argv)
+    if args.ensure_guide:
+        if args.reset or args.with_optimize or args.refresh_image:
+            parser.error("--ensure-guide 不与其他选项混用")
+        db.init_db()
+        project = onboarding.ensure_guide()
+        print(f"任务协作引导已准备: {project['id']}（未发起模型调用）")
+        return 0
     if args.refresh_image:
         if args.reset or args.with_optimize:
             parser.error("--refresh-image 不与 --reset/--with-optimize 混用")

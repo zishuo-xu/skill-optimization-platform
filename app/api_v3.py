@@ -121,6 +121,8 @@ def project_detail(project_id: str) -> dict[str, Any]:
     project["current_environment"] = _current_env_summary(project)
     project["current_dataset"] = _current_dataset_summary(project)
     overview = services.overview(project_id)
+    if overview.get("guide"):
+        project["guide"] = overview["guide"]
     project["completeness"] = overview["completeness"]
     project["baseline"] = overview["baseline"]
     project["primary_action"] = overview["primary_action"]

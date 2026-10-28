@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS projects (
     archived INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS onboarding_guides (
+    guide_key TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL UNIQUE,
+    environment_draft_id TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS skill_versions (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
