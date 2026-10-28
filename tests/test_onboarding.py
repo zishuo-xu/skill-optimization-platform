@@ -73,3 +73,37 @@ def test_lifespan_installs_and_exposes_guide(client):
     overview = client.get(f"/api/v3/projects/{project['id']}/overview").json()
     assert overview['guide'] == guide
     assert not overview['completeness']['ready']
+
+
+def test_completion_requires_applied_validation_and_matching_current_inputs():
+    project = onboarding.ensure_guide()
+    pid = project['id']
+    env_id = onboarding.guide_for_project(pid)['environment_draft_id']
+    skill_id, dataset_id = project['current_skill_version_id'], project['current_dataset_id']
+    persistence.set_current_environment(pid, env_id)
+    run = persistence.create_run(pid, mode='validate', baseline_skill_version_id='original',
+                                 candidate_skill_version_id=skill_id, environment_id=env_id,
+                                 dataset_id=dataset_id, status='completed')
+    persistence.update_run(run['id'], decision='accept')
+    decision = persistence.create_decision(run['id'], 'accept', 'accept-v1', {})
+    assert 'completed_run_id' not in onboarding.guide_for_project(pid)
+    persistence.mark_decision_applied(decision['id'], 'original')
+    assert onboarding.guide_for_project(pid)['completed_run_id'] == run['id']
+    # Completion remains evidence-backed even if the project is renamed.
+    persistence.update_project(pid, name='我的任务项目')
+    assert services.overview(pid)['guide']['completed_run_id'] == run['id']
+    for setter, original in [(persistence.set_current_skill_version, skill_id),
+                             (persistence.set_current_environment, env_id),
+                             (persistence.set_current_dataset, dataset_id)]:
+        setter(pid, 'changed')
+        assert 'completed_run_id' not in onboarding.guide_for_project(pid)
+        setter(pid, original)
+    for field, value, original in [('mode', 'optimize', 'validate'),
+                                   ('status', 'failed', 'completed'),
+                                   ('decision', 'reject', 'accept')]:
+        with db.transaction() as conn:
+            conn.execute(f'UPDATE runs SET {field}=? WHERE id=?', (value, run['id']))
+        assert 'completed_run_id' not in onboarding.guide_for_project(pid)
+        with db.transaction() as conn:
+            conn.execute(f'UPDATE runs SET {field}=? WHERE id=?', (original, run['id']))
+    assert onboarding.guide_for_project(pid)['completed_run_id'] == run['id']

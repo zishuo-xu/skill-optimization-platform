@@ -41,7 +41,7 @@
 | GET | `/projects/{pid}/versions` | `{skill_versions, environments, datasets, audit}` |
 | GET | `/projects/{pid}/export-summary` | 导出说明与版本数量 |
 
-引导项目的列表项、详情及概览额外包含 `guide`：`key`（稳定标识 `task-collaboration-v1`）、`title`、`environment_draft_id`（初始草稿）、`skill_count` 与 `split_counts`（初始资产规模，并非修改后的实时统计）。普通项目省略该字段。引导身份不依赖可修改的项目名称。
+引导项目的列表项、详情及概览额外包含 `guide`：`key`（稳定标识 `task-collaboration-v1`）、`title`、`environment_draft_id`（初始草稿）、`skill_count` 与 `split_counts`（初始资产规模，并非修改后的实时统计）。普通项目省略该字段。引导身份不依赖可修改的项目名称。若有已应用的独立验收记录，且当前 Skill、环境、数据仍与该记录一致，还返回 `completed_run_id` 与 `completed_at`；当前输入变化后省略完成字段。
 
 `overview` 关键字段：
 

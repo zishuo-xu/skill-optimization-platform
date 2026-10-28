@@ -19,3 +19,14 @@ test('guide action uses readiness and server eligibility, not historical runs', 
   assert.equal(guideNextAction({ completeness: { ready: true }, primary_action: { mode: 'apply' } }), 'apply');
   assert.equal(guideNextAction({ active_run: { id: 'r' } }), 'active');
 });
+
+test('applied guide completes only with server evidence and yields to ongoing work', () => {
+  const done = { guide: { key: 'task-collaboration-v1', completed_run_id: 'accepted' }, completeness: { ready: true }, primary_action: { mode: 'baseline' } };
+  assert.equal(guideNextAction(done), 'complete');
+  assert.equal(guideNextAction({ ...done, guide: { key: 'task-collaboration-v1' } }), 'evaluate');
+  assert.equal(guideNextAction({ ...done, completeness: { ready: false } }), 'configure');
+  assert.equal(guideNextAction({ ...done, primary_action: { mode: 'continue' } }), 'continue');
+  for (const status of ['queued', 'running', 'cancel_requested']) {
+    assert.equal(guideNextAction({ ...done, recent_runs: { items: [{ status }] } }), 'active');
+  }
+});

@@ -9,13 +9,18 @@ export function orderGuideFirst(projects) {
   return [...projects].sort((a, b) => Number(isTaskGuide(b)) - Number(isTaskGuide(a)));
 }
 
+export function activeOverviewRun(overview) {
+  return overview?.active_run || (overview?.recent_runs?.items || [])
+    .find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
+}
+
 /** The overview service owns compatibility and candidate eligibility. */
 export function guideNextAction(overview) {
-  const active = overview?.active_run || (overview?.recent_runs?.items || [])
-    .find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
-  if (active) return 'active';
+  if (activeOverviewRun(overview)) return 'active';
   if (!overview?.completeness?.ready) return 'configure';
   const mode = overview?.primary_action?.mode;
+  if (['continue', 'apply'].includes(mode)) return mode;
+  if (isTaskGuide(overview) && overview.guide.completed_run_id) return 'complete';
   if (['continue', 'apply', 'optimize', 'add_cases'].includes(mode)) return mode;
   return 'evaluate';
 }

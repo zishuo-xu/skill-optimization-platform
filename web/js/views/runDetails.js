@@ -263,6 +263,9 @@ export default async function runDetailsView(container, ctx) {
             active()
               ? button({ label: run.status === 'cancel_requested' ? '正在取消…' : '取消运行', variant: 'danger', size: 'sm', iconName: 'cancel', disabled: run.status === 'cancel_requested' || state.busyCancel, onClick: cancelRun })
               : null,
+            isTerminalStatus(run.status) && state.activeTab !== 'result'
+              ? button({ label: '查看结果与下一步', variant: 'primary', size: 'sm', iconName: 'arrowRight', onClick: () => switchTab('result') })
+              : null,
             technicalDetails
           )
         ),
@@ -352,6 +355,7 @@ export default async function runDetailsView(container, ctx) {
   function switchTab(tabId, { syncHash = true } = {}) {
     if (!TABS.some((tab) => tab.id === tabId)) tabId = 'result';
     state.activeTab = tabId;
+    renderHeader();
     if (syncHash) {
       const newHash = `#/runs/${encodeURIComponent(state.run.id)}/${tabId}`;
       if (location.hash !== newHash) history.replaceState(null, '', newHash);

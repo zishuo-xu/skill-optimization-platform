@@ -54,6 +54,7 @@ AI 接手顺序：[AGENTS](../AGENTS.md) → [开发协作指南](../CONTRIBUTIN
 
 | 文档 | 记录范围 |
 | --- | --- |
+| [引导示例用户验收](GUIDE_USER_JOURNEY_2026-10-28.md) | 从空配置到真实模型基线、优化、独立验收、应用的页面路径与修复 |
 | [验证记录](VERIFICATION.md) | 各批次测试、浏览器与真实 API 证据 |
 | [需求追溯](REQUIREMENTS_TRACEABILITY.md) | 原始需求 §1–§54 与实现差异 |
 | [RSI 平台评审](PLATFORM_REVIEW_RSI_2026-10-25.md) | 评审发现与改进建议 |

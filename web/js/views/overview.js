@@ -1,7 +1,7 @@
 /** 项目概览：配置完整性、最近指标、最近运行、随状态变化的主操作。 */
 
 import { api } from '../api_v3.js';
-import { isTaskGuide, guideNextAction } from '../onboarding.js';
+import { isTaskGuide, guideNextAction, activeOverviewRun } from '../onboarding.js';
 import { createRunPreparation } from '../runPreparation.js';
 import { h, mount, icon } from '../dom.js';
 import {
@@ -39,9 +39,7 @@ export default async function overviewView(container, ctx) {
 
   function primaryActionView() {
     const completeness = overview?.completeness;
-    const active =
-      overview?.active_run ||
-      (overview?.recent_runs?.items || []).find((run) => ['queued', 'running', 'cancel_requested'].includes(run.status));
+    const active = activeOverviewRun(overview);
     const primary = overview?.primary_action;
     const ready = completeness?.ready;
 
@@ -86,6 +84,12 @@ export default async function overviewView(container, ctx) {
         h('span.start-hint', { text: primary.reason }));
     }
 
+    if (guideNextAction(overview) === 'complete') {
+      return h('div.primary-action-block', null,
+        button({ label: '查看已应用的验收结果', variant: 'primary', iconName: 'check', href: `#/runs/${encodeURIComponent(overview.guide.completed_run_id)}/result` }),
+        h('span.start-hint', { text: '本轮闭环已完成，当前 Skill 已通过独立验收并应用。' }));
+    }
+
     if (primary?.mode === 'add_cases') {
       return h(
         'div.primary-action-block',
@@ -122,6 +126,7 @@ export default async function overviewView(container, ctx) {
       evaluate: '下一步：运行当前版本的测试集', optimize: '下一步：根据测试结果优化',
       continue: '下一步：查看候选，继续优化或启动独立验收',
       apply: '下一步：查看验收结果并应用候选', add_cases: '当前测试集已全部通过，可查看结果或补充案例',
+      complete: '本轮闭环已完成：候选已通过独立验收，并成为当前 Skill。',
     }[next];
     const steps = [
       ['配置并发布环境', '业务、优化和评分模型需接入真实服务；Prompt 已预填。'],
@@ -200,6 +205,7 @@ export default async function overviewView(container, ctx) {
 
   function metricSection() {
     const metrics = overview?.metrics;
+    if (!metrics && guideNextAction(overview) === 'complete') return null;
     if (!metrics) return h('p.overview-empty-metrics', { text: '当前配置还没有评测成绩；运行评测后，这里会显示分发、工具参数和联合通过率。' });
     const datasetInfo = metrics.dataset;
     const evaluatedMode = metrics.mode || 'baseline';
@@ -501,9 +507,9 @@ export default async function overviewView(container, ctx) {
       description: project.description || '从失败案例改进 Skill，再用独立案例验证',
       actions: [
         loading ? null : primaryActionView(),
-        !loading && !overview?.active_run && ['optimize', 'continue', 'apply', 'add_cases'].includes(overview?.primary_action?.mode)
+        !loading && !activeOverviewRun(overview) && (guideNextAction(overview) === 'complete' || ['optimize', 'continue', 'apply', 'add_cases'].includes(overview?.primary_action?.mode))
           ? button({ label: '重新运行测试集', variant: 'ghost', iconName: 'play', onClick: () => openStartDrawer('evaluate') }) : null,
-        !loading && !overview?.active_run && overview?.completeness?.ready && overview?.primary_action?.mode === 'baseline'
+        !loading && !activeOverviewRun(overview) && guideNextAction(overview) !== 'complete' && overview?.completeness?.ready && overview?.primary_action?.mode === 'baseline'
           ? button({ label: '直接优化 Skill', variant: 'secondary', iconName: 'spark', onClick: () => openStartDrawer('optimize') }) : null,
       ].filter(Boolean),
     });

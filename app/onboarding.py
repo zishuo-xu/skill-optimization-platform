@@ -83,4 +83,19 @@ def guide_for_project(project_id):
     row = db.get_connection().execute('SELECT environment_draft_id FROM onboarding_guides WHERE guide_key=? AND project_id=?', (KEY, project_id)).fetchone()
     if not row:
         return None
-    return {'key': KEY, 'title': TITLE, 'environment_draft_id': row['environment_draft_id'], 'skill_count': 3, 'split_counts': {'optimize': 24, 'validation': 12, 'final_test': 6}}
+    guide = {'key': KEY, 'title': TITLE, 'environment_draft_id': row['environment_draft_id'], 'skill_count': 3, 'split_counts': {'optimize': 24, 'validation': 12, 'final_test': 6}}
+    # Applied history only completes this guide while all current inputs match.
+    completed = db.get_connection().execute('''
+        SELECT r.id, d.applied_at FROM runs r
+        JOIN decisions d ON d.run_id = r.id
+        JOIN projects p ON p.id = r.project_id
+        WHERE p.id = ? AND r.mode = 'validate' AND r.status = 'completed'
+          AND r.decision = 'accept' AND d.decision = 'accept' AND d.applied_at IS NOT NULL
+          AND p.current_skill_version_id = r.candidate_skill_version_id
+          AND p.current_environment_id = r.environment_id AND p.current_dataset_id = r.dataset_id
+        ORDER BY d.applied_at DESC LIMIT 1
+    ''', (project_id,)).fetchone()
+    if completed:
+        guide['completed_run_id'] = completed['id']
+        guide['completed_at'] = completed['applied_at']
+    return guide
