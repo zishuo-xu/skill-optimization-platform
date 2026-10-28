@@ -36,7 +36,40 @@ export function sideBadge(side) {
   return statusBadge(side.status || (side.passed ? 'pass' : 'fail'), 'case');
 }
 
-function callBlock(call, { expected = false } = {}) {
+// A result is associated only when its tool and full arguments match. Consume each
+// record once so repeated calls with identical arguments retain their order.
+function sameJson(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const ak = Object.keys(a).sort();
+  const bk = Object.keys(b).sort();
+  return ak.length === bk.length && ak.every((key, i) => key === bk[i] && sameJson(a[key], b[key]));
+}
+
+export function matchToolResults(calls = [], results = []) {
+  const remaining = results.map((result, index) => ({ result, index }));
+  const matched = calls.map((call) => {
+    // Missing records make identical calls indistinguishable; do not guess.
+    const sameCall = (other) => other && call && other.name === call.name && Object.hasOwn(other, 'arguments') &&
+      Object.hasOwn(call, 'arguments') && sameJson(other.arguments, call.arguments);
+    const callCount = calls.filter(sameCall).length;
+    const resultCount = results.filter(sameCall).length;
+    if (callCount > 1 && resultCount < callCount) return null;
+    const index = remaining.findIndex(({ result }) => result && result.name === call?.name &&
+      Object.hasOwn(result, 'arguments') && Object.hasOwn(call, 'arguments') && sameJson(result.arguments, call.arguments));
+    return index < 0 ? null : remaining.splice(index, 1)[0].result;
+  });
+  return { matched, unmatched: remaining.map(({ result }) => result) };
+}
+
+function resultBlock(result) {
+  if (!result || !Object.hasOwn(result, 'response')) return h('div.xsmall.muted', { text: '未记录工具返回' });
+  return h('details.case-more', null,
+    h('summary', { text: '工具返回（执行记录，不计入参数评分）' }),
+    h('pre.code-block__pre', { text: safeJsonStringify(result.response, 2), style: { maxHeight: '200px', whiteSpace: 'pre-wrap' } }));
+}
+
+function callBlock(call, { expected = false, result = null } = {}) {
   if (!call) return h('p.muted.small', { text: '无业务工具调用' });
   const args = call && typeof call.arguments === 'object' && call.arguments ? call.arguments : {};
   const method = args && typeof args === 'object' ? args.method : null;
@@ -50,10 +83,12 @@ function callBlock(call, { expected = false } = {}) {
       h('span.mono.xsmall', { text: `${call.name || '—'}${method ? ` · ${method}` : ''}` }),
       path ? chip(`只比较 ${path}`, 'neutral') : null
     ),
+    h('span.xsmall.muted', { text: '调用参数（按评分规则比较）' }),
     h(`pre.code-block__pre.${expected ? 'expected-call__args' : 'actual-call__args'}`, {
       text: safeJsonStringify(args, 2),
       style: { maxHeight: '200px', whiteSpace: 'pre-wrap', margin: '6px 0 0' },
-    })
+    }),
+    expected ? null : resultBlock(result)
   );
 }
 
@@ -102,15 +137,27 @@ export function actualColumn(side, label) {
       h('div.compare-column__body', null, h('p.muted.small', { text: '本次没有运行' }))
     );
   }
+  const calls = Array.isArray(side.tool_calls) ? side.tool_calls : [];
+  const { matched, unmatched } = matchToolResults(calls, Array.isArray(side.tool_results) ? side.tool_results : []);
   const tokens = side.usage?.total_tokens ?? (side.usage?.input_tokens ? side.usage.input_tokens + (side.usage.output_tokens || 0) : undefined);
   return compareColumn({
     label,
     badge: sideBadge(side),
     routes: side.selected_skills || [],
     action: side.action,
-    calls: (side.tool_calls || []).map((call) => callBlock(call)),
+    calls: calls.map((call, index) => callBlock(call, { result: matched[index] })),
     missing: side.action === 'clarify' ? side.missing_fields : null,
-    footer: h('div.xsmall.muted', { text: `耗时 ${formatDuration(side.duration_ms)} · Token ${formatNumber(tokens)}` }),
+    footer: h('div.stack.stack--sm', null,
+      unmatched.length ? h('div', null,
+        h('span.xsmall.muted', { text: '未关联的工具返回记录' }),
+        ...unmatched.map((result) => h('div.actual-call', null,
+          h('span.mono.xsmall', { text: result?.name || '—' }),
+          h('details.case-more', null, h('summary', { text: '记录参数' }),
+            h('pre.code-block__pre', { text: safeJsonStringify(result?.arguments, 2) })),
+          resultBlock(result)))) : null,
+      h('div', null, h('span.xsmall.muted', { text: '最终回复（展示，不计入参数评分）' }),
+        h('div.small', { text: typeof side.final_response === 'string' && side.final_response ? side.final_response : '未记录最终回复', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } })),
+      h('div.xsmall.muted', { text: `耗时 ${formatDuration(side.duration_ms)} · Token ${formatNumber(tokens)}` })),
   });
 }
 

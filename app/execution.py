@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from . import event_types
-from .model_output import capture_model_response, response_summary
+from .model_output import capture_model_response, redact_output, response_summary
 from .adapters import text_parse
 from .adapters.base import (
     AdapterError,
@@ -491,6 +491,7 @@ class _CaseRunner:
         self.last_content = ""
         self.usage_parts: list[dict[str, int] | None] = []
         self.tool_calls: list[dict[str, Any]] = []
+        self.tool_results: list[dict[str, Any]] = []
         self.fixture_misses: list[dict[str, Any]] = []
         self.result_source = ("native_tool"
                               if self.tool_protocol == "native"
@@ -963,6 +964,8 @@ class _CaseRunner:
                             "fixture_index": hit.get("fixture_index"),
                             "consume": hit.get("consume")})
         self.tool_calls.append({"name": name, "arguments": dict(arguments)})
+        self.tool_results.append(redact_output({"name": name, "arguments": dict(arguments),
+                                                "response": response}, self.model_config))
         self.messages.append({
             "role": "tool", "tool_call_id": tool_call_id,
             "name": message_name or name,
@@ -1107,6 +1110,8 @@ class _CaseRunner:
                             "fixture_index": hit.get("fixture_index"),
                             "consume": hit.get("consume")})
         self.tool_calls.append({"name": name, "arguments": dict(arguments)})
+        self.tool_results.append(redact_output({"name": name, "arguments": dict(arguments),
+                                                "response": response}, self.model_config))
         results.append({"index": index, "tool": name, "arguments": dict(arguments),
                         "response": response})
 
@@ -1197,6 +1202,10 @@ class _CaseRunner:
             "events": list(self.events),
             "fixture_misses": list(self.fixture_misses),
             "raw_output": raw_output or "",
+            "final_response": redact_output((self.obs.result().get("summary") if self.finish_protocol == "ok" else "")
+                                             or raw_output or "",
+                                             self.model_config),
+            "tool_results": list(self.tool_results),
             "model_calls": self.model_calls,
         }
 

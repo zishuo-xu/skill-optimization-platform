@@ -1431,6 +1431,12 @@ def run_cases(run_id: str, *, phase: str | None = None,
     dataset_id = run["dataset_id"]
     case_map = {case["case_id"]: case for case in persistence.all_cases(dataset_id)}
     results = persistence.get_case_results_for_run(run_id)
+    try:
+        env = persistence.get_environment(run["environment_id"])
+    except NotFoundError:
+        env = {}
+    credentials = {"model_config": env.get("model_config") or {},
+                   "optimizer_config": env.get("optimizer_config") or {}}
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in results:
         key = (row["case_id"], row.get("variant") or "main")
@@ -1467,6 +1473,10 @@ def run_cases(run_id: str, *, phase: str | None = None,
         change = _change_type(baseline, candidate)
         if changed and change != changed:
             continue
+        needs_events = any(row and not (row.get("actual") or {}).get("events")
+                           and "tool_results" not in (row.get("actual") or {})
+                           for row in (baseline, candidate))
+        case_events = _case_events(run_id, case_id) if needs_events else []
         item = {
             "case_id": case_id,
             "query": case.get("query"),
@@ -1477,8 +1487,8 @@ def run_cases(run_id: str, *, phase: str | None = None,
             "phase": phase or "all",
             "repeat_index": 1,
             "change_type": change,
-            "baseline": _side(baseline),
-            "candidate": _side(candidate),
+            "baseline": _side(baseline, case_events, credentials, run_id),
+            "candidate": _side(candidate, case_events, credentials, run_id),
             "diagnostics": _diagnostics(baseline, candidate),
         }
         items.append(item)
@@ -1508,11 +1518,103 @@ def _change_type(baseline: Mapping[str, Any] | None,
     return "unchanged_pass" if before else "unchanged_fail"
 
 
-def _side(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+def _case_events(run_id: str, case_id: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    after_seq = 0
+    while True:
+        page = persistence.list_events(run_id, after_seq=after_seq, limit=500,
+                                       case_ids=[case_id])
+        events.extend(page)
+        if len(page) < 500:
+            return events
+        after_seq = page[-1]["seq"]
+
+
+def _events_for_result(row: Mapping[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select one saved execution; validation sides share a stage and need boundaries."""
+    phase = row.get("phase")
+    stage = {"baseline": "baseline_eval", "candidate": "retest",
+             "validation_baseline": "retest", "validation_candidate": "retest",
+             "final": "final_test"}.get(phase)
+    if not stage:
+        return []
+    variant = row.get("variant") or "main"
+    repeat = row.get("repeat_index") or 1
+    scoped = [e for e in events if e.get("case_id") == row.get("case_id")
+              and e.get("stage") == stage and e.get("repeat_index") == repeat]
+    # CASE_COMPLETED/FAILED identifies the phase, but lacks variant. Its preceding
+    # boundary separates validation baseline and candidate at the same stage.
+    starts = 0
+    for i, event in enumerate(scoped):
+        payload = event.get("payload") or {}
+        if event.get("type") in ("case_completed", "case_failed") and payload.get("phase"):
+            if payload.get("phase") == phase:
+                return [e for e in scoped[starts:i] if (e.get("variant") or "main") == variant]
+            starts = i + 1
+    # No boundary means validation sides are ambiguous; do not guess.
+    if str(phase).startswith("validation_"):
+        return []
+    return [e for e in scoped if (e.get("variant") or "main") == variant]
+
+
+def _side(row: Mapping[str, Any] | None, events: list[dict[str, Any]] | None = None,
+          credentials: Mapping[str, Any] | None = None,
+          run_id: str | None = None) -> dict[str, Any] | None:
     if not row:
         return None
+    from .model_output import redact_output
+
     scores = row.get("scores") or {}
+    actual = row.get("actual") or {}
+    embedded = actual.get("events") or []
+    matching_events = embedded if embedded else _events_for_result(row, events or [])
+    tool_results = actual.get("tool_results")
+    if tool_results is None:
+        tool_results = [{"name": payload.get("tool"),
+                         "arguments": payload.get("arguments") or {},
+                         "response": payload.get("response")}
+                        for event in matching_events
+                        if event.get("type") == "tool_result"
+                        for payload in [event.get("payload") or {}]
+                        if "response" in payload]
+    summary = ""
+    for event in matching_events if actual.get("finish_protocol") == "ok" else []:
+        if event.get("type") != "model_call_finished":
+            continue
+        response = (event.get("payload") or {}).get("response")
+        if (not isinstance(response, Mapping) and run_id and event.get("seq") is not None
+                and not actual.get("final_response")):
+            try:
+                captured = run_model_output(run_id, event["seq"])
+            except (NotFoundError, ValidationError, OSError, ValueError):
+                captured = {}
+            response = captured.get("response") if captured.get("source") == "captured" else None
+        if not isinstance(response, Mapping):
+            continue
+        for call in response.get("tool_calls") or []:
+            if not isinstance(call, Mapping):
+                continue
+            function = call.get("function") if isinstance(call.get("function"), Mapping) else call
+            if function.get("name") != "finish":
+                continue
+            arguments = function.get("arguments") or {}
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except (TypeError, ValueError):
+                    continue
+            if isinstance(arguments, Mapping) and isinstance(arguments.get("summary"), str):
+                summary = arguments["summary"] or summary
+    final_response = actual.get("final_response") or ""
+    if actual.get("finish_protocol") == "error":
+        final_response = ""
+    output = {"final_response": final_response or summary or actual.get("raw_output") or "",
+              "raw_output": actual.get("raw_output") or "", "tool_results": tool_results}
+    output = redact_output(output, credentials)
     return {
+        **output,
+        "phase": row.get("phase"),
+        "repeat_index": row.get("repeat_index"),
         "selected_skills": row.get("selected_skills") or [],
         "action": row.get("action"),
         "tool_calls": row.get("tool_calls") or [],
@@ -1626,15 +1728,25 @@ def run_case_detail(run_id: str, case_id: str) -> dict[str, Any]:
     case = persistence.get_case(run["dataset_id"], case_id)
     results = [row for row in persistence.get_case_results_for_run(run_id)
                if row["case_id"] == case_id]
-    events = persistence.list_events(run_id, after_seq=0, limit=500)
-    case_events = [event for event in events if event.get("case_id") == case_id]
+    case_events = _case_events(run_id, case_id)
+    try:
+        env = persistence.get_environment(run["environment_id"])
+    except NotFoundError:
+        env = {}
+    credentials = {"model_config": env.get("model_config") or {},
+                   "optimizer_config": env.get("optimizer_config") or {}}
+    phases = {"validate": ("validation_baseline", "validation_candidate"),
+              "final_test": ("final", None)}.get(run.get("mode"), ("baseline", "candidate"))
+    def first(phase: str | None) -> Mapping[str, Any] | None:
+        rows = [row for row in results if row.get("phase") == phase]
+        return min(rows, key=lambda row: row.get("repeat_index") or 1) if rows else None
     return {
         "run_id": run_id,
         "case": case,
         "results": results,
         "events": case_events,
-        "baseline": _side(next((row for row in results if row["phase"] == "baseline"), None)),
-        "candidate": _side(next((row for row in results if row["phase"] == "candidate"), None)),
+        "baseline": _side(first(phases[0]), case_events, credentials, run_id),
+        "candidate": _side(first(phases[1]), case_events, credentials, run_id),
     }
 
 

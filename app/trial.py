@@ -211,6 +211,8 @@ def _side(actual: Mapping[str, Any], score: Mapping[str, Any] | None) -> dict[st
         "diagnostics": scores.get("diagnostics") or [],
         "judgments": scores.get("judgments") or [],
         "raw_output": str(actual.get("raw_output") or "")[:4000],
+        "final_response": actual.get("final_response") or "",
+        "tool_results": actual.get("tool_results") or [],
     }
 
 

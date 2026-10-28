@@ -1411,6 +1411,8 @@ export default async function runDetailsView(container, ctx) {
               side.status ||
               side.selected_skills ||
               side.tool_calls ||
+              side.tool_results ||
+              side.final_response ||
               side.error_code ||
               side.action)
         );
