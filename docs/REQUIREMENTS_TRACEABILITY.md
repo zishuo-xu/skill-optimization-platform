@@ -1,14 +1,14 @@
 # 需求追溯矩阵
 
 需求来源：根目录 `Skill优化平台需求文档_v1.docx`（§1–§54）。下表给出章节到实现、测试与文档的映射；
-文末列出实现口径与参考实现的差异说明。
+文末列出实现口径与参考实现的差异说明。本文保留原始需求的编号与历史验收映射；当前产品流程见[使用指南](USER_GUIDE.md)和[日常测试与独立验收](DAILY_TEST_AND_ACCEPTANCE.md)，下表“通过”指已有批次证据，不表示本次重新运行测试。
 
 ## 1. 功能章节
 
 | 需求 | 实现位置 | 验证 |
 | --- | --- | --- |
 | §1 产品目标（导入/固定 Prompt/基线/定位/补丁/复测/可审查导出回滚） | `app/single_round.py`、`app/optimizer.py`、`app/api_v3.py`、`web/` | `tests/test_a01…test_a20` |
-| §2 已确定需求、默认方案、可配置项、后续扩展 | README「功能范围」；未实现项在 §13 边界说明 | 文档审查 |
+| §2 已确定需求、默认方案、可配置项、后续扩展 | [核心概念](CONCEPTS.md)与 README「开发与边界」 | 文档审查 |
 | §3 首期交付边界（真实执行、禁止硬编码评分） | 全部后端模块；评分器 `app/evaluation.py` 为真实计算 | A04/A05/A06 |
 | §5 用户完成一次优化的路径 | `web/js/views/*`、API 流程 | `docs/DEMO.md` |
 | §6 信息架构（7 个页面） | `web/js/app.js` 路由与 8 个视图模块 | 界面联调 |
@@ -40,7 +40,7 @@
 | §41 纯文本与原生调用（result_source、能力声明、A 未评估） | `app/adapters/text_parse.py`、`app/execution.py`、`app/evaluation.py` | A13 |
 | §42 界面与运行配置（网关地址/超时/心跳/状态文案） | `web/js/views/environment.js`、`app/adapters/enterprise_ws.py` | 界面联调、A12 |
 | §43 补充验收 A11–A14 | `tests/test_a11…a14` | 见下表 |
-| §44–§46 运行记录布局/展开/状态文案 | `web/js/views/runLog.js`、`web/css/app.css` | 界面联调（`docs/DEMO.md` §3.3） |
+| §44–§46 运行记录布局/展开/状态文案 | `web/js/views/runLog.js`、`web/css/app.css` | 界面联调（`docs/DEMO.md` 当前页面走查） |
 | §47 各阶段记录要求 | 各模块事件上报（`app/event_types.py`、`run_events.py`） | A15（人工）、事件测试 |
 | §48 失败定位示例 | `web/js/views/runLog.js` 问题摘要/定位/详情 | 界面联调 |
 | §49 禁止静默吞优化器异常（optimizer_*、fallback_*） | `app/optimizer.py` | A06 |
@@ -113,3 +113,13 @@
     既有环境保持严格。「语义」由执行环境中独立的评分模型判断参数值是否意思一致；分发、工具名、字段结构仍由代码判断。
     评分函数保持纯函数：判定结果作为输入二次评分，并按评分模型与输入缓存，相同输出得到相同结论；评分模型失败的案例
     记为基础设施错误。详见 [SCORING.md](SCORING.md)。
+
+## 当前流程对原始需求的收敛
+
+- 执行规则统一来自 Prompt + Skill，不再单独配置 Tool Schema；工具参数以 expected 与评分规则检查。
+- 日常评测/基线/优化只需测试集；optimize 产生候选并重跑，validate 才在独立验收集执行接受规则。候选可继续优化，验收始终追溯 root 基线。
+- 页面默认导入日常测试集；保留文件划分才使用显式 split 或分组比例，不能把早期默认 70/20/10 当作所有入口行为。
+- 运行预算已移除，保留实际用量和请求/案例执行限制。
+- 执行链路突出加载技能和调用工具；内部协议在详情中。finish 与业务评分分离，fixture 缺失仍保留调用尝试。
+
+各项技术字段以 [API](API.md) 和[契约](CONTRACTS.md)为准。

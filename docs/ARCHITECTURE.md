@@ -9,8 +9,9 @@
 **目标**
 
 - 导入 Skill 包（主 Skill + references 子技能），固定执行环境、数据集、评分器与重复次数后，
-  先跑基线，再执行一次点击一轮的优化：定位错误 → 生成一个局部补丁 → 静态检查 →
-  同条件复测 → 按运行前冻结的规则判定 → 人工应用/回滚/导出。
+  对日常评测/基线只运行优化集；优化运行定位错误 → 生成一个局部补丁 → 静态检查 →
+  在同一优化集重跑候选并结束。正式验收另建 `validate` 运行，通过 `source_run_id`
+  在独立 validation 集上对 root 基线与候选按冻结次数配对评测（默认 3 次），再按冻结规则判定，最后人工应用/回滚/导出。
 - 所有评分、复测、候选生成、版本变更都走真实代码路径；不得用静态页面或硬编码分数代替执行。
 - 运行可观测：每个阶段/案例/模型调用/工具/评分/优化器回退都有持久化事件，支持刷新、
   断线续接、取消、Worker 重启后的状态恢复。
@@ -78,7 +79,8 @@ flowchart LR
 2. 导入 Skill ZIP（或文件夹 JSON）→ 安全检查 → manifest 校验 → 发布不可变 `SkillVersion`。
 3. 创建执行环境：业务 Prompt、业务模型、优化模型、加载策略、运行参数、
    评分器与接受规则 → 发布 `EnvironmentVersion`（哈希冻结）。
-4. 导入数据集 JSONL/JSON → 预检（行号/错误/字段路径）→ 按 group 固定种子划分 →
+4. 导入数据集 JSONL/JSON → 按导入用途保留或覆盖 split → 预检（行号/错误/字段路径）→
+   仅保留文件划分且未指定用途的案例按 group 固定种子分配 →
    发布 `DatasetVersion`（不可原地修改）。
 5. 修订数据集时复制已发布版本为草稿，逐案例保存并更新 hash/校验报告；发布前完整校验，
    同一事务核对草稿 hash 与项目当前数据集指针。草稿不用于运行，发布后旧运行仍引用原版本，新版本需重跑基线。
@@ -103,19 +105,24 @@ stateDiagram-v2
   cancelled --> [*]
 ```
 
-`optimize` 运行的阶段：
+运行模式与阶段：
 
-1. `preflight`：Skill 完整性、数据划分、fixture 覆盖（按本次运行涉及划分）。
-2. `baseline_eval`：优化集基线；若存在指纹完全一致的 completed 基线则复制结果复用，否则新跑。
-3. `error_analysis`：只聚合优化集失败案例（含 expected、实际结果、评分诊断、可观察事件）。
-4. `candidate_generation`：优化模型或冻结启发式生成**一个**补丁；失败时先记录直接原因，
-   再进入回退；事件顺序完整可审计。
-5. `static_check`：补丁应用到隔离副本 → 白名单/唯一命中/manifest/结构/禁止答案与 case_id
-   硬编码等检查 → 通过后创建不可变候选 Skill 版本（`status=candidate`，不改变当前指针）。
-6. `retest`：候选跑优化集；基线与候选各跑 3 次配对验证（同一环境、数据集、评分器与种子）。
-7. `decision`：`accept-v1` 逐项判定，写入 `decisions` 与 `decision_made` 事件。
+1. `evaluate`：`preflight → baseline_eval`，只评测日常优化集，不生成候选或接受结论。
+2. `baseline`：只执行日常优化集 `baseline_eval`，自身不复制缓存；已完成的 `evaluate`/`baseline`
+   运行都可作为后续 `optimize` 的缓存来源，复用发生在 optimize 创建/执行时。
+3. `optimize`：`preflight → baseline_eval → error_analysis → candidate_generation → static_check → retest`。
+   失败证据只来自优化集；候选补丁只应用于隔离副本，通过检查后创建不可变 `status=candidate`
+   版本，候选在优化集重跑；成功生成候选时运行以“待独立验收”完成且不写入 accept/reject。
+   没有失败证据、候选未生成或静态检查失败时，运行可完成为 `inconclusive`；平台异常则为 `failed`。
+4. `validate`：必须携带 `source_run_id` 指向已完成且无 decision 的 optimize 运行；预检确认
+   root 基线、环境、候选来源、完整性和静态检查未变化，并确认 validation 集与来源链的其他集合无
+   case/query/group 泄漏。随后在独立 validation 集上基线与候选按冻结次数配对（默认 3 次），最后执行 `accept-v1`
+   并写入 `decisions`/`decision_made`。
+5. `final_test`：只执行 `final_test` 集，不参与候选生成或选择。
 
-基线运行只执行 `baseline_eval`；最终测试运行只执行 `final_test`，不参与候选选择。
+候选链以最初 root 基线 Skill 版本为锚点；后续优化必须从前一优化运行的候选继续，但每次候选仍写入
+隔离的不可变版本并保留 `parent_id`/`source_run_id`。项目当前 Skill、环境与 root 基线不一致时，
+来源校验或应用时的 CAS 检查返回冲突，不能静默覆盖当前版本。
 
 ## 5. 数据模型
 
@@ -157,22 +164,29 @@ erDiagram
 ## 6. 评分与接受
 
 - R/A/J 的计算口径、严格 JSON 比较、clarify/no_action、infra 与能力失败的区别见
-  [README §6](../README.md#6-评分口径score-v1)。
+  [评分口径（score-v1）](SCORING.md)。
 - 基线缓存指纹 = Skill 版本 + 环境版本 + 数据版本 + 评分器版本 + 基础重复次数；
   任一变化即缓存失效并重新评测，概览会说明不可复用原因。
-- `accept-v1`：R/A 不降、至少一项严格升、J 不降、critical 不回归、无基础设施/包完整性错误；
-  全部持平拒绝；验证不完整判 `inconclusive`；阈值在运行启动时冻结。
+- `accept-v1` 只用于独立 `validate`：R/A 不降、至少一项严格升、J 不降、critical 不回归、无基础设施/
+  包完整性错误，且验证完整、配对重复至少 3 次；全部持平拒绝，证据不足判 `inconclusive`。
+  默认配对重复次数为 3；若环境显式配置低于 3，验收证据不足并判 `inconclusive`。规则与重复次数在运行启动时冻结。
+- 语义 judge 只对工具参数值字段做辅助判定；语义模式可由环境 `scorer_config.compare` 配置，
+  案例的 `expected.judge` 提供字段级判定依据，二者都不是独立工具 Schema。action、路线、工具名、
+  参数结构、缺失/额外字段仍由确定性评分器处理；环境级语义且无 judge 会预检失败。
+  仅案例级启用时仍可能宽松回退，见[评分限制](SCORING.md#案例级语义规则的当前限制)。
 
 ## 7. 隔离与安全边界
 
-- **执行器隔离**：业务 Agent 只收到 query、允许的上下文、Skill 内容、工具定义与模拟返回；
+- **执行器隔离**：业务 Agent 只收到 query、允许的上下文、Skill 内容、通用 `call_tool` 入口与模拟返回；
   永远不接收 expected/评分标签。大内容通过 trace artifact 存证。
 - **优化器隔离**：只读优化集失败证据与 expected；过滤 validation/final_test 样本内容与答案。
-- **候补约束**：只允许修改已有 `.md` 文件；禁止新增/删除文件与修改 manifest/脚本；
-  静态检查扫描 case_id 与答案硬编码；候选不覆盖当前版本，应用时校验基线指针。
+- **候选约束**：只允许修改已有 `.md` 文件；禁止新增/删除文件与修改 manifest/脚本；
+  静态检查扫描 case_id 与答案硬编码。补丁只写入隔离副本，候选不覆盖当前版本；应用时以
+  `expected_current_version` 做 CAS，并校验候选仍属于本次 root/来源链。
 - **凭据**：环境配置保存服务端引用；API 返回配置时脱敏（`*_ref` 除外）；
   报告/导出/事件默认不含凭据；网关帧默认不落盘。
-- **工具模拟**：fixtures 未命中立即 `fixture_miss`，不访问真实业务服务；无真实写副作用。
+- **工具模拟**：fixtures 未命中立即记录 `fixture_miss`，保留这次实际尝试的工具名与参数用于执行结果/诊断，
+  不访问真实业务服务，也不伪造成功返回；无真实写副作用。
 
 ## 8. 可靠性
 

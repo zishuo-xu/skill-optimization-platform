@@ -1,5 +1,24 @@
 # 验收执行记录（A01–A20 + 界面联调）
 
+## 2026-10-28 AI 开发入口与文档复核
+
+- 新增 AGENTS.md、CONTRIBUTING.md 和设计决策索引，补齐 AI 接手约束、代码导航、检查选择、数据保护与提交要求；不把个人代理选择硬编码为仓库产品规则。
+- 独立复核修正了候选 parent/root、可配置验收次数、列表分页范围、POST /runs 响应、优化 inconclusive 以及最终留出 API 入口等文档错误；教程补充实际页面评分规则操作。
+- 记录代码现有边界：仅案例级启用 semantic 且无 judge 时仍可能宽松回退；环境级预检不等于逐案有效规则检查。离线评分调用确认 semantic_fallback=true；未在本批修改运行逻辑。
+- 最终检查 45 份 Markdown 的 185 个本地链接和锚点，无失效；CONTRIBUTING 中的资产校验命令实际执行通过，42 条数据及两个 Skill 包导入校验无错误，引用代码/测试路径存在。
+- 定向 Python 回归 66 passed，1 条既有 Starlette/httpx 弃用提示；范围为 test_rsi_lineage、test_rsi_pipeline_feedback、test_progressive_loop_boundaries、test_semantic_scoring、test_fixture_diagnostics。Node 测试 30 passed。
+- git diff --check 通过。本批为文档/合成输入修改，未改应用代码，未跑全量 Python、浏览器走查或新真实模型请求；此前真实闭环单独记录。
+
+## 2026-10-28 文档体系整理
+
+- 首页收敛为目标、启动和入口；当前概念、使用流程、输入规范与技术参考分层，历史设计/测试记录单独导航。
+- 逐项核对当前运行模式、独立验收、候选来源链、评分模型前置条件、工具尝试记录、预算移除和数据库迁移说明。
+- 检查根目录 README/CHANGELOG 与 docs 下 42 份 Markdown 的 130 个本地链接及标题锚点，无失效链接。
+- 真实任务协作示例的 42 条数据经 dataset.validate_and_prepare 校验，0 错误、0 警告；初始/优化后 Skill 各 5 个文件，ZIP 打包后经 import_package 导入校验均无错误。
+- 文档分发的 prompt、业务契约和数据与原运行输入逐字节一致，数据 SHA-256 为 `5d85c0a1687ae633275aa27fde0bb8a4ac853ad2df1f580e169d2601767ae3de`；只纳入合成输入，不包含环境凭据、数据库或原始 trace。
+- git diff --check 通过。本批仅修改文档和示例输入，没有修改平台代码、重跑全量产品测试或发起新的真实模型请求；下方真实闭环记录属于上一轮执行证据。
+
+
 ## 2026-10-28 移除运行预算
 
 - 全量 Python 测试 679 passed；Node 测试 27 passed。
@@ -133,3 +152,18 @@ bash scripts/setup.sh
 - 回归覆盖执行到评分、参数错误、无动作证据、截断、摘要不一致、两类结果接口透传、环境布尔配置及旧基线指纹失效。
 - 工作区完整测试：540 passed；仅包含本次提交的隔离目录完整测试：467 passed（均为 1 条既有 Starlette/httpx 弃用警告）。
 - 隔离演示服务中检查环境只读摘要，并用真实脚本执行/评分结果在浏览器渲染共享案例组件，确认通过与协议告警并列、无法判定不显示通过。未调用真实付费模型。
+
+## 2026-10-28 本次真实模型任务协作闭环（本地历史记录）
+
+本节只记录本次 `output/real-task-loop/` 的真实闭环证据，不宣称当前环境已重跑。项目、运行 ID 和 `127.0.0.1` 链接均为本机历史记录；`seed` 不会创建同一项目，复制仓库后链接也不会自动有效。
+
+- 数据在首次模型运行前冻结，划分固定为 24 条优化集 / 12 条独立验证集 / 6 条最终留出集；独立集和最终集均未进入优化输入。
+- 初始 Skill 预先声明两个缺陷：`进行中 → active`（正确值 `in_progress`）和 `紧急 → urgent`（正确值 `high`）。这是人为设计的合成缺陷，不代表生产错误分布。
+- 基线：联合通过 16/24（66.7%），路由 20/20，工具参数 12/20；失败集中在 `create_task.priority` 与 `list_tasks.status` 的枚举值。
+- 真实优化模型产生 2 个文件、2 处规则映射修改；优化后日常重跑 24/24，工具参数 20/20。没有人工修改模型补丁，也没有规则回退。
+- 独立验证为 12 个不同案例、基线和候选各重复 3 次：基线 24/36，候选 36/36；`accept-v1` 通过，无关键回归。随后通过浏览器应用候选并确认当前版本指针切换。
+- 最终留出 6/6，仅用于阶段验收。所有阶段均无 fallback、基础设施错误或 `fixture_miss`。
+- 执行、优化与语义评分共 369 次真实 `deepseek-flash` API 请求，记录 Token 744516。业务工具为固定模拟 fixture，不是外部任务系统；`description` 由语义评分判断，其余字段严格确定性比较。
+- 执行、优化、评分使用同型号模型，因此不能视作独立模型复核。优化器自然语言摘要把 8 条失败写成 7 条，但结构化统计和失败 ID 完整；报告以结构化证据为准。
+
+证据索引：`project.json`、`baseline-summary.json`、`optimize-summary.json`、`validate-summary.json`、`final_test-summary.json`、`evidence-audit.json`、`skill-changes.diff`。可复用的脱敏输入与 Skill 初始/优化后样例见 [REAL_MODEL_WALKTHROUGH.md](REAL_MODEL_WALKTHROUGH.md) 和 `docs/examples/task-collaboration/`。本节没有运行模型或测试，旧批次记录仍按其原记录时点解释，不能冒充本次结果。

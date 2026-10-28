@@ -3,8 +3,7 @@
 - Base URL：`http://127.0.0.1:8765/api/v3`（单用户本地部署，无认证）。
 - 所有请求/响应为 JSON（ZIP 导入、导出下载除外）；字符集 UTF-8。
 - 时间均为 UTC ISO-8601（毫秒），界面按本地时区展示。
-- 列表接口统一分页：`limit`（默认 50，上限 200/500，按接口而定）、`offset`；
-  返回 `{items,total,limit,offset}`。
+- 分页按接口定义：运行、案例等接口支持 `limit`/`offset`；项目、Skill 版本、环境和数据集列表返回 `items`/`total`，不统一接受分页参数。事件历史支持 `after_seq` 加 `limit`/`offset`，当前先取最多 1000 条匹配记录再切片，total 是该窗口数量；读取更多历史应推进 after_seq，不能把窗口 total 当作整个运行的事件总数。
 - 错误统一格式：
 
 ```json
@@ -116,7 +115,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | GET | `/environments/{eid}` | 详情（凭据脱敏） |
 | POST | `/environments/{eid}/publish` | `{set_current?:true}` |
 | POST | `/environments/{eid}/activate` | `{expected_current_version?}` 设为当前（回滚） |
-| POST | `/environments/test-connection` | `{environment_id?, target?, input?, model_config?, optimizer_config?, mode?}`；默认真实探测一次，`target` 为 `business`/`optimizer`，`input` 最多 16000 字符；`mode=check` 仅做本地配置检查，不出网 |
+| POST | `/environments/test-connection` | `{environment_id?, target?, input?, model_config?, optimizer_config?, judge_config?, mode?}`；默认真实探测一次，`target` 为 `business`/`optimizer`/`judge`，`input` 最多 16000 字符；`mode=check` 仅做本地配置检查，不出网 |
 | GET | `/environment-template` | 内置 Prompt + 示例模型/加载/接受配置 |
 
 创建环境请求（可从 `/environment-template` 获取完整模板）：
@@ -234,11 +233,11 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/runs` | 创建运行；支持 `Idempotency-Key`；立即返回 202 + 运行对象 |
+| POST | `/runs` | 创建运行；支持 `Idempotency-Key`；立即返回 202 + 运行对象。`mode` 为 `evaluate`/`baseline`/`optimize`/`validate`/`final_test`；`validate` 必须带 `source_run_id`。 |
 | GET | `/runs?project_id=&status=&limit=&offset=` | 运行列表 |
 | GET | `/runs/{rid}` | 运行详情（状态/阶段/进度/指标/接受规则/候选/成本/issue 摘要） |
 | POST | `/runs/{rid}/cancel` | 取消；queued 直接 cancelled，running 先 cancel_requested |
-| POST | `/runs/{rid}/apply` | `{expected_current_version, candidate_id?}` 应用候选；冲突 409 |
+| POST | `/runs/{rid}/apply` | `{expected_current_version, candidate_id?}` 应用候选；按当前版本 CAS 与候选来源链校验，冲突 409 |
 | GET | `/runs/{rid}/cases?phase=&only_failed=&search=&changed=&limit=&offset=` | 案例对比（默认聚合基线/候选与验证集配对） |
 | GET | `/runs/{rid}/cases/{cid}` | 单案例详情（`baseline`/`candidate` 实际结果 + 事件） |
 | GET | `/runs/{rid}/diff` | 候选文件差异、诊断、假设、检查 |
@@ -267,31 +266,41 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
 ```json
 {
   "project_id": "prj_…",
-  "mode": "baseline | optimize | final_test",
+  "mode": "evaluate | baseline | optimize | validate | final_test",
   "reuse_baseline": true,
+  "source_run_id": null,
   "parent_run_id": null,
   "skill_version_id": null
 }
 ```
 
-- `mode=optimize` 需要优化集 + 验证集；`final_test` 需要最终测试集且不参与候选选择。
-- `reuse_baseline` 为 true 且存在指纹一致的 completed 基线时，复制其结果，`baseline_cache_hit=true`。
+- `evaluate` 与 `baseline` 只运行日常优化集；`evaluate` 是普通评测，`baseline` 不复制缓存。
+  已完成的 `evaluate`/`baseline` 运行都可作为后续 optimize 的基线缓存来源，复制发生在 optimize。
+- `mode=optimize` 在成功生成候选并重跑候选后完成，返回 `decision=null`，不在此阶段 accept/reject；
+  没有失败证据、候选未生成或静态检查失败时可完成为 `decision=inconclusive`，平台异常则为 `failed`。
+  正式验收必须另建 `mode=validate`，携带 `source_run_id`。
+- `validate` 只接受本项目已完成、尚无 decision 的 optimize 来源；服务端校验 root 基线、候选来源、环境、
+  静态检查、版本完整性及 validation 集独立性，然后在独立 validation 集上按冻结配置的重复次数配对执行
+  `accept-v1`。默认重复 3 次，可配置更多；若配置低于 3，验收证据不足并为 `inconclusive`。
+  validation 集不得与来源链的 optimize/final_test 案例在 case_id、规范化 query 或 group_id 上重叠。
+- `reuse_baseline` 为 true 且存在指纹一致的 completed `evaluate`/`baseline` 时，复制其优化集结果，
+  `baseline_cache_hit=true`。
 - 返回 202 与 `run_view`；后台 Worker 异步执行。
 
-运行对象关键字段：
+运行对象关键字段（以下示例为成功 `optimize` 完成、尚待验收；`validate` 完成后才会填充最终 decision）：
 
 ```json
 {
   "id": "run_…", "mode": "optimize", "status": "completed", "stage": "decision",
-  "stage_progress": {"stage": "decision", "completed": 33, "total": 33, "current_case_ids": [], "message": "按冻结规则判定候选", "last_activity_at": "…"},
-  "decision": "accept", "decision_reason": "符合 accept-v1：…",
+  "stage_progress": {"stage": "decision", "completed": 33, "total": 33, "current_case_ids": [], "message": "候选已完成测试集重跑，待独立验收", "last_activity_at": "…"},
+  "decision": null, "decision_reason": "候选已完成测试集重跑，待独立验收",
   "snapshot": {"skill_version": {"id": "sv_…", "label": "sv_…"}, "environment": {"id": "env_…", "version_seq": 1}, "dataset": {"id": "ds_…", "version_seq": 1, "case_count": 45}, "scorer_version": "score-v1", "fingerprint": "…", "base_repeats": 1, "validation_repeats": 3},
-  "acceptance": {"decision": "accept", "reason": "…", "rules": [{"rule": "R_no_decrease", "ok": true, "detail": "分发准确率 R 57.1% → 100.0%（+42.9pp）"}], "rules_version": "accept-v1", "applied_at": null},
+  "acceptance": {"rules_version": "accept-v1", "validation_repeats": 3, "frozen": {"fingerprint": "…", "scorer_version": "score-v1", "base_repeats": 1}, "decision": null, "reason": "候选已完成测试集重跑，待独立验收", "rules": [], "applied_at": null},
   "metrics": {
     "baseline": {"routing": {}, "tool_args": {}, "joint": {}, "diagnostics": {}, "execution": {}},
     "candidate": {"routing": {}, "tool_args": {}, "joint": {}, "diagnostics": {}, "execution": {}},
     "delta": {"routing": 0.1667, "tool_args": 0.3667, "joint": 0.3939},
-    "validation": {"baseline": {}, "candidate": {}, "delta": {}, "repeats": 3, "complete": true, "critical_regressions": []},
+    "validation": null,
     "final": null,
     "temporary": false
   },
@@ -299,7 +308,7 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
   "cost": {"tokens": 126262, "total_tokens": 126262, "amount": null, "duration_ms": 388},
   "candidate": {"id": "cand_…", "skill_version_id": "sv_…", "changed_files": ["SKILL.md"], "patch": {"summary": "…", "edits": []}, "diagnosis": {}, "hypotheses": [], "expected_effect": "…", "risk_cases": [], "checks": {"ok": true, "checks": []}},
   "case_stats": {"planned": 33, "completed": 33, "valid": 33, "errors": 0},
-  "can_apply": true
+  "can_apply": false
 }
 ```
 

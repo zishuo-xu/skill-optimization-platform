@@ -1,16 +1,14 @@
 # 模块契约与接口规范（实现基线）
 
-本文是并行开发的唯一接口基线。任何跨模块的数据结构、事件名、HTTP 路径、状态机
-都以本文为准；修改契约需要 Lead 同意并同步所有模块。
+本文记录模块间的数据结构、接口和事件约定。使用流程见[使用指南](USER_GUIDE.md)，HTTP 请求示例见 [API](API.md)。修改实现时同步本契约与相关测试；历史任务分工不构成当前产品限制。
 
 ## 1. 运行环境
 
-- Python: 仓库内 `.venv/bin/python`（3.12，已安装 starlette / uvicorn / httpx /
-  websockets / pytest）。不要新增第三方依赖，不要手写 `pip install`。
+- Python 3.11+：通过安装脚本和 requirements.txt 准备环境，使用仓库 `.venv/bin/python`。
 - 启动：`.venv/bin/python -m app.server`（默认 http://127.0.0.1:8765）。
 - 测试：`.venv/bin/python -m pytest -q`（每个测试用独立临时 `SKILLOPT_DATA_DIR`）。
 - 前端：原生 ES Modules + CSS，无构建步骤，由后端 `/` 静态托管 `web/`。
-- 不访问外部网络；模型/网关适配器测试使用本地假服务或注入的假 adapter。
+- 自动化回归使用本地假服务或注入 adapter；真实模型验证另行配置并明确记录，不与离线结果混用。
 
 ## 2. 数据结构（JSON，存 SQLite / 传 API）
 
@@ -36,15 +34,15 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 `[a-z][a-z0-9_]*`；展示名取第一个 Markdown 标题；描述取第一段正文。无法生成合法 ID 时
 回退为 `skill_N`。显式 manifest 仍优先，用于稳定 ID 与顺序。
 
-`app/skill_package.py`（Lead 负责）提供：
-- `import_zip(data: bytes) -> PackageImport`：安全检查、解析 manifest、返回
+`app/skill_package.py`提供：
+- `import_package(data: bytes) -> dict`：安全检查、解析 manifest、返回
   `{"files": {rel: bytes}, "manifest": {...}, "file_hashes": [...], "content_hash": str,
     "errors": [{"code","path","message"}], "warnings": [...]}`。错误码：
   `missing_main` `bad_manifest` `duplicate_skill_id`
   `duplicate_path` `missing_reference` `dangling_reference` `path_traversal`
   `absolute_path` `symlink` `encoding_error` `unsafe_zip` `too_large`。
 - `validate_manifest(manifest, files) -> list[error]`。
-- `build_zip(files, manifest) -> bytes`。
+- `build_zip(files, manifest=None) -> bytes`。
 - 补丁应用与静态检查在 `app/patch.py`：`apply_edits(files, edits, allowed_paths)`
   与 `static_check(base_files, patched_files, manifest, case_ids)`。
 
@@ -94,8 +92,12 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `variants`: `[{"routes": ..., "tool_calls": ..., "call_match": ..., "route_ordered": ...}]`
   可选，用于多种有效调用序列，逐个完整匹配。
 - `fixtures[].consume` ∈ `always`（默认）/ `once`（按调用次序消费）。
-- 执行中的 `fixture_miss` 区分 `empty_fixtures`、`tool_name_mismatch`、`fixtures_consumed` 和 `arguments_mismatch`。日志直接原因展示分类，技术细节包含可用工具名、候选下标和不匹配字段路径，不包含模拟返回正文或匹配条件的期望值。诊断不消费 fixture，也不改变匹配、评分或失败处理。
-- 运行预检检查顶层与备选工具名是否有对应或通配 fixture；它不证明实际参数条件和消费次数一定匹配。
+- 执行中的 `fixture_miss` 区分 `empty_fixtures`、`tool_name_mismatch`、`fixtures_consumed` 和 `arguments_mismatch`。
+  未命中时仍保留实际尝试的工具名与参数及 `fixture_misses` 记录，不伪造成功返回。
+  日志直接原因展示分类，技术细节包含可用工具名、候选下标和不匹配字段路径，不包含模拟返回正文或匹配条件的期望值。
+  诊断不消费 fixture，也不改变匹配、评分或失败处理。
+- 运行预检按顶层与备选候选检查完整预期工具调用：在参数完整且顺序已知时同时匹配工具名、参数和
+  `once` 消费次序；参数只约束子树或调用序列不确定时，只能检查可知部分，剩余条件仍由执行时结果决定。
 - `fixtures[].name` 可以是具体业务工具名，也可以是 `"*"`：作为任意业务工具的通配回退。
   `mock` 简写会生成一条 `name: "*"` 的通配 fixture，避免每个案例重复堆叠所有工具的模拟返回；
   自动生成时，`mocks` 中的指定工具返回排在 `mock` 通配返回前；显式 fixture 数组按其原顺序匹配。
@@ -131,7 +133,7 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `result_source` ∈ `native_tool` / `text_parse` / `runtime_event`。
 - 内部工具调用不得出现在 `tool_calls` 中。
 
-### 2.4 评分结果（`app/evaluation.py`, T1）
+### 2.4 评分结果（`app/evaluation.py`）
 
 `score_case(expected, actual, compare_rules) -> dict`：
 
@@ -177,11 +179,14 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
   clarify 需 action 正确且 missing_fields 集合一致（expected 未提供 missing_fields
   时只看 action）；no_action 需 action 正确且无业务工具调用。
 - 参数比较默认 JSON 深度精确：对象键顺序无关、类型严格、缺失≠null、数组顺序敏
-  感、额外参数判错。仅当 `expected.compare` 显式声明
-  版本化规则时启用数值容差/时间规范化/数组无序/字段允许值。
+  感、额外参数判错。有效的版本化比较规则可以来自环境 `scorer_config.compare`，也可以由
+  `expected.compare` 提供；两者共同形成有效规则（案例级 v2 字段规则优先），才能启用数值容差/时间规范化/
+  数组无序/字段允许值或 semantic 模式。
+- `expected.judge` 是 semantic 模式下指定参数值字段的评分依据，不是启用开关；semantic 模式可由环境
+  compare 配置启用。评分模型不判断 action、路线、工具名、参数结构或缺失/额外字段。环境级语义且无 judge 会预检失败；但预检目前未检查所有案例的有效比较规则，
+  仅案例级启用 semantic 时，无 judge 仍会按宽松规则回退。见[评分限制](SCORING.md#案例级语义规则的当前限制)。
 
-`aggregate(results: list[（case, score)], planned: int, duration_ms, usage, cost,
-fixture_misses) -> metrics`（同名函数在 evaluator 中）：
+`aggregate_metrics(results, planned=None, duration_ms=0, usage=None, cost=None, fixture_misses=None) -> dict`（具体参数见 app/evaluation.py）：
 
 ```json
 {
@@ -199,7 +204,7 @@ fixture_misses) -> metrics`（同名函数在 evaluator 中）：
 }
 ```
 
-### 2.5 数据集导入（`app/dataset.py`, T1）
+### 2.5 数据集导入（`app/dataset.py`）
 
 - `parse_payload(raw: bytes|str, filename: str) -> (items: list[dict], format: str)`：
   支持 `.jsonl` / `.json`（数组），容忍 BOM 与空行；解析错误带行号。
@@ -212,8 +217,7 @@ fixture_misses) -> metrics`（同名函数在 evaluator 中）：
    "stats": {"total": 30, "valid": 28, "invalid": 2, "splits": {...},
              "coverage": {...}}}
   ```
-  校验：缺少 query、action 非法、routes 引用未知 skill_id、tool_calls 引用未知
-  工具、重复 case_id、conflicting expected、clarify 缺 missing_fields、no_action
+  校验：缺少 query、action 非法、routes 引用未知 skill_id、工具调用结构非法、重复 case_id、conflicting expected、clarify 缺 missing_fields、no_action
   带工具调用、非法 split、fixtures 结构错误。自动生成缺失 `case_id`（`ids.stable_case_id`）。
 - `assign_splits(cases, config, seed)`：按 group_id 分组，默认 optimize 70% /
   validation 20% / final_test 10%，固定种子；小数据集允许仅 optimize+validation
@@ -222,7 +226,7 @@ fixture_misses) -> metrics`（同名函数在 evaluator 中）：
   未覆盖项前端显示“未评估”。
 - 已发布数据不可原地修改；可通过 `POST /datasets/{did}/draft` 复制为草稿，使用 `PUT /datasets/{did}/cases/{cid}` 携带 `expected_hash` 原子修改，再通过发布接口校验后生成新版本。草稿不参与运行，发布新版本后需要重跑基线；旧版本和历史运行保持不变。
 
-### 2.6 模型适配层与执行循环（`app/adapters/*`, `app/execution.py`, T2）
+### 2.6 模型适配层与执行循环（`app/adapters/*`, `app/execution.py`）
 
 统一模型接口：
 
@@ -256,19 +260,21 @@ class ModelAdapter:                     # app/adapters/base.py
   `finish(action, selected_skills, missing_fields, summary)`；记录路线事件与读取
   事件；finish 摘要与事件不一致→`protocol_error`；纯文本协议由 `app/adapters/text_parse.py`
   固定解析（未知名称/缺行/多义/截断→parse_failed，不调用模型猜测）。
-- Native 模型通过平台通用入口 `call_tool(name, arguments)` 调用 Skill 中定义的业务工具；内部工具仍独立注册。封装参数必须符合基本结构，工具名和业务参数不依赖独立环境 Schema。
+- Native 模型通过平台通用入口 `call_tool(name, arguments)` 调用 Skill 中定义的业务工具；内部工具仍独立注册。
+  工具名、用途与参数规则由已加载 Prompt + Skill 推导，环境不再要求额外 `tool_schema` 配置。
+  封装参数必须符合基本结构，但工具名和业务参数不依赖独立环境 Schema。
 - `app/execution.py::run_case(case_request, adapter, emit) -> CaseExecutionResult`：
   组装 messages（系统 Prompt + 主 Skill + 按加载策略提供的子技能 + query + 允许
   的 context，绝不含 expected），循环最多 `max_model_calls` 次；执行内部工具与
-  业务工具（业务工具通过 fixtures 模拟，未匹配立即记录 fixture_miss 且不访问真
-  实服务）；输出结果与轨迹事件；支持取消检查。
+  业务工具（业务工具通过 fixtures 模拟，未匹配立即记录 `fixture_miss` 并保留尝试调用，且不访问真实服务）；
+  输出结果与轨迹事件；支持取消检查。
   `CaseRequest`（dict）：query/context/skill_snapshot_path/system_prompt/
   model_config/request_template/fixtures/limits/run_id/case_id/
   manifest/allowed_skill_ids。`limits` 含 `max_model_calls`、`max_steps`、
   `case_timeout_s`、`max_context_chars`、`context_overflow`（error/frozen_strategy）。
 - 取消/超时：`case_timeout_s` 到点→`timeout`（infrastructure）；取消→`cancelled`。
 
-### 2.7 优化器（`app/optimizer.py`, `app/patch.py`, `app/acceptance.py`, T3）
+### 2.7 优化器（`app/optimizer.py`, `app/patch.py`, `app/acceptance.py`）
 
 优化器输入（只含 optimize 集失败证据，不含 validation/final_test 内容）：
 
@@ -297,6 +303,9 @@ class ModelAdapter:                     # app/adapters/base.py
 ```
 
 - 只允许修改已存在的 `.md` 文件；不得新增/删除文件、不得改 manifest、脚本与资源。
+- 候选从本轮 baseline Skill 创建隔离副本：首次为项目当前版本，继续优化时为来源运行的候选。
+  Skill 的 parent_id 指向本轮 baseline，运行快照保留 source_run_id 与 root 锚点；不改变项目当前版本。正式验收通过 `source_run_id` 绑定来源，校验 root、
+  候选 content hash、来源项目/环境与静态检查结果，任一变化即冲突或验收预检失败。
 - `patch.apply_edits(files, edits, allowed_paths) -> (patched, issues)`：编辑必须唯一
   命中，否则报 `edit_not_found` / `edit_not_unique`。
 - `patch.static_check(base_files, patched_files, manifest, case_ids) -> {"ok", "checks":
@@ -314,18 +323,23 @@ class ModelAdapter:                     # app/adapters/base.py
   fallback_started → fallback_no_change / patch_created）才返回；`no_patch` 只是
   最终结果，不代替直接原因。
 - `acceptance.evaluate(baseline_metrics, candidate_metrics, *, critical_regressions,
-  infra_errors, package_ok, validation_complete) -> {"decision": "accept"|"reject"|
+  infra_errors, package_ok, validation_complete, repeats) -> {"decision": "accept"|"reject"|
   "inconclusive", "rules": [{"rule","ok","detail"}], "reason": "..."}`（§17，冻结）。
+  正式验收要求 `repeats >= 3`；该函数只比较已完成的配对指标。
 
-### 2.8 单轮流水线（`app/single_round.py`, Lead）
+### 2.8 单轮流水线（`app/single_round.py`）
 
-`execute_run(run_id: str) -> None`：worker 已把 run 置为 running 后调用。阶段：
-`preflight → baseline_eval → error_analysis → candidate_generation → static_check →
-retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式只跑 final_test）。
+`execute_run(run_id: str) -> None`：worker 已把 run 置为 running 后调用。模式阶段为：
+`evaluate/baseline: preflight → baseline_eval`；`optimize: preflight → baseline_eval → error_analysis →
+candidate_generation → static_check → retest`（成功候选重跑后 decision 为空；无失败、无候选或静态检查失败
+可完成为 `inconclusive`，平台异常为 `failed`）；
+`validate: preflight → retest（独立 validation 集按冻结次数配对，默认 3 次）→ decision`；
+`final_test: preflight → final_test`。accept/reject 仅由 validate 产生；optimize 在无法形成有效候选等分支也可写入 inconclusive。
 每个阶段上报 `stage_started` / `stage_completed` 并同步 `runs.stage` 与进度；
 案例级事件必须带 case_id。取消检查：每个案例前后与阶段边界查询
 `runs.status in (cancel_requested, cancelled)`；取消后停止派发，在途尽力终止。
-异常写入 `run_failed` 事件并落终态。最终 `finish_run` 设置 decision。
+异常写入 `run_failed` 事件并落终态。最终 `finish_run` 按模式写入 decision：只有 validate 或
+优化失败的 `inconclusive` 分支会产生决策记录，成功的 optimize 仍保留 `decision=null`。
 
 ### 2.9 事件（所有模块）
 
@@ -337,10 +351,10 @@ retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式�
 `error_code/title/message/impact/next_action/cause_event_seq/technical_detail`。
 大请求/响应存 `trace_artifacts`，事件里只放 `artifact_id` 引用。
 
-## 3. HTTP API（前缀 `/api/v3`，Lead 实现）
+## 3. HTTP API（前缀 `/api/v3`）
 
 所有错误：`{"error": {"code", "message", "field_path"?, "details"?}}`，422 带字段路径。
-列表分页参数 `limit`（默认 50，上限 200）与 `offset`；返回 `{items,total,limit,offset}`。
+运行/案例等接口按各端点支持 limit/offset；项目、Skill 版本、环境和数据集列表不统一分页。事件历史支持 after_seq 和 limit/offset，但最多先取 1000 条匹配事件再切片，total 是窗口数量；参数及返回以 [API](API.md) 为准。
 
 | 方法与路径 | 行为 |
 | --- | --- |
@@ -373,11 +387,11 @@ retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式�
 | `POST /datasets/{did}/publish` | 草稿完整校验并发布；需 `expected_hash`、`expected_current_version`，并发冲突返回 409 |
 | `GET /projects/{pid}/versions` | 版本记录（Skill/环境/数据集） |
 | `GET /projects/{pid}/overview` | 概览：配置完整性、最近指标、最近运行 |
-| `POST /runs` | `{project_id, mode: baseline|optimize|final_test, parent_run_id?, expected_current_version?, reuse_baseline?}` + `Idempotency-Key`；202 `{run_id}` |
+| `POST /runs` | `{project_id, mode: evaluate|baseline|optimize|validate|final_test, source_run_id?, parent_run_id?, expected_*?, reuse_baseline?}` + `Idempotency-Key`；202 `run_view`（主标识为 `id`） |
 | `GET /runs?project_id=` | 运行列表 |
 | `GET /runs/{rid}` | 运行详情（状态/阶段/进度/指标/决策/candidate） |
 | `POST /runs/{rid}/cancel` | 取消 |
-| `POST /runs/{rid}/apply` | `{expected_current_version, candidate_id?}`；冲突 409；冲突返回当前版本 |
+| `POST /runs/{rid}/apply` | `{expected_current_version, candidate_id?}`；以 CAS 校验当前版本与候选链，冲突 409；冲突返回当前版本 |
 | `GET /runs/{rid}/cases?phase=&only_failed=&search=` | 案例对比数据 |
 | `GET /runs/{rid}/cases/{cid}` | 单案例详情（基线/候选/评分/参数差异/事件） |
 | `GET /runs/{rid}/diff` | 文件差异（候选 vs 基线） |
@@ -397,14 +411,15 @@ delta, diagnostics}, decision, decision_reason, acceptance, cost,
 snapshot:{skill_version, environment, dataset, scorer_version, fingerprints},
 candidate:{...}, case_stats, created_at/started_at/finished_at`。
 `status ∈ queued|running|cancel_requested|completed|failed|cancelled|interrupted`；
-`completed` 时 `decision ∈ accept|reject|inconclusive`。
+`completed` 时，`validate` 的 `decision ∈ accept|reject|inconclusive`；`evaluate`、`baseline`、
+`final_test` 正常完成时 decision 为 null。optimize 成功产生候选并完成重跑时 decision=null，
+无失败证据、无候选或静态检查失败等分支为 inconclusive，不能仅凭 completed 判断已有可验收候选。
 
-## 4. 前端要求（T4）
+## 4. 前端要求
 
 - 中文、炭灰深色、桌面优先 1280–1920；左导航 + 顶栏 + 单主视图；路由用 hash。
 - 页面：项目列表、项目概览、Skill 包（240px 文件树 + 编辑器 + 草稿/发布）、
-  执行环境（业务 Prompt 默认折叠、模型 API/Python 切换、工具配置折叠、发布
-  后只读）、数据集（导入预检弹窗、版本、筛选表格、案例侧栏表单/JSON 切换）、
+  Prompt 与模型（HTTP/WS 接入、模型角色、评分与高级运行参数、发布后只读）、数据集（导入预检弹窗、版本、筛选表格、案例侧栏表单/JSON 切换）、
   运行详情（四标签页 + 运行记录 UX §44–§50）、版本记录（比较/设为当前/下载）。
 - 运行详情默认行为：运行中首次进入打开“运行记录”；终态再次进入默认“结果概览”；
   进度按阶段展示，不混合阶段总数；未完成指标标“临时值”。
@@ -420,11 +435,8 @@ candidate:{...}, case_stats, created_at/started_at/finished_at`。
 ## 5. 测试与验收约定
 
 - 测试文件 `tests/test_a01_...py` 对应验收编号；每个测试独立临时数据目录。
-- 禁止真实外网调用；假模型/假网关必须走统一适配接口。
-- 验收 A01–A20 见需求文档 §35 与 §43/§54；Lead 负责 A01/A02/A08/A09/A14/A19/A20
-  集成测试，T1 负责 A03/A04/A05，T2 负责 A11/A12/A13，T3 负责 A06/A07/A10
-  （A10 涉及执行器与取消，可与 Lead 合测），T4 负责 A15/A16/A17/A18 的前端
-  可验证部分（可用 DOM 快照/接口断言），集成断言由 Lead 补。
+- 自动化回归不调用外部真实模型；假模型/本地网关走统一适配接口。真实模型验证单独授权、记录与报告。
+- 验收 A01–A20 的历史映射见[需求追溯](REQUIREMENTS_TRACEABILITY.md)。按实际改动选择模块回归和浏览器走查，不沿用早期 Lead/T1–T4 的一次性任务分工。开发和交付流程见[贡献指南](../CONTRIBUTING.md)。
 
 ### 原生技能选择与自动加载（select-load-v1）
 

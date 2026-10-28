@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "main": "SKILL.md",
+  "subskills": [
+    {
+      "skill_id": "task_query",
+      "name": "任务查询",
+      "path": "references/task_query.md",
+      "description": "查询任务列表或详情"
+    },
+    {
+      "skill_id": "task_create",
+      "name": "任务创建",
+      "path": "references/task_create.md",
+      "description": "在项目创建任务"
+    },
+    {
+      "skill_id": "task_assign",
+      "name": "任务指派",
+      "path": "references/task_assign.md",
+      "description": "将任务分派给负责人"
+    }
+  ]
+}
