@@ -47,7 +47,7 @@ def _run(project, mode, **kwargs):
     return persistence.get_run(run['id'])
 
 
-def test_full_sample_default_budget_baseline_and_no_failure_optimization():
+def test_full_sample_baseline_and_no_failure_optimization():
     project, ds = _project()
     cases = persistence.all_cases(ds['id'])
     assert len(cases) == 117

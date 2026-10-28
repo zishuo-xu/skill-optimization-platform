@@ -36,7 +36,7 @@ def test_refresh_preserves_models_old_versions_and_does_not_start_runs():
     assert current['current_dataset_id'] != old_data['id']
     assert result['environment']['model_config'] == old_env['model_config']
     assert result['environment']['optimizer_config'] == old_env['optimizer_config']
-    assert result['environment']['budget_config'] == old_env['budget_config']
+    assert 'budget_config' not in result['environment']
     assert result['environment']['loader_config']['max_steps'] >= 16
     assert persistence.get_skill_version(old_skill['id'])['content_hash'] == old_skill['content_hash']
     assert persistence.get_environment(old_env['id'])['prompt'] == 'Previous business prompt'

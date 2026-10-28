@@ -30,7 +30,7 @@ ACCEPTANCE_RULES_VERSION = "accept-v1"
 OPTIMIZER_PROTOCOL_VERSION = "optimizer-v1"
 PROMPT_TEMPLATE_ID = "business-system-prompt-v1"
 
-# Run pricing is optional; when unset only token/time budgets are enforced.
+# Optional pricing for reporting actual usage; no spending limits are enforced.
 PRICE_PER_1K_INPUT_TOKENS = float(os.environ.get("SKILLOPT_PRICE_INPUT_1K", "0") or 0)
 PRICE_PER_1K_OUTPUT_TOKENS = float(os.environ.get("SKILLOPT_PRICE_OUTPUT_1K", "0") or 0)
 

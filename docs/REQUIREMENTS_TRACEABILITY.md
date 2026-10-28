@@ -15,7 +15,7 @@
 | §7 界面风格（深色、桌面优先、等宽代码、留白） | `web/css/app.css`、`web/index.html` | `docs/images/*`、界面联调 |
 | §8 交互通则（单一主操作、离页提示、字段错误、空态/失败态） | `web/js/views/*`、`components.js` | 界面联调 |
 | §9 Skill 包管理（ZIP/文件夹、manifest、安全检查、Markdown 白名单、草稿/发布/不可变、导出） | `app/skill_package.py`、`app/services.py`、`app/persistence.py` | A01 |
-| §10 执行环境配置（Prompt/业务模型/优化模型/加载/运行参数/预算） | `app/services.py`、`web/js/views/environment.js` | A02、A10 |
+| §10 执行环境配置（Prompt/业务模型/优化模型/加载/运行参数） | `app/services.py`、`web/js/views/environment.js` | A02、A10 |
 | §11 冻结与隔离（快照、执行器不可见 expected、优化器不可见验证集、凭据、可复现性） | `app/single_round.py`、`app/execution.py`、`app/services.py`、`app/reports.py` | A02、A20、A13 |
 | §12 数据导入与版本（JSONL/JSON、预检、稳定 ID、导出、发布不可变、复制草稿修订） | `app/dataset.py`、`app/services.py`、`app/persistence.py`、`app/api_v3.py` | A03、`test_dataset_editing.py`、`test_dataset_editing_api.py` |
 | §13 字段与扩展（context/fixtures/action/clarify/no_action/missing_fields） | `app/dataset.py`、`app/execution.py`、`app/fixtures.py`、`app/evaluation.py` | A03、A04、A10 |

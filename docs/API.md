@@ -117,7 +117,7 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
 | POST | `/environments/{eid}/publish` | `{set_current?:true}` |
 | POST | `/environments/{eid}/activate` | `{expected_current_version?}` 设为当前（回滚） |
 | POST | `/environments/test-connection` | `{environment_id?, target?, input?, model_config?, optimizer_config?, mode?}`；默认真实探测一次，`target` 为 `business`/`optimizer`，`input` 最多 16000 字符；`mode=check` 仅做本地配置检查，不出网 |
-| GET | `/environment-template` | 内置 Prompt + 示例模型/加载/预算/接受配置 |
+| GET | `/environment-template` | 内置 Prompt + 示例模型/加载/接受配置 |
 
 创建环境请求（可从 `/environment-template` 获取完整模板）：
 
@@ -134,14 +134,12 @@ curl -X POST http://127.0.0.1:8765/api/v3/projects/$PID/skill-versions \
   "optimizer_config": {"provider": "heuristic", "model": "frozen-heuristic-v1"},
   "loader_config": {"max_steps": 8, "max_model_calls": 12, "max_context_chars": 60000, "context_overflow": "error"},
   "run_config": {"concurrency": 3, "max_model_calls": 12, "case_timeout_s": 120, "base_repeats": 1, "validation_repeats": 3},
-  "budget_config": {"max_tokens": 300000, "max_cost": null, "max_seconds": 1800},
   "scorer_config": {"version": "score-v1"},
   "acceptance_config": {"rules_version": "accept-v1", "validation_repeats": 3},
   "status": "published"
 }
 ```
 
-- `budget_config` 必须至少设置 Token 或金额上限，并设置最长运行时间；金额未知时以 Token 为准。
 - 已发布版本只读；修改必须创建新版本（草稿→发布）。运行启动后环境/规则被快照冻结。
 
 `POST /environments/test-connection` 示例：

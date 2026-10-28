@@ -690,7 +690,7 @@ class _CaseRunner:
                 return result
 
     def _model_turn(self) -> dict[str, Any] | None:
-        self._check_context_budget()
+        self._check_context_limit()
         self.model_calls += 1
         call_id = f"call_{uuid.uuid4().hex[:12]}"
         self._current_call_id = call_id
@@ -775,7 +775,7 @@ class _CaseRunner:
             return self._success()
         return None
 
-    def _check_context_budget(self) -> None:
+    def _check_context_limit(self) -> None:
         """Reject a growing runtime transcript before sending it to the model.
 
         Initial loading may use the frozen overflow strategy in ``build_messages``.
@@ -816,7 +816,7 @@ class _CaseRunner:
         reason = (self.finish_reason or "").lower()
         if reason in ("length", "max_tokens", "max_output_tokens"):
             raise _Failure("truncated", "模型输出被截断（finish_reason=length），"
-                                        "不自动加大预算重跑")
+                                        "不自动提高输出上限重跑")
         if reason in ("content_filter", "safety"):
             raise _Failure("refused", "模型因内容安全策略拒绝返回结果")
 

@@ -377,7 +377,6 @@ function baseEnvironment(id, versionSeq, overrides = {}) {
       context_overflow: 'error',
     },
     run_config: { concurrency: 3, case_timeout_s: 120, repeats_baseline: 1, repeats_validation: 3 },
-    budget_config: { max_tokens: 200000, max_cost: null, max_duration_s: 3600 },
     scorer_config: { scorer_version: 'score-v1' },
     acceptance_config: { require_critical_cases: true, validation_repeats: 3 },
     adapter_hash: 'sha256:mock-adapter-v2',
@@ -546,7 +545,6 @@ function makeRuns() {
       case_stats: { case_results: 36, scored: 36, errors: 0, planned: 18, completed: 18, valid: 18 },
       snapshot: clone(SNAPSHOT),
       candidate: clone(CANDIDATE),
-      budget: { max_tokens: 200000, max_cost: null, max_duration_s: 3600, tokens_used: 18432, tokens_remaining: 181568 },
       cost: { input_tokens: 12_100, output_tokens: 6_332, total_tokens: 18_432, amount: null, currency: 'CNY', duration_ms: 212_000 },
       execution: clone(EXECUTION),
       created_at: isoAgo(12 * 60_000),
@@ -575,7 +573,6 @@ function makeRuns() {
       case_stats: { case_results: 18, scored: 18, errors: 0, planned: 18, completed: 18, valid: 18 },
       snapshot: clone(SNAPSHOT),
       candidate: null,
-      budget: { max_tokens: 200000, max_cost: null, max_duration_s: 3600, tokens_used: 9_120, tokens_remaining: 190880 },
       cost: { input_tokens: 6_000, output_tokens: 3_120, total_tokens: 9_120, amount: null, currency: 'CNY', duration_ms: 180_000 },
       execution: { ...clone(EXECUTION), planned: 18, completed: 18 },
       created_at: isoAgo(2 * 86400_000 + 30_000),
@@ -623,7 +620,6 @@ function makeRuns() {
         patch: { summary: '重写子技能索引关键词', edits: [{ path: 'SKILL.md', op: 'replace', search: '子技能索引', replace: '子技能索引（重排）', reason: '尝试改善路由命中' }] },
         expected_effect: 'R 提升',
       },
-      budget: { max_tokens: 200000, tokens_used: 16_800, tokens_remaining: 183200 },
       cost: { input_tokens: 11_000, output_tokens: 5_800, total_tokens: 16_800, amount: null, currency: 'CNY', duration_ms: 180_000 },
       execution: { ...clone(EXECUTION), infra_errors: 0, valid: 18 },
       created_at: isoAgo(2 * 86400_000 + 120_000),
@@ -665,7 +661,6 @@ function makeRuns() {
       case_stats: { case_results: 18, scored: 18, errors: 0, planned: 18, completed: 18, valid: 18 },
       snapshot: clone(SNAPSHOT),
       candidate: null,
-      budget: { max_tokens: 200000, tokens_used: 7_600, tokens_remaining: 192400 },
       cost: { input_tokens: 5_100, output_tokens: 2_500, total_tokens: 7_600, amount: null, currency: 'CNY', duration_ms: 64_000 },
       execution: { ...clone(EXECUTION), planned: 18, completed: 18, valid: 17 },
       created_at: isoAgo(3 * 86400_000 + 90_000),
@@ -711,7 +706,6 @@ function makeRuns() {
       case_stats: { case_results: 20, scored: 14, errors: 1, planned: 18, completed: 8, valid: 7 },
       snapshot: clone(SNAPSHOT),
       candidate: { ...clone(CANDIDATE), id: 'candidate_running', skill_version_id: 'skillv_candidate_running' },
-      budget: { max_tokens: 200000, tokens_used: 8_900, tokens_remaining: 191100 },
       cost: { input_tokens: 6_100, output_tokens: 2_800, total_tokens: 8_900, amount: null, currency: 'CNY', duration_ms: 92_000 },
       execution: { ...clone(EXECUTION), planned: 18, completed: 8, valid: 7 },
       created_at: isoAgo(4 * 60_000),
@@ -848,7 +842,6 @@ function seedAcceptRun() {
       }),
     },
   });
-  ev('preflight_item', 10_000, { stage: 'preflight', payload: { name: '预算', ok: true, detail: 'Token 上限 200k，预计使用 18k' } });
   ev('stage_completed', 11_000, { stage: 'preflight', payload: { ok: true } });
 
   ev('stage_started', 12_000, { stage: 'baseline_eval', payload: { stage: 'baseline_eval', planned: 18 } });
@@ -2008,7 +2001,6 @@ async function fetchImpl({ method, path, query = {}, body }) {
       optimizer_config: payload.optimizer_config || {},
       loader_config: payload.loader_config || {},
       run_config: payload.run_config || {},
-      budget_config: payload.budget_config || {},
       scorer_config: payload.scorer_config || {},
       acceptance_config: payload.acceptance_config || {},
       adapter_hash: 'sha256:mock-adapter-new',

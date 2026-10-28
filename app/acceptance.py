@@ -191,7 +191,7 @@ def evaluate(baseline_metrics: Mapping[str, Any] | None,
 
     record("validation_complete", validation_complete is True,
            "验证流程完整" if validation_complete is True
-           else "验证不完整（预算不足或未完成），证据不足")
+           else "验证未完整完成，证据不足")
 
     try:
         repeat_count = int(repeats)

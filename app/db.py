@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS environments (
     optimizer_config_json TEXT NOT NULL,
     loader_config_json TEXT NOT NULL,
     run_config_json TEXT NOT NULL,
-    budget_config_json TEXT NOT NULL,
     scorer_config_json TEXT NOT NULL,
     acceptance_config_json TEXT NOT NULL,
     adapter_hash TEXT NOT NULL DEFAULT '',
@@ -113,7 +112,6 @@ CREATE TABLE IF NOT EXISTS runs (
     parent_run_id TEXT,
     baseline_run_id TEXT,
     baseline_cache_hit INTEGER NOT NULL DEFAULT 0,
-    budget_json TEXT NOT NULL DEFAULT '{}',
     acceptance_json TEXT NOT NULL DEFAULT '{}',
     metrics_json TEXT NOT NULL DEFAULT '{}',
     cost_json TEXT NOT NULL DEFAULT '{}',
@@ -285,6 +283,7 @@ def init_db(db_path: Path | str | None = None) -> None:
     conn = get_connection(db_path)
     conn.executescript(SCHEMA_SQL)
     _migrate_removed_tool_schema(conn, db_path)
+    _migrate_removed_columns(conn, (("environments", "budget_config_json"), ("runs", "budget_json")), "budget", db_path)
 
 
 def _migrate_removed_tool_schema(conn: sqlite3.Connection,
@@ -297,20 +296,28 @@ def _migrate_removed_tool_schema(conn: sqlite3.Connection,
     supplying that obsolete field. Keep one SQLite backup beside the database,
     then perform the supported SQLite DROP COLUMN migration exactly once.
     """
+    _migrate_removed_columns(conn, (("environments", "tool_schema_json"),), "tool-schema", db_path)
+
+
+def _migrate_removed_columns(conn: sqlite3.Connection, columns_to_remove: tuple[tuple[str, str], ...],
+                                        backup_label: str,
+                                        db_path: Path | str | None = None) -> None:
+    """Back up and atomically remove obsolete columns."""
     conn.execute("BEGIN IMMEDIATE")
     temp_backup: Path | None = None
     try:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(environments)")}
-        if "tool_schema_json" not in columns:
+        pending = [(table, column) for table, column in columns_to_remove
+                   if column in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}]
+        if not pending:
             conn.execute("COMMIT")
             return
         path = Path(db_path) if db_path is not None else config.DB_PATH
         backup_path = path.with_name(
-            f"{path.name}.pre-tool-schema.{uuid.uuid4().hex}.bak")
+            f"{path.name}.pre-{backup_label}.{uuid.uuid4().hex}.bak")
         if not path.is_file():
             raise RuntimeError(f"Cannot back up database before schema upgrade: {path}")
         fd, temp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.pre-tool-schema.", suffix=".tmp", dir=path.parent)
+            prefix=f".{path.name}.pre-{backup_label}.", suffix=".tmp", dir=path.parent)
         os.close(fd)
         temp_backup = Path(temp_name)
         os.chmod(temp_backup, 0o600)
@@ -320,7 +327,8 @@ def _migrate_removed_tool_schema(conn: sqlite3.Connection,
                 destination.commit()
         os.replace(temp_backup, backup_path)
         temp_backup = None
-        conn.execute("ALTER TABLE environments DROP COLUMN tool_schema_json")
+        for table, column in pending:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
     except Exception:
         conn.execute("ROLLBACK")
         if temp_backup is not None:

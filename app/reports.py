@@ -145,7 +145,6 @@ def build_report(run_id: str) -> dict[str, Any]:
             for item in case_rows
         ],
         "cost": run.get("cost") or {},
-        "budget": run.get("budget") or {},
         "issues": issues,
         "conclusion": run.get("decision_reason") or "",
         "notice": ("本报告包含评分口径与逐案例差异；不包含密钥、隐藏思维链或最终测试集答案。"

@@ -59,7 +59,6 @@ STAGE_STARTED = "stage_started"
 STAGE_COMPLETED = "stage_completed"
 STAGE_FAILED = "stage_failed"
 PROGRESS_UPDATED = "progress_updated"
-BUDGET_EXCEEDED = "budget_exceeded"
 
 # ---- preflight ------------------------------------------------------------
 PREFLIGHT_ITEM = "preflight_item"
@@ -120,7 +119,7 @@ ERROR_LEVEL_TYPES = {
     RUN_FAILED, STAGE_FAILED, CASE_FAILED, MODEL_CALL_FAILED, FIXTURE_MISS,
     SCORE_FAILED, OPTIMIZER_CALL_FAILED, OPTIMIZER_EMPTY_RESPONSE,
     OPTIMIZER_PARSE_FAILED, OPTIMIZER_NOT_CONFIGURED, FALLBACK_NO_CHANGE,
-    STATIC_CHECK_FAILED, PREFLIGHT_FAILED, BUDGET_EXCEEDED, CONFIG_ERROR,
+    STATIC_CHECK_FAILED, PREFLIGHT_FAILED, CONFIG_ERROR,
 }
 
 # Optimizer error codes (§49) – these must be recorded *before* heuristic fallback.

@@ -156,7 +156,7 @@ def _model_candidate() -> dict:
     }
 
 
-def _context(failures, *, optimizer_config=("configured"), budget_remaining=None):
+def _context(failures, *, optimizer_config=("configured")):
     context = {
         "project": {"id": "prj_demo", "name": "演示项目"},
         "baseline_skill_version": {
@@ -167,7 +167,6 @@ def _context(failures, *, optimizer_config=("configured"), budget_remaining=None
         "allowed_paths": list(ALLOWED_PATHS),
         "failures": list(failures),
         "passing_summary": {"count": 20, "sample_case_ids": ["case_ok_1"]},
-        "budget_remaining": budget_remaining or {"tokens": 12000},
         "diagnosis_hints": {"routing_error": 3},
     }
     if optimizer_config == "configured":
@@ -749,7 +748,6 @@ def _five_file_context() -> dict:
         "allowed_paths": sorted(FIVE_FILE_FILES),
         "failures": _five_file_failures(),
         "passing_summary": {"count": 20, "sample_case_ids": []},
-        "budget_remaining": {"tokens": 120000},
         "optimizer_config": {"provider": "heuristic"},
     }
 
@@ -1070,18 +1068,6 @@ def test_generate_candidate_target_path_outside_whitelist_falls_back():
     assert any(error["code"] == "edit_path_not_allowed" for error in target_errors)
 
 
-def test_generate_candidate_budget_exhausted_skips_model_call():
-    emit = FakeEmit()
-    adapter = FakeAdapter(FakeAdapter.text(
-        json.dumps(_model_candidate(), ensure_ascii=False)))
-    context = _context([_routing_failure()], budget_remaining={"tokens": 0})
-    result = optimizer.generate_candidate(context, adapter, emit, {"tokens": 0})
-    assert adapter.calls == []
-    assert result["status"] == "ok" and result["used_fallback"] is True
-    failed = emit.by_type(event_types.OPTIMIZER_CALL_FAILED)
-    assert failed and "预算不足" in failed[0]["payload"]["issue"]["message"]
-
-
 def test_generate_candidate_heuristic_provider_is_not_configured():
     # sample environment.json uses provider "heuristic": no real optimizer model.
     emit = FakeEmit()
@@ -1103,17 +1089,6 @@ def test_generate_candidate_heuristic_provider_is_not_configured():
         "optimizer_not_configured"
     assert emit.types.index(event_types.OPTIMIZER_NOT_CONFIGURED) < \
         emit.types.index(event_types.FALLBACK_STARTED)
-
-
-def test_generate_candidate_accepts_remaining_token_budget_keys():
-    emit = FakeEmit()
-    adapter = FakeAdapter(FakeAdapter.text(""))
-    result = optimizer.generate_candidate(
-        _context([_routing_failure()]), adapter, emit,
-        {"tokens_remaining": 0})
-    assert adapter.calls == []
-    assert result["status"] == "ok" and result["used_fallback"] is True
-    assert emit.by_type(event_types.OPTIMIZER_CALL_FAILED)
 
 
 def test_generate_candidate_error_events_all_carry_issue_objects():

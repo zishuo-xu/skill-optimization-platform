@@ -35,11 +35,6 @@
     "base_repeats": 1,
     "validation_repeats": 3
   },
-  "budget_config": {
-    "max_tokens": 300000,
-    "max_cost": null,
-    "max_seconds": 1800
-  },
   "scorer_config": {
     "version": "score-v1",
     "route_compare": "set",

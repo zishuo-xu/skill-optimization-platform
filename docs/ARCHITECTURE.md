@@ -52,7 +52,7 @@ flowchart LR
 | --- | --- |
 | `app/api_v3.py` | HTTP/SSE 路由、入参校验、错误映射、资源下载 |
 | `app/services.py` | 应用服务：项目详情/概览、版本导入发布、数据集预检、运行创建/视图、应用候选、报告 |
-| `app/single_round.py` | 单轮流水线：预检、基线、错误分析、候选生成、静态检查、复测、决策；取消与预算 |
+| `app/single_round.py` | 单轮流水线：预检、基线、错误分析、候选生成、静态检查、复测、决策；取消控制 |
 | `app/execution.py` | 单案例执行循环：固定消息构造、内部工具、业务工具 + fixture、步数/超时/取消 |
 | `app/adapters/*` | `ModelAdapter` 接口与 demo/HTTP/WS 适配器、WS 分帧与事件聚合、文本协议解析 |
 | `app/obs_tools.py` | `select_skill` / `read_skill` / `finish` 协议与路由事件 |
@@ -76,7 +76,7 @@ flowchart LR
 
 1. 创建项目。
 2. 导入 Skill ZIP（或文件夹 JSON）→ 安全检查 → manifest 校验 → 发布不可变 `SkillVersion`。
-3. 创建执行环境：业务 Prompt、业务模型、优化模型、加载策略、运行参数、预算、
+3. 创建执行环境：业务 Prompt、业务模型、优化模型、加载策略、运行参数、
    评分器与接受规则 → 发布 `EnvironmentVersion`（哈希冻结）。
 4. 导入数据集 JSONL/JSON → 预检（行号/错误/字段路径）→ 按 group 固定种子划分 →
    发布 `DatasetVersion`（不可原地修改）。
@@ -105,7 +105,7 @@ stateDiagram-v2
 
 `optimize` 运行的阶段：
 
-1. `preflight`：Skill 完整性、数据划分、预算、fixture 覆盖（按本次运行涉及划分）。
+1. `preflight`：Skill 完整性、数据划分、fixture 覆盖（按本次运行涉及划分）。
 2. `baseline_eval`：优化集基线；若存在指纹完全一致的 completed 基线则复制结果复用，否则新跑。
 3. `error_analysis`：只聚合优化集失败案例（含 expected、实际结果、评分诊断、可观察事件）。
 4. `candidate_generation`：优化模型或冻结启发式生成**一个**补丁；失败时先记录直接原因，
@@ -140,9 +140,9 @@ erDiagram
 | --- | --- |
 | `projects` | 当前 Skill/环境/数据集指针（指针切换只影响平台，不修改外部目录） |
 | `skill_versions` | 不可变包版本：manifest、文件哈希、content_hash、父版本、来源运行、status |
-| `environments` | Prompt、模型/优化器配置、加载/运行/预算/评分器/接受规则、hash |
+| `environments` | Prompt、模型/优化器配置、加载/运行/评分器/接受规则、hash |
 | `datasets` / `cases` | 数据版本与案例（expected/fixtures/split/group/tags/validation） |
-| `runs` | 运行快照、指纹、状态/阶段/进度、预算、决策、租约与心跳、指标/成本 |
+| `runs` | 运行快照、指纹、状态/阶段/进度、决策、租约与心跳、指标/成本 |
 | `case_results` | 每轮 × 阶段 × 案例 × 变体 × 重复序号唯一；actual/scores/error/usage |
 | `events` | 单运行严格递增 `seq`；stage/case/split/variant/repeat/attempt/call_id/type/level/payload |
 | `trace_artifacts` | 大请求/响应/原始输出，事件只存 artifact id 引用 |
@@ -161,7 +161,7 @@ erDiagram
 - 基线缓存指纹 = Skill 版本 + 环境版本 + 数据版本 + 评分器版本 + 基础重复次数；
   任一变化即缓存失效并重新评测，概览会说明不可复用原因。
 - `accept-v1`：R/A 不降、至少一项严格升、J 不降、critical 不回归、无基础设施/包完整性错误；
-  全部持平拒绝；预算不足或验证不完整判 `inconclusive`；阈值在运行启动时冻结。
+  全部持平拒绝；验证不完整判 `inconclusive`；阈值在运行启动时冻结。
 
 ## 7. 隔离与安全边界
 
@@ -182,7 +182,6 @@ erDiagram
 | 租约与心跳 | Worker 领取写入 `lease_owner/lease_expires_at` 并定期续租 |
 | 崩溃恢复 | 启动时回收过期租约回 `queued`，重跑未完成阶段；已完成案例结果按唯一键去重保留 |
 | 取消 | `cancel_requested` + 阶段/案例/模型调用边界检查；停止派发，在途尽力中断 |
-| 预算 | 启动前冻结 Token/金额/时长；派发前检查，耗尽停止并记录 `budget_exceeded` |
 | 事件回放 | `GET /event-history?after_seq=` + SSE `Last-Event-ID`/`after_seq`，按 `run_id+seq` 去重 |
 | 幂等启动 | `Idempotency-Key` + `(project_id, idempotency_key)` 唯一索引 |
 | 并发案例 | 每轮环境并发配置（默认 3），结果唯一键防重复；事件写入串行化 |

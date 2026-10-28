@@ -124,7 +124,7 @@ _SYSTEM_PROMPT = (
     "\n"
     "硬性约束：\n"
     "1. 只能修改 allowed_paths 中列出的、已存在的 .md 文件；不得新增或删除文件。\n"
-    "2. 不得修改 manifest.json、脚本、资源文件、执行环境、工具 Schema、评分器、预算或数据标签。\n"
+    "2. 不得修改 manifest.json、脚本、资源文件、执行环境、工具 Schema、评分器或数据标签。\n"
     "3. 不得写入任何测试 case_id、标准答案/答案表，也不得针对单条 query 写硬编码分支；"
     "优先解决共性错误、优先局部修改。\n"
     "4. 每个 edit 使用 op=replace；search 必须是目标文件中恰好出现一次的原文片段，"
@@ -270,23 +270,6 @@ def _allowed_paths(context: Mapping[str, Any]) -> set[str] | None:
     return allowed
 
 
-def _budget_tokens(budget: Any) -> int | None:
-    if budget is None:
-        return None
-    if isinstance(budget, Mapping):
-        for key in ("tokens", "remaining_tokens", "tokens_remaining",
-                    "budget_remaining", "remaining"):
-            value = budget.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                value = None
-            if value is not None:
-                return int(value)
-        return None
-    if isinstance(budget, bool) or not isinstance(budget, (int, float)):
-        return None
-    return int(budget)
-
-
 _NON_MODEL_PROVIDERS = {"heuristic", "none", "disabled", "off", "noop", "manual"}
 
 
@@ -324,7 +307,6 @@ def _input_stats(context: Mapping[str, Any], messages: Sequence[Mapping[str, Any
         filter(None, (patch_module.normalize_path(path) for path in files))
     )
     input_chars = sum(len(str(message.get("content") or "")) for message in messages)
-    remaining = _budget_tokens(context.get("budget_remaining"))
     return {
         "protocol_version": OPTIMIZER_PROTOCOL_VERSION,
         "failure_count": len(failures),
@@ -333,7 +315,6 @@ def _input_stats(context: Mapping[str, Any], messages: Sequence[Mapping[str, Any
         "file_count": len(file_paths),
         "input_files": file_paths[:100],
         "input_chars": input_chars,
-        "budget_remaining": remaining,
         "truncated": False,
         "loading_strategy": "full",
     }
@@ -364,7 +345,6 @@ def _prompt_payload(context: Mapping[str, Any]) -> dict[str, Any]:
         "business_execution_prompt": _jsonable(context.get("business_execution_prompt") or ""),
         "failures": _jsonable(_optimize_failures(context)),
         "passing_summary": _jsonable(passing),
-        "budget_remaining": _jsonable(context.get("budget_remaining") or {}),
         "diagnosis_hints": _jsonable(context.get("diagnosis_hints") or {}),
     }
 
@@ -1443,7 +1423,7 @@ def heuristic_candidate(context: Mapping[str, Any]) -> dict[str, Any] | None:
 def generate_candidate(context: Mapping[str, Any],
                        adapter: Any,
                        emit: Callable[..., Any] | None,
-                       budget: Any = None, *,
+                       *,
                        allow_fallback: bool = True) -> dict[str, Any]:
     """Run the full candidate-generation flow and return the contract result.
 
@@ -1503,22 +1483,6 @@ def generate_candidate(context: Mapping[str, Any],
 
     if config is None:
         config = {}
-    remaining = _budget_tokens(budget) if budget is not None \
-        else _budget_tokens(context.get("budget_remaining"))
-    if remaining is not None and remaining <= 0:
-        event = _emit(emit, event_types.OPTIMIZER_CALL_FAILED, {
-            **_issue_payload(
-                "optimizer_call_failed",
-                f"优化器预算不足（剩余 {remaining} tokens），未调用模型。",
-                impact="本轮无法生成模型候选，将使用启发式回退（如启用）。",
-                next_action="提高本轮预算或新建运行。",
-                technical_detail={"budget_remaining": remaining},
-            ),
-            "budget_remaining": remaining,
-        }, level="error")
-        return _fallback(context, emit, "optimizer_call_failed", _seq_of(event),
-                         allow_fallback)
-
     call_id = f"opt_{uuid.uuid4().hex[:12]}"
     _emit(emit, event_types.OPTIMIZER_CALL_STARTED, {
         "protocol_version": OPTIMIZER_PROTOCOL_VERSION,
@@ -1528,7 +1492,6 @@ def generate_candidate(context: Mapping[str, Any],
         "input_chars": sum(len(str(message.get("content") or ""))
                            for message in messages),
         "message_count": len(messages),
-        "budget_remaining": remaining,
         "truncated": False,
     }, call_id=call_id)
 

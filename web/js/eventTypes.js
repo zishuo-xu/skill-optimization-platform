@@ -6,7 +6,7 @@
  */
 
 export const STAGES = [
-  { id: 'preflight', label: '预检', description: '检查文件、环境、数据与预算' },
+  { id: 'preflight', label: '预检', description: '检查文件、环境和数据' },
   { id: 'baseline_eval', label: '基线评测', description: '在测试集上执行基线 Skill' },
   { id: 'error_analysis', label: '错误分析', description: '聚合失败证据与归因' },
   { id: 'candidate_generation', label: '生成候选', description: '请求优化器生成本地补丁' },
@@ -62,7 +62,6 @@ export const EVENT_META = {
   stage_completed: { label: '阶段完成', icon: 'check', category: 'lifecycle' },
   stage_failed: { label: '阶段失败', icon: 'x', category: 'lifecycle', defaultLevel: 'error' },
   progress_updated: { label: '进度更新', icon: 'activity', category: 'lifecycle' },
-  budget_exceeded: { label: '预算已用尽', icon: 'alert', category: 'lifecycle', defaultLevel: 'warning' },
 
   // preflight
   preflight_item: { label: '预检项', icon: 'shield', category: 'preflight' },

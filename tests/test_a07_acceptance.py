@@ -203,7 +203,7 @@ def test_inconclusive_with_missing_metrics_mapping():
     assert _rule(result, "metrics_evaluable")["ok"] is False
 
 
-def test_inconclusive_when_budget_not_provided_means_validation_incomplete():
+def test_inconclusive_when_validation_completion_unknown():
     result = _evaluate(validation_complete=None)
     assert result["decision"] == "inconclusive"
 

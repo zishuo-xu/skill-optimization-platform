@@ -230,7 +230,7 @@ def test_same_batch_business_call_waits_for_next_turn_after_fresh_load(package):
     assert "skill_loaded_requires_new_model_turn" in adapter.calls[1]["messages"][-1]["content"]
 
 
-def test_runtime_context_budget_fails_before_next_model_call(package):
+def test_runtime_context_limit_fails_before_next_model_call(package):
     root, manifest = package
     request = make_request(root, manifest,
                            limits={"max_model_calls": 4, "max_steps": 4,

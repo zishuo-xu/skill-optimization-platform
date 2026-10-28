@@ -224,23 +224,15 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
                               field_path="loader_config.strict_finish")
     loader_config["strict_finish"] = strict_finish
     run_config = dict(payload.get("run_config") or {})
-    budget_config = dict(payload.get("budget_config") or {})
     scorer_config = dict(payload.get("scorer_config") or {})
     # Accept legacy field names from older UI/API clients and normalise them.
     run_config.setdefault("base_repeats", run_config.get("repeats_baseline", 1))
     run_config.setdefault("validation_repeats", run_config.get("repeats_validation", 3))
-    budget_config.setdefault("max_seconds", budget_config.get("max_duration_s"))
     scorer_config.setdefault("version", scorer_config.get("scorer_version", config.SCORER_VERSION))
     compare_error = evaluation.compare_rules_error(scorer_config.get("compare"))
     if compare_error:
         raise ValidationError(f"评分规则无效：{compare_error}", field_path="scorer_config.compare")
     scorer_config = _normalise_judge_config(scorer_config, parent)
-    if not (budget_config.get("max_tokens") or budget_config.get("max_cost")):
-        raise ValidationError(
-            "必须设置总 Token 或金额上限（金额未知时以 Token 硬限制为准）",
-            field_path="budget_config.max_tokens")
-    if not budget_config.get("max_seconds"):
-        raise ValidationError("必须设置最长运行时间", field_path="budget_config.max_seconds")
     acceptance_config = dict(payload.get("acceptance_config") or {})
     acceptance_config.setdefault("rules_version", config.ACCEPTANCE_RULES_VERSION)
     acceptance_config.setdefault(
@@ -251,7 +243,6 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
         "optimizer_config": optimizer_config,
         "loader_config": loader_config,
         "run_config": run_config,
-        "budget_config": budget_config,
         "scorer_config": scorer_config,
         "acceptance_config": acceptance_config,
         "adapter_hash": hashing.hash_json({
@@ -920,7 +911,6 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     repeats = _baseline_repeats(env)
     fingerprint = run_fingerprint(skill_version_id, environment_id, dataset_id,
                                   scorer_version, repeats)
-    budget = env.get("budget_config") or {}
     acceptance = dict(env.get("acceptance_config") or {})
     acceptance.setdefault("rules_version", config.ACCEPTANCE_RULES_VERSION)
     acceptance["validation_repeats"] = _validation_repeats(env)
@@ -967,7 +957,7 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         project_id, mode=mode, baseline_skill_version_id=skill_version_id,
         environment_id=environment_id, dataset_id=dataset_id,
         candidate_skill_version_id=(source.get("candidate_skill_version_id") if mode == "validate" and source else None), parent_run_id=parent_run_id,
-        baseline_run_id=baseline_run_id, budget=budget, acceptance=acceptance,
+        baseline_run_id=baseline_run_id, acceptance=acceptance,
         snapshot=snapshot, idempotency_key=idempotency_key,
         fingerprint=fingerprint)
     persistence.update_run(run["id"], rules_version=acceptance["rules_version"])

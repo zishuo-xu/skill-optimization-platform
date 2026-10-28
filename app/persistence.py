@@ -341,7 +341,7 @@ def _version_texts(version_id: str) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 _ENV_FIELDS = (
     "prompt", "model_config", "optimizer_config", "loader_config",
-    "run_config", "budget_config", "scorer_config", "acceptance_config",
+    "run_config", "scorer_config", "acceptance_config",
     "adapter_hash", "reproducibility_note",
 )
 
@@ -367,9 +367,9 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
         conn.execute(
             "INSERT INTO environments (id, project_id, parent_id, version_seq, status,"
             " prompt, model_config_json, optimizer_config_json, loader_config_json,"
-            " run_config_json, budget_config_json, scorer_config_json, acceptance_config_json,"
+            " run_config_json, scorer_config_json, acceptance_config_json,"
             " adapter_hash, hash, reproducibility_note, created_at, published_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 environment_id, project_id, parent_id, version_seq, status,
                 values["prompt"],
@@ -377,7 +377,6 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
                 _dumps(values["optimizer_config"] or {}),
                 _dumps(values["loader_config"] or {}),
                 _dumps(values["run_config"] or {}),
-                _dumps(values["budget_config"] or {}),
                 _dumps(values["scorer_config"] or {}),
                 _dumps(values["acceptance_config"] or {}),
                 values["adapter_hash"] or "",
@@ -655,7 +654,7 @@ def dataset_coverage(dataset_id: str, skill_ids: Iterable[str],
 # --------------------------------------------------------------------------- #
 # runs
 # --------------------------------------------------------------------------- #
-_RUN_JSON_FIELDS = {"stage_progress", "snapshot", "budget", "acceptance", "metrics", "cost"}
+_RUN_JSON_FIELDS = {"stage_progress", "snapshot", "acceptance", "metrics", "cost"}
 _RUN_PLAIN_FIELDS = {
     "status", "stage", "baseline_skill_version_id", "candidate_skill_version_id",
     "environment_id", "dataset_id", "parent_run_id", "baseline_run_id",
@@ -670,7 +669,6 @@ def create_run(project_id: str, *, mode: str, baseline_skill_version_id: str,
                environment_id: str, dataset_id: str,
                candidate_skill_version_id: str | None = None,
                parent_run_id: str | None = None, baseline_run_id: str | None = None,
-               budget: Mapping[str, Any] | None = None,
                acceptance: Mapping[str, Any] | None = None,
                snapshot: Mapping[str, Any] | None = None,
                idempotency_key: str | None = None,
@@ -682,13 +680,13 @@ def create_run(project_id: str, *, mode: str, baseline_skill_version_id: str,
         conn.execute(
             "INSERT INTO runs (id, project_id, mode, status, stage, snapshot_json,"
             " baseline_skill_version_id, candidate_skill_version_id, environment_id,"
-            " dataset_id, parent_run_id, baseline_run_id, budget_json, acceptance_json,"
+            " dataset_id, parent_run_id, baseline_run_id, acceptance_json,"
             " fingerprint, idempotency_key, queued_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run_id, project_id, mode, status, stage,
              _dumps(snapshot or {}), baseline_skill_version_id,
              candidate_skill_version_id, environment_id, dataset_id, parent_run_id,
-             baseline_run_id, _dumps(budget or {}), _dumps(acceptance or {}),
+             baseline_run_id, _dumps(acceptance or {}),
              fingerprint, idempotency_key, stamp, stamp),
         )
     return get_run(run_id)

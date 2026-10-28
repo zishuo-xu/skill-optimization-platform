@@ -37,10 +37,6 @@ class RunCancelled(Exception):
     pass
 
 
-class BudgetExhausted(Exception):
-    pass
-
-
 # --------------------------------------------------------------------------- #
 # public entry point
 # --------------------------------------------------------------------------- #
@@ -57,14 +53,6 @@ def execute_run(run_id: str) -> None:
         persistence.finish_run(run_id, status="cancelled",
                                decision_reason="用户取消运行",
                                metrics=run.get("metrics") or {})
-    except BudgetExhausted as exc:
-        emitter.issue("budget_exceeded", error_code="budget_exceeded",
-                      title="预算已用尽", message=str(exc),
-                      impact="停止派发新案例，验证可能不完整，不能接受候选。",
-                      next_action="提高预算或缩小数据集后新建运行。", level="error")
-        persistence.finish_run(run_id, status="completed", decision="inconclusive",
-                               decision_reason=f"证据不足：预算用尽（{exc}）",
-                               stage="decision")
     except AppError as exc:
         emitter.issue("run_failed", error_code=exc.code,
                       title="运行预检或配置失败", message=str(exc),
@@ -104,26 +92,25 @@ def _execute(run: Mapping[str, Any], emitter: EventEmitter) -> None:
     if not cases:
         raise AppError("数据集为空，无法运行")
     adapter = build_adapter(env.get("model_config") or {})
-    budget = _Budget(env.get("budget_config") or {})
+    usage_tracker = _UsageTracker()
     cancel = _CancellationToken(run["id"])
     started = time.monotonic()
     emitter.emit(event_types.RUN_STARTED, {
         "mode": run["mode"], "baseline_skill_version_id": run["baseline_skill_version_id"],
         "environment_id": env["id"], "dataset_id": dataset["id"],
         "baseline_cache_hit": bool(run.get("baseline_cache_hit")),
-        "budget": budget.describe(),
     })
     if run["mode"] == "validate":
-        _run_validate(run, env, dataset, cases, adapter, emitter, budget, cancel, started)
+        _run_validate(run, env, dataset, cases, adapter, emitter, usage_tracker, cancel, started)
     elif run["mode"] == "evaluate":
-        _run_evaluate(run, env, dataset, cases, adapter, emitter, budget, cancel, started)
+        _run_evaluate(run, env, dataset, cases, adapter, emitter, usage_tracker, cancel, started)
     elif run["mode"] == "baseline":
-        _run_baseline(run, env, dataset, cases, adapter, emitter, budget, cancel, started)
+        _run_baseline(run, env, dataset, cases, adapter, emitter, usage_tracker, cancel, started)
     elif run["mode"] == "final_test":
-        _run_final_test(run, env, dataset, cases, adapter, emitter, budget, cancel,
+        _run_final_test(run, env, dataset, cases, adapter, emitter, usage_tracker, cancel,
                         started)
     else:
-        _run_optimize(run, env, dataset, cases, adapter, emitter, budget, cancel,
+        _run_optimize(run, env, dataset, cases, adapter, emitter, usage_tracker, cancel,
                       started)
 
 
@@ -132,7 +119,7 @@ def _execute(run: Mapping[str, Any], emitter: EventEmitter) -> None:
 # --------------------------------------------------------------------------- #
 def _run_evaluate(run: Mapping[str, Any], env: Mapping[str, Any],
                   dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
-                  adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                  adapter: Any, emitter: EventEmitter, usage_tracker: "_UsageTracker",
                   cancel: "_CancellationToken", started: float) -> None:
     evaluation_cases = [case for case in cases
                         if (case.get("split") or "optimize") == "optimize"]
@@ -142,7 +129,7 @@ def _run_evaluate(run: Mapping[str, Any], env: Mapping[str, Any],
     _stage(emitter, "baseline_eval", "执行普通评测")
     metrics = _evaluate_split(
         run, env, evaluation_cases, phase="baseline", repeats=services._baseline_repeats(env), adapter=adapter,
-        emitter=emitter, budget=budget, cancel=cancel)
+        emitter=emitter, usage_tracker=usage_tracker, cancel=cancel)
     persistence.finish_run(
         run["id"], status="completed", decision=None, decision_reason="普通评测完成",
         metrics={"baseline": metrics, "candidate": None, "delta": None,
@@ -157,7 +144,7 @@ def _run_evaluate(run: Mapping[str, Any], env: Mapping[str, Any],
 
 def _run_baseline(run: Mapping[str, Any], env: Mapping[str, Any],
                   dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
-                  adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                  adapter: Any, emitter: EventEmitter, usage_tracker: "_UsageTracker",
                   cancel: "_CancellationToken", started: float) -> None:
     optimize_cases = [case for case in cases
                       if (case.get("split") or "optimize") == "optimize"]
@@ -167,7 +154,7 @@ def _run_baseline(run: Mapping[str, Any], env: Mapping[str, Any],
     _stage(emitter, "baseline_eval", "执行优化集基线评测")
     metrics = _evaluate_split(
         run, env, optimize_cases, phase="baseline", repeats=services._baseline_repeats(env), adapter=adapter,
-        emitter=emitter, budget=budget, cancel=cancel)
+        emitter=emitter, usage_tracker=usage_tracker, cancel=cancel)
     cost = _cost(metrics)
     persistence.finish_run(
         run["id"], status="completed", decision=None,
@@ -187,7 +174,7 @@ def _run_baseline(run: Mapping[str, Any], env: Mapping[str, Any],
 # --------------------------------------------------------------------------- #
 def _run_final_test(run: Mapping[str, Any], env: Mapping[str, Any],
                     dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
-                    adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                    adapter: Any, emitter: EventEmitter, usage_tracker: "_UsageTracker",
                     cancel: "_CancellationToken", started: float) -> None:
     final_cases = [case for case in cases
                    if (case.get("split") or "optimize") == "final_test"]
@@ -198,7 +185,7 @@ def _run_final_test(run: Mapping[str, Any], env: Mapping[str, Any],
     repeats = 1
     metrics = _evaluate_split(
         run, env, final_cases, phase="final", repeats=repeats, adapter=adapter,
-        emitter=emitter, budget=budget, cancel=cancel)
+        emitter=emitter, usage_tracker=usage_tracker, cancel=cancel)
     cost = _cost(metrics)
     persistence.finish_run(
         run["id"], status="completed", decision=None,
@@ -218,7 +205,7 @@ def _run_final_test(run: Mapping[str, Any], env: Mapping[str, Any],
 # --------------------------------------------------------------------------- #
 def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                   dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
-                  adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                  adapter: Any, emitter: EventEmitter, usage_tracker: "_UsageTracker",
                   cancel: "_CancellationToken", started: float) -> None:
     run_id = run["id"]
     optimize_cases = [case for case in cases
@@ -259,7 +246,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         _stage(emitter, "baseline_eval", "执行优化集基线评测")
         baseline_metrics = _evaluate_split(
             run, env, optimize_cases, phase="baseline", repeats=services._baseline_repeats(env),
-            adapter=adapter, emitter=emitter, budget=budget, cancel=cancel)
+            adapter=adapter, emitter=emitter, usage_tracker=usage_tracker, cancel=cancel)
 
     # -- error analysis ---------------------------------------------------
     _stage(emitter, "error_analysis", "聚合失败证据（仅优化集）")
@@ -300,7 +287,6 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         "failures": failures,
         "passing_summary": {"count": len(passing),
                             "cases": _passing_examples(optimize_cases, passing)},
-        "budget_remaining": {"tokens": budget.remaining_tokens()},
         "optimizer_config": env.get("optimizer_config") or {},
         "model_config": env.get("optimizer_config") or {},
         "rules_version": config.ACCEPTANCE_RULES_VERSION,
@@ -327,14 +313,12 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                           level="warning", stage="candidate_generation")
     if cancel.cancelled():
         raise RunCancelled()
-    budget.ensure_available()
     if optimizer_adapter is not None:
-        optimizer_adapter = _ControlledOptimizer(optimizer_adapter, cancel, budget)
+        optimizer_adapter = _ControlledOptimizer(optimizer_adapter, cancel, usage_tracker)
     outcome = optimizer.generate_candidate(
-        context, optimizer_adapter, emitter.emit, budget=budget.remaining_tokens())
+        context, optimizer_adapter, emitter.emit)
     if cancel.cancelled():
         raise RunCancelled()
-    budget.ensure_available()
     if outcome.get("status") != "ok":
         _finish_inconclusive(
             run, emitter,
@@ -408,7 +392,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     _stage(emitter, "retest", "在测试集重跑候选")
     candidate_optimize = _evaluate_split(
         run, env, optimize_cases, phase="candidate", repeats=services._baseline_repeats(env),
-        adapter=adapter, emitter=emitter, budget=budget, cancel=cancel,
+        adapter=adapter, emitter=emitter, usage_tracker=usage_tracker, cancel=cancel,
         skill_version_id=candidate_version["id"])
     metrics = {"baseline": baseline_metrics, "candidate": candidate_optimize,
                "delta": services.delta_metrics(baseline_metrics, candidate_optimize),
@@ -416,7 +400,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     persistence.finish_run(
         run_id, status="completed", decision=None,
         decision_reason="候选已完成测试集重跑，待独立验收",
-        metrics=metrics, cost={"tokens": budget.tokens_used, "amount": None,
+        metrics=metrics, cost={"tokens": usage_tracker.tokens_used, "amount": None,
                                "duration_ms": int((time.monotonic() - started) * 1000)},
         candidate_skill_version_id=candidate_version["id"], stage="decision")
     emitter.emit(event_types.RUN_COMPLETED, {
@@ -427,7 +411,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
 
 def _run_validate(run: Mapping[str, Any], env: Mapping[str, Any],
                   dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
-                  adapter: Any, emitter: EventEmitter, budget: "_Budget",
+                  adapter: Any, emitter: EventEmitter, usage_tracker: "_UsageTracker",
                   cancel: "_CancellationToken", started: float) -> None:
     run_id = run["id"]
     validation_cases = [case for case in cases
@@ -465,26 +449,15 @@ def _run_validate(run: Mapping[str, Any], env: Mapping[str, Any],
     repeats = _validation_repeats(env)
     validation_complete = True
     for repeat in range(1, repeats + 1):
-        try:
-            _evaluate_split(
-                run, env, validation_cases, phase="validation_baseline",
-                repeats=1, adapter=adapter, emitter=emitter, budget=budget,
-                cancel=cancel, repeat_index=repeat)
-            _evaluate_split(
-                run, env, validation_cases, phase="validation_candidate",
-                repeats=1, adapter=adapter, emitter=emitter, budget=budget,
-                cancel=cancel, skill_version_id=candidate_version["id"],
-                repeat_index=repeat)
-        except BudgetExhausted as exc:
-            validation_complete = False
-            emitter.issue(event_types.BUDGET_EXCEEDED,
-                          error_code="budget_exceeded",
-                          title="验证复测预算不足",
-                          message=str(exc),
-                          impact="验证不完整，本轮只能给出证据不足结论。",
-                          next_action="提高预算后新建运行。",
-                          level="error", stage="retest")
-            break
+        _evaluate_split(
+            run, env, validation_cases, phase="validation_baseline",
+            repeats=1, adapter=adapter, emitter=emitter, usage_tracker=usage_tracker,
+            cancel=cancel, repeat_index=repeat)
+        _evaluate_split(
+            run, env, validation_cases, phase="validation_candidate",
+            repeats=1, adapter=adapter, emitter=emitter, usage_tracker=usage_tracker,
+            cancel=cancel, skill_version_id=candidate_version["id"],
+            repeat_index=repeat)
     rows = persistence.get_case_results_for_run(run_id)
     validation_baseline_rows = [row for row in rows
                                 if row["phase"] == "validation_baseline"]
@@ -615,7 +588,7 @@ def _record_candidate(run_id: str, skill_version_id: str | None,
 def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
                dataset: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
                emitter: EventEmitter, *, mode: str) -> None:
-    emitter.set_stage("preflight", message="检查文件、映射、环境、数据、预算与模拟覆盖")
+    emitter.set_stage("preflight", message="检查文件、映射、环境、数据与模拟覆盖")
     checks: list[dict[str, Any]] = []
 
     def check(name: str, ok: bool, detail: str, *, level: str = "info",
@@ -645,12 +618,6 @@ def _preflight(run: Mapping[str, Any], env: Mapping[str, Any],
     check("dataset_splits", split_ok,
           f"数据划分: {', '.join(sorted(splits))}", level="error",
           next_action="补充缺少的数据划分并发布新数据集版本。")
-    budget_config = env.get("budget_config") or {}
-    check("budget_configured",
-          bool(budget_config.get("max_tokens") or budget_config.get("max_cost")
-               or budget_config.get("max_seconds")),
-          "预算上限已冻结" if budget_config else "未设置预算上限", level="error",
-          next_action="在执行环境配置 Token/金额/时长上限。")
     relevant_splits = required
     fixture_cases = _fixture_gap_cases(
         [case for case in cases
@@ -753,7 +720,7 @@ def _passing_examples(cases: Sequence[Mapping[str, Any]],
 def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                     cases: Sequence[Mapping[str, Any]], *, phase: str,
                     repeats: int, adapter: Any, emitter: EventEmitter,
-                    budget: "_Budget", cancel: "_CancellationToken",
+                    usage_tracker: "_UsageTracker", cancel: "_CancellationToken",
                     skill_version_id: str | None = None,
                     repeat_index: int | None = None) -> dict[str, Any]:
     run_id = run["id"]
@@ -790,11 +757,6 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                                         manifest, loader_config, run_config, cancel)
         request_payload.update(stage=emitter.stage, split=case.get("split"),
                                variant=case.get("variant") or "main", repeat_index=repeat)
-        if budget.max_seconds is not None:
-            request_payload["model_config"] = {
-                **request_payload["model_config"],
-                "deadline_monotonic": budget.started + float(budget.max_seconds),
-            }
         try:
             actual = execution.run_case(request_payload, adapter, emit_mapping)
         except Exception as exc:  # noqa: BLE001 - isolate case failures
@@ -811,7 +773,7 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
             }
         score, judge_usage = _score_with_judge(
             case, actual, env, compare_rules, value_judge, emitter, emit_mapping,
-            repeat=repeat, cancel=cancel, budget=budget)
+            repeat=repeat, cancel=cancel)
         persistence.save_case_result(
             run_id, case["case_id"], phase, variant="main", repeat_index=repeat,
             split=case.get("split") or phase,
@@ -867,13 +829,8 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
         for case in cases:
             if cancel.cancelled():
                 break
-            try:
-                budget.ensure_available()
-            except BudgetExhausted:
-                cancel.set_budget_exhausted()
-                break
             futures[executor.submit(run_one, case, repeat)] = (case, repeat)
-        if cancel.cancelled() or cancel.budget_exhausted():
+        if cancel.cancelled():
             break
     try:
         for future in as_completed(futures):
@@ -898,21 +855,19 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                 if isinstance(value, (int, float)):
                     usage_total[key] += int(value)
             duration_total += int(entry["actual"].get("duration_ms") or 0)
-            budget.consume(usage)
+            usage_tracker.consume(usage)
             judge_usage = entry.get("judge_usage") or {}
             for key in ("input_tokens", "output_tokens"):
                 value = judge_usage.get(key)
                 if isinstance(value, (int, float)):
                     usage_total[key] += int(value)
-            budget.consume(judge_usage)
+            usage_tracker.consume(judge_usage)
             completed += 1
             emitter.progress(completed=completed, total=total)
     finally:
         executor.shutdown(wait=True)
     if cancel.cancelled():
         raise RunCancelled()
-    if cancel.budget_exhausted():
-        raise BudgetExhausted("运行预算已用尽，部分案例未执行")
     metrics = evaluation.aggregate_metrics(
         [(entry["case"], entry["score"]) for entry in rows],
         planned=len(cases) * len(repeat_indices),
@@ -931,8 +886,7 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
 def _score_with_judge(case: Mapping[str, Any], actual: Mapping[str, Any],
                       env: Mapping[str, Any], compare_rules: Any,
                       value_judge: "judge_mod.ValueJudge | None", emitter: EventEmitter,
-                      emit_mapping: Any, *, repeat: int, cancel: Any,
-                      budget: "_Budget") -> tuple[dict[str, Any], dict[str, Any]]:
+                      emit_mapping: Any, *, repeat: int, cancel: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Score a case; values needing semantic judgment go to the judge model."""
     expected = case.get("expected") or {}
     score = evaluation.score_case(expected, actual, compare_rules,
@@ -951,8 +905,6 @@ def _score_with_judge(case: Mapping[str, Any], actual: Mapping[str, Any],
         return emit_mapping(tagged)
 
     runtime: dict[str, Any] = {"cancel_check": cancel.cancelled}
-    if budget.max_seconds is not None:
-        runtime["deadline_monotonic"] = budget.started + float(budget.max_seconds)
     try:
         verdicts, stats = value_judge.judge(pending, query=case.get("query"),
                                             emit=judge_emit, runtime=runtime)
@@ -1170,75 +1122,39 @@ def _cost(metrics: Mapping[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# budget / cancellation
+# usage tracking / cancellation
 # --------------------------------------------------------------------------- #
 class _ControlledOptimizer:
-    """Apply runtime controls without modifying the frozen environment config."""
+    """Apply cancellation and track usage without changing frozen configuration."""
 
-    def __init__(self, adapter: Any, cancel: Any, budget: Any):
-        self.adapter, self.cancel, self.budget = adapter, cancel, budget
+    def __init__(self, adapter: Any, cancel: Any, usage_tracker: Any):
+        self.adapter, self.cancel, self.usage_tracker = adapter, cancel, usage_tracker
 
     def invoke(self, messages: Any, model_config: Mapping[str, Any], tools: Any) -> Any:
         runtime_config = dict(model_config)
         runtime_config["cancel_check"] = self.cancel.cancelled
-        if self.budget.max_seconds is not None:
-            runtime_config["deadline_monotonic"] = (
-                self.budget.started + float(self.budget.max_seconds))
-        remaining = self.budget.remaining_tokens()
-        if remaining is not None:
-            runtime_config["max_tokens"] = min(
-                int(runtime_config.get("max_tokens") or remaining), remaining)
         result = self.adapter.invoke(messages, runtime_config, tools)
         if isinstance(result, Mapping):
-            self.budget.consume(result.get("usage"))
+            self.usage_tracker.consume(result.get("usage"))
         return result
 
 
-class _Budget:
-    def __init__(self, config_payload: Mapping[str, Any]):
-        self.max_tokens = config_payload.get("max_tokens")
-        self.max_cost = config_payload.get("max_cost")
-        self.max_seconds = config_payload.get("max_seconds")
+class _UsageTracker:
+    def __init__(self):
         self.tokens_used = 0
-        self.cost_used = 0.0
-        self.started = time.monotonic()
         self._lock = threading.Lock()
 
     def consume(self, usage: Mapping[str, Any] | None) -> None:
         usage = usage or {}
-        tokens = 0
-        for key in ("input_tokens", "output_tokens"):
-            value = usage.get(key)
-            if isinstance(value, (int, float)):
-                tokens += int(value)
+        tokens = sum(int(value) for key in ("input_tokens", "output_tokens")
+                     if isinstance((value := usage.get(key)), (int, float)))
         with self._lock:
             self.tokens_used += tokens
-            self.cost_used += (tokens / 1000.0) * (
-                config.PRICE_PER_1K_INPUT_TOKENS or 0)
-
-    def remaining_tokens(self) -> int | None:
-        if self.max_tokens is None:
-            return None
-        return max(0, int(self.max_tokens) - self.tokens_used)
-
-    def ensure_available(self) -> None:
-        if self.max_tokens is not None and self.tokens_used >= int(self.max_tokens):
-            raise BudgetExhausted("Token 预算已用尽")
-        if self.max_seconds is not None and \
-                time.monotonic() - self.started >= float(self.max_seconds):
-            raise BudgetExhausted("运行时长预算已用尽")
-        if self.max_cost is not None and self.cost_used >= float(self.max_cost):
-            raise BudgetExhausted("金额预算已用尽")
-
-    def describe(self) -> dict[str, Any]:
-        return {"max_tokens": self.max_tokens, "max_cost": self.max_cost,
-                "max_seconds": self.max_seconds}
 
 
 class _CancellationToken:
     def __init__(self, run_id: str):
         self.run_id = run_id
-        self._budget_exhausted = False
         self._cancelled = False
         self._last_check = 0.0
 
@@ -1256,9 +1172,3 @@ class _CancellationToken:
         if run.get("status") in ("cancel_requested", "cancelled"):
             self._cancelled = True
         return self._cancelled
-
-    def set_budget_exhausted(self) -> None:
-        self._budget_exhausted = True
-
-    def budget_exhausted(self) -> bool:
-        return self._budget_exhausted

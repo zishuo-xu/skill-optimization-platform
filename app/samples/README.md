@@ -2,7 +2,7 @@
 
 - `skill_package/`：主 `SKILL.md` + `references/` 下 21 个子技能 + `manifest.json`（稳定 skill_id → 路径映射）。
 - `system_prompt.md`：需求文档 §31 的固定业务系统 Prompt 模板。
-- `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/预算/接受规则等）。
+- `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/接受规则等）。
 - `image_skill_package/`：主技能负责语流理解与路由，13 个子技能负责修图参数契约。
   平台以 `select_skill(skill_id)` 选择子技能并返回正文，内部映射到 `path + skillName`；业务调用为 `functionName + skillName + arguments`，
   `arguments` 包含 `method / script / request(query,totalSteps,currentStep,source?) / args`。标准包字段完整，不再故意缺参数。
@@ -41,7 +41,7 @@ fixtures 用 `code: 0` 模拟成功，非零码及 `message` 模拟业务失败�
 需要演示失败修复时可使用任务管理示例或在隔离测试中显式构造缺陷变体。
 
 已有本地修图项目可执行 `.venv/bin/python -m app.seed --refresh-image`：
-发布新的 Skill/数据集版本，保留业务模型、优化模型、预算及所有历史；该操作不调用模型。
+发布新的 Skill/数据集版本，保留业务模型、优化模型及所有历史；该操作不调用模型。
 不要用 `--reset` 覆盖自己的接入配置。
 
 设计与验证边界见 `docs/IMAGE_SKILL_EXPANSION.md`。
@@ -54,4 +54,5 @@ fixtures 用 `code: 0` 模拟成功，非零码及 `message` 模拟业务失败�
 两者都遵循统一 `ModelAdapter` 接口，替换为 `openai_http` 或 `enterprise_ws` 即可接入真实模型。
 不同适配器的成绩不可混用（见需求 §41/§42）。
 
-修图示例默认单次运行预算为 1,000,000 tokens，覆盖默认三轮独立配对验收。`--refresh-image` 保留已有预算；旧项目若仍为 300,000，应在配置中调整后再正式验收。真实模型的实际用量取决于模型与请求。冻结启发式不负责修复 v3 JSON 参数契约；需要优化此类错误时接入优化模型。
+
+运行不设置总 Token、金额或总时长预算；实际用量仍记录。单次请求超时、案例超时、最大模型调用次数和上下文长度限制仍生效。冻结启发式不负责修复 v3 JSON 参数契约，此类优化需接入优化模型。

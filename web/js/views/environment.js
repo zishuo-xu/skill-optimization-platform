@@ -1,4 +1,4 @@
-/** 执行环境：业务 Prompt（默认折叠）、业务/优化模型、工具与预算折叠、检查接入配置、发布后只读。 */
+/** 执行环境：业务 Prompt（默认折叠）、业务/优化模型、工具折叠、检查接入配置、发布后只读。 */
 
 import { api } from '../api_v3.js';
 import { h, mount, icon } from '../dom.js';
@@ -20,7 +20,7 @@ import {
   kvList,
   jsonViewer,
 } from '../components.js';
-import { formatDateTime, formatTokens } from '../format.js';
+import { formatDateTime } from '../format.js';
 
 const DEFAULT_PROMPT = `你是使用 Skill 包完成用户任务的执行 Agent。
 
@@ -223,7 +223,6 @@ function defaults() {
       base_repeats: 1,
       validation_repeats: 3,
     },
-    budget_config: { max_tokens: 200000, max_cost: null, max_seconds: 1800 },
     scorer_config: { version: 'score-v1' },
     acceptance_config: { validation_repeats: 3, require_critical_no_regression: true },
     reproducibility_note: '',
@@ -274,7 +273,6 @@ function toForm(env) {
     if (config.provider === 'openai_http') config.url = '';
   }
   const runConfig = env.run_config || {};
-  const budgetConfig = env.budget_config || {};
   const acceptanceConfig = env.acceptance_config || {};
   const scorerConfig = env.scorer_config || {};
   return {
@@ -291,13 +289,6 @@ function toForm(env) {
       case_timeout_s: runConfig.case_timeout_s ?? base.run_config.case_timeout_s,
       base_repeats: runConfig.base_repeats ?? runConfig.repeats_baseline ?? 1,
       validation_repeats: runConfig.validation_repeats ?? runConfig.repeats_validation ?? 3,
-    },
-    budget_config: {
-      ...base.budget_config,
-      ...budgetConfig,
-      max_tokens: budgetConfig.max_tokens ?? null,
-      max_cost: budgetConfig.max_cost ?? null,
-      max_seconds: budgetConfig.max_seconds ?? budgetConfig.max_duration_s ?? 1800,
     },
     scorer_config: {
       ...base.scorer_config,
@@ -572,18 +563,6 @@ export default async function environmentView(container, ctx) {
       base_repeats: num(form.run_config.base_repeats, 1),
       validation_repeats: num(form.acceptance_config.validation_repeats, 3),
     };
-    const budgetConfig = {
-      ...form.budget_config,
-      max_tokens: num(form.budget_config.max_tokens, null),
-      max_cost: num(form.budget_config.max_cost, null),
-      max_seconds: num(form.budget_config.max_seconds, null),
-    };
-    if (!budgetConfig.max_tokens && !budgetConfig.max_cost) {
-      errors['budget_config.max_tokens'] = '必须设置 Token 或金额上限';
-    }
-    if (!budgetConfig.max_seconds || budgetConfig.max_seconds <= 0) {
-      errors['budget_config.max_seconds'] = '必须设置最长运行时间';
-    }
     const acceptanceConfig = {
       ...form.acceptance_config,
       rules_version: 'accept-v1',
@@ -648,7 +627,6 @@ export default async function environmentView(container, ctx) {
       optimizer_config: optimizerConfig,
       loader_config: loaderConfig,
       run_config: runConfig,
-      budget_config: budgetConfig,
       scorer_config: scorerConfig,
       acceptance_config: acceptanceConfig,
       reproducibility_note: form.reproducibility_note || '',
@@ -1461,15 +1439,6 @@ export default async function environmentView(container, ctx) {
     });
   }
 
-  function budgetFacts() {
-    const budget = state.form.budget_config || {};
-    return factsList([
-      { label: 'Token 上限', value: budget.max_tokens ? formatTokens(budget.max_tokens) : '未设置' },
-      { label: '金额上限', value: budget.max_cost ? `¥ ${budget.max_cost}` : '未设置（以 Token 为准）' },
-      { label: '最长运行时间', value: secondsText(budget.max_seconds) },
-    ]);
-  }
-
   const COMPARE_MODE_OPTIONS = [
     { value: 'semantic', label: '语义（大模型判断）' },
     { value: 'lenient', label: '宽松（字段一致，值归一化后相等）' },
@@ -1622,46 +1591,6 @@ export default async function environmentView(container, ctx) {
     });
   }
 
-  function budgetSection() {
-    const editable = EDITABLE();
-    const budget = state.form.budget_config || {};
-    const body = editable
-      ? h(
-          'div.stack',
-          null,
-          h(
-            'div.form-grid',
-            null,
-            inputFor('budget_config.max_tokens', {
-              label: 'Token 上限',
-              type: 'number',
-              hint: 'Token 与金额至少设置一项；金额未知时以 Token 硬限制为准。',
-            }),
-            inputFor('budget_config.max_seconds', {
-              label: '最长运行时间（秒）',
-              type: 'number',
-              hint: '启动后冻结；耗尽会停止派发并把结论标记为证据不足。',
-            })
-          ),
-          advancedSettings(
-            '高级：金额上限',
-            inputFor('budget_config.max_cost', {
-              label: '金额上限（CNY）',
-              type: 'number',
-              hint: '配置了 Token 单价后才生效；留空表示仅使用 Token/时长限制。',
-            })
-          )
-        )
-      : budgetFacts();
-    return sectionCard({
-      title: '预算',
-      description: `Token ${budget.max_tokens ? formatTokens(budget.max_tokens) : '未设置'} · ${secondsText(budget.max_seconds)}`,
-      collapsible: true,
-      open: Boolean(state.fieldErrors['budget_config.max_tokens'] || state.fieldErrors['budget_config.max_seconds']),
-      body,
-    });
-  }
-
   function acceptanceFacts() {
     const acceptance = state.form.acceptance_config || {};
     return h(
@@ -1709,7 +1638,6 @@ export default async function environmentView(container, ctx) {
     const config = form.model_config || {};
     const optimizer = form.optimizer_config || {};
     const run = form.run_config || {};
-    const budget = form.budget_config || {};
     const acceptance = form.acceptance_config || {};
     const items = [
       {
@@ -1737,11 +1665,6 @@ export default async function environmentView(container, ctx) {
         hint: `单案例 ${secondsText(run.case_timeout_s ?? 120)} · 日常测试 ${run.base_repeats ?? 1} 次`,
       },
       {
-        label: '预算',
-        value: budget.max_tokens ? `${formatTokens(budget.max_tokens)} Token` : '未设置',
-        hint: `最长 ${secondsText(budget.max_seconds)}`,
-      },
-      {
         label: '判定',
         value: 'accept-v1',
         hint: `正式验收阈值冻结 · ${acceptance.validation_repeats ?? 3} 次配对验证`,
@@ -1751,7 +1674,7 @@ export default async function environmentView(container, ctx) {
       'div.env-snapshot',
       null,
       h('span.env-snapshot__label', { text: '当前环境摘要' }),
-      h('span.env-snapshot__value', { text: `${items[0].value} · 优化器 ${items[1].value} · 预算 ${items[4].value}` }),
+      h('span.env-snapshot__value', { text: `${items[0].value} · 优化器 ${items[1].value}` }),
       h('span.env-snapshot__hint', { text: '详细参数在下方配置区；启动运行时会再次展示冻结快照。' })
     );
   }
@@ -1811,7 +1734,7 @@ export default async function environmentView(container, ctx) {
     const hasJudge = ['openai_http', 'enterprise_ws'].includes(state.form.judge_config?.provider);
     const groups = [
       ['执行与优化', 'Prompt 定义任务，执行模型运行 Skill，优化模型根据测试结果改进 Skill。', [promptSection(), businessModelSection(), optimizerSection()]],
-      ['评价与用量', '默认使用已保存的评分方式和预算；自由文本需要语义判断时再配置评分模型。', [scoringRulesSection(), ...(needsJudge || hasJudge ? [judgeSection()] : []), budgetSection()]],
+      ['评价', '默认使用已保存的评分方式；自由文本需要语义判断时再配置评分模型。', [scoringRulesSection(), ...(needsJudge || hasJudge ? [judgeSection()] : [])]],
       ['高级设置', '加载方式、并发和验收规则通常无需调整。', [advancedSettings('高级运行设置', h('div.stack', null, loaderSection(), runParamsSection(), acceptanceSection()))]],
     ];
     const children = [

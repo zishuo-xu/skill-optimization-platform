@@ -22,7 +22,6 @@ import {
   formatDateTime,
   formatPercent,
   formatDate,
-  formatTokens,
   metricsSummary,
   modeLabel,
   shortenId,
@@ -359,11 +358,9 @@ export default async function overviewView(container, ctx) {
           const id = chosen.environment.id;
           const env = await api.getEnvironment(id).catch(() => chosen.environment);
           if (selects.environment.value !== id) return;
-          const budget = env.budget_config || {}, config = env.run_config || {};
+          const config = env.run_config || {};
           mount(advanced, kvList([
             { label: '模型', value: env.model_config?.model || env.model_config?.provider || '未配置' },
-            { label: 'Token 预算', value: budget.max_tokens ? `上限 ${formatTokens(budget.max_tokens)} Token` : '未设置' },
-            { label: '金额预算', value: budget.max_cost ? `上限 ${budget.max_cost}` : '以 Token 限制为准' },
           ]), h('details', null, h('summary', { text: '高级参数与正式验收条件' }),
             kvList([{ label: '并发', value: `${config.concurrency || 3} 个案例` }, { label: '调用上限', value: `${config.max_model_calls || 12} 次` }, { label: '超时', value: `${config.case_timeout_s || 120} 秒` }]),
             h('p.small.muted', { text: '以下条件仅在正式验收时用于判定。' }),

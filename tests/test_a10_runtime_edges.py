@@ -1,4 +1,4 @@
-"""A10: 澄清、无工具、模拟返回缺失、预算耗尽与基础设施错误处理。"""
+"""A10: 澄清、无工具、模拟返回缺失、完整运行与基础设施错误处理。"""
 
 from __future__ import annotations
 
@@ -65,19 +65,13 @@ def test_clarify_and_no_action_scoring():
     assert no_action["action"] == "no_action"
 
 
-def test_budget_exhaustion_is_inconclusive_not_accept():
-    demo = create_demo_project(dataset_content=_edge_dataset(),
-                              env_overrides={"budget_config": {
-                                  "max_tokens": 1, "max_seconds": 1800,
-                                  "max_cost": None}})
-    run = complete_run(demo, "optimize")
+def test_run_executes_all_cases_without_run_budget():
+    demo = create_demo_project(dataset_content=_edge_dataset())
+    run = complete_run(demo, "baseline")
     assert run["status"] == "completed"
-    assert run["decision"] == "inconclusive"
-    assert "预算" in (run.get("decision_reason") or "")
+    assert len(persistence.get_case_results_for_run(run["id"])) == 3
     events = persistence.list_events(run["id"], limit=2000)
-    assert any(event["type"] in ("budget_exceeded", "run_failed") for event in events)
-    assert run["stage"] != "running"
-    # No permanently running step.
+    assert not any(event["type"] == "budget_exceeded" for event in events)
     assert persistence.claim_run("audit-worker") is None
 
 

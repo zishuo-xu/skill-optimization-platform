@@ -380,7 +380,7 @@ export default async function versionsView(container, ctx) {
         fromId ? api.getEnvironment(fromId) : Promise.resolve(null),
         api.getEnvironment(toId),
       ]);
-      const fields = ['prompt', 'model_config', 'optimizer_config', 'loader_config', 'run_config', 'budget_config', 'scorer_config', 'acceptance_config'];
+      const fields = ['prompt', 'model_config', 'optimizer_config', 'loader_config', 'run_config', 'scorer_config', 'acceptance_config'];
       return h(
         'div.stack',
         null,

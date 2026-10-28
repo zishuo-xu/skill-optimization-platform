@@ -280,7 +280,6 @@ class ModelAdapter:                     # app/adapters/base.py
   "failures": [{"case_id": "...", "query": "...", "tags": [...], "expected": {...},
                 "actual": {...}, "score": {...}, "events": [...]}],
   "passing_summary": {"count": 20, "sample_case_ids": [...]},
-  "budget_remaining": {"tokens": 12000},
   "diagnosis_hints": {...}
 }
 ```
@@ -307,7 +306,7 @@ class ModelAdapter:                     # app/adapters/base.py
   失败时区分 `optimizer_empty_response` / `optimizer_parse_failed`；
   `optimizer.heuristic_candidate(context) -> dict | None`（无模型/解析失败回退，
   但仍记录 `fallback_started`；无修改记 `fallback_no_change`）。
-- `optimizer.generate_candidate(context, adapter, emit, budget) -> dict`：
+- `optimizer.generate_candidate(context, adapter, emit) -> dict`：
   返回 `{"status": "ok"|"no_patch"|"failed", "diagnosis":..., "hypotheses":[],
   "changed_files":[], "patch":{"summary","edits":[]}, "expected_effect":"",
   "risk_cases":[], "error_code": null, "used_fallback": false, "raw_output": ""}`。
@@ -394,7 +393,7 @@ retest → decision`（baseline 模式只跑 baseline_eval；final_test 模式�
 运行对象（`GET /runs/{rid}`）关键字段：
 `id, project_id, mode, status, stage, stage_progress:{stage, completed, total,
 current_case_ids, started_at, last_activity_at, message}, metrics:{baseline, candidate,
-delta, diagnostics}, decision, decision_reason, acceptance, budget, cost,
+delta, diagnostics}, decision, decision_reason, acceptance, cost,
 snapshot:{skill_version, environment, dataset, scorer_version, fingerprints},
 candidate:{...}, case_stats, created_at/started_at/finished_at`。
 `status ∈ queued|running|cancel_requested|completed|failed|cancelled|interrupted`；
@@ -404,7 +403,7 @@ candidate:{...}, case_stats, created_at/started_at/finished_at`。
 
 - 中文、炭灰深色、桌面优先 1280–1920；左导航 + 顶栏 + 单主视图；路由用 hash。
 - 页面：项目列表、项目概览、Skill 包（240px 文件树 + 编辑器 + 草稿/发布）、
-  执行环境（业务 Prompt 默认折叠、模型 API/Python 切换、工具与预算折叠、发布
+  执行环境（业务 Prompt 默认折叠、模型 API/Python 切换、工具配置折叠、发布
   后只读）、数据集（导入预检弹窗、版本、筛选表格、案例侧栏表单/JSON 切换）、
   运行详情（四标签页 + 运行记录 UX §44–§50）、版本记录（比较/设为当前/下载）。
 - 运行详情默认行为：运行中首次进入打开“运行记录”；终态再次进入默认“结果概览”；
@@ -424,11 +423,11 @@ candidate:{...}, case_stats, created_at/started_at/finished_at`。
 - 禁止真实外网调用；假模型/假网关必须走统一适配接口。
 - 验收 A01–A20 见需求文档 §35 与 §43/§54；Lead 负责 A01/A02/A08/A09/A14/A19/A20
   集成测试，T1 负责 A03/A04/A05，T2 负责 A11/A12/A13，T3 负责 A06/A07/A10
-  （A10 涉及执行器与预算，可与 Lead 合测），T4 负责 A15/A16/A17/A18 的前端
+  （A10 涉及执行器与取消，可与 Lead 合测），T4 负责 A15/A16/A17/A18 的前端
   可验证部分（可用 DOM 快照/接口断言），集成断言由 Lead 补。
 
 ### 原生技能选择与自动加载（select-load-v1）
 
 `select_skill` 记录路由后自动读取其 manifest 映射文件，首次工具返回携带正文；同时产生 `skill_selected` 与 `skill_read`（`source=select_skill`）事件。预加载的正文和同一案例内已读取的正文不重复注入。显式 `read_skill` 仍受支持，重复读取产生 `cached=true` 的审计事件，并返回已加载确认。文本路由协议保持独立，不借读取补记选择。
 
-自动加载复用原有路径、文件大小和编码校验；运行时协议说明参与初始上下文预算。新加载策略进入运行缓存指纹，旧基线不会被自动复用。
+自动加载复用原有路径、文件大小和编码校验；运行时协议说明参与初始上下文长度检查。新加载策略进入运行缓存指纹，旧基线不会被自动复用。

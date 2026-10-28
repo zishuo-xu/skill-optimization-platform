@@ -59,7 +59,7 @@ def test_legacy_heartbeat_is_normalized_for_business_and_optimizer():
         assert "heartbeat_s" not in demo["environment"][group]
 
 
-def test_optimizer_receives_cancel_deadline_and_counts_usage_without_mutating_frozen_config():
+def test_optimizer_preserves_output_limit_and_counts_usage():
     seen = {}
     class FakeAdapter:
         def invoke(self, messages, config, tools):
@@ -68,14 +68,14 @@ def test_optimizer_receives_cancel_deadline_and_counts_usage_without_mutating_fr
     class Cancel:
         def cancelled(self):
             return False
-    budget = single_round._Budget({"max_tokens": 20, "max_seconds": 4})
+    usage = single_round._UsageTracker()
     frozen = {"max_tokens": 100}
-    single_round._ControlledOptimizer(FakeAdapter(), Cancel(), budget).invoke([], frozen, [])
+    single_round._ControlledOptimizer(FakeAdapter(), Cancel(), usage).invoke([], frozen, [])
     assert frozen == {"max_tokens": 100}
-    assert seen["max_tokens"] == 20
+    assert seen["max_tokens"] == 100
     assert seen["cancel_check"]() is False
-    assert time.monotonic() < seen["deadline_monotonic"] <= budget.started + 4
-    assert budget.remaining_tokens() == 9
+    assert "deadline_monotonic" not in seen
+    assert usage.tokens_used == 11
 
 
 def test_configuration_check_accepts_full_http_endpoint_without_base_url():

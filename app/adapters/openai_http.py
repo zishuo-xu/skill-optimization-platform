@@ -210,7 +210,7 @@ class OpenAIHTTPAdapter(ModelAdapter):
                             "issue": event_types.issue(
                                 exc.code, "模型调用失败，正在重试",
                                 exc.message,
-                                impact="本次调用未产生结果，重试会计入预算；不会重复计分。",
+                                impact="本次调用未产生结果，重试会产生额外用量；不会重复计分。",
                                 next_action="等待自动重试；若持续失败请检查模型服务。",
                                 technical_detail={"attempt": attempt,
                                                   "max_attempts": total_attempts}),

@@ -268,7 +268,7 @@ class EnterpriseWSAdapter(ModelAdapter):
                             "issue": event_types.issue(
                                 exc.code, "模型调用失败，正在新建连接重试",
                                 exc.message,
-                                impact="重试会重新发送请求并计入预算；不会拼接中断前的半成品输出。",
+                                impact="重试会重新发送请求并产生额外用量；不会拼接中断前的半成品输出。",
                                 next_action="等待自动重试；连续失败请检查网关。",
                                 technical_detail={"attempt": attempt,
                                                   "max_attempts": total_attempts}),

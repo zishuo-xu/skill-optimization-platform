@@ -45,8 +45,7 @@ class Emitter:
 
 def test_preflight_blocks_semantic_without_judge(monkeypatch):
     monkeypatch.setattr(single_round.persistence, "skill_version_integrity", lambda _: {"ok": True})
-    env = {"scorer_config": {"compare": {"mode": "semantic"}},
-           "budget_config": {"max_tokens": 100}}
+    env = {"scorer_config": {"compare": {"mode": "semantic"}}}
     with pytest.raises(AppError, match="语义比较需要配置评分模型"):
         single_round._preflight({"baseline_skill_version_id": "v", "acceptance": {}}, env, {},
                                 [{"case_id": "a", "expected": {}}], Emitter(), mode="optimize")
