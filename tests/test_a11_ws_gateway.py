@@ -353,6 +353,12 @@ def test_ws_gateway_runs_case_with_correct_messages_and_no_answers(skill_package
     call_ids = {event["call_id"] for event in events
                 if event["type"] == "model_call_started"}
     assert len(call_ids) == 3
+    diagnostics = [event for event in events if event['type'] == 'model_request_info']
+    assert diagnostics and {event['call_id'] for event in diagnostics} == call_ids
+    phases = {event['payload']['phase'] for event in diagnostics}
+    assert {'connection_opened', 'first_byte', 'first_tool', 'attempt_completed'} <= phases
+    assert all(event['level'] == 'info' for event in diagnostics)
+    assert all('content' not in event['payload'] for event in diagnostics)
     assert all(event["case_id"] == "case_001" for event in events)
     assert ANSWER_SENTINEL not in json.dumps(events, ensure_ascii=False)
     assert ANSWER_SENTINEL not in json.dumps(result, ensure_ascii=False)

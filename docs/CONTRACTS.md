@@ -279,6 +279,10 @@ class ModelAdapter:                     # app/adapters/base.py
 
 ### 2.7 优化器（`app/optimizer.py`, `app/patch.py`, `app/acceptance.py`）
 
+模型性能诊断使用 INFO 事件 `model_request_info`（业务/评分）和 `optimizer_request_info`（优化），以 `call_id` 关联请求，payload 的 `attempt` 区分重试。HTTP 与 WebSocket 均记录开始、响应/连接、首次数据/正文/工具调用、接收进度、尝试成功或失败；评分请求保留 `purpose=judge`。时间为当前尝试起点的单调时钟毫秒数；总优化耗时另见 `optimizer_call_finished.elapsed_ms`。计数不携带正文、推理文本、URL、请求头或凭据。收到流式数据时每 10 秒最多一个 `stream_progress`，无数据阻塞期间不生成假心跳；缺失时间为 null，不记为 0。非流式只观测 HTTP 响应和完整结果，不能提供首段正文时间。推理字段只统计服务显式返回的 `reasoning_content` 长度，不代表能观察模型内部推理。
+
+`static_check_started` 在检查开始前记录版本、候选来源、编辑数和应用补丁耗时；`static_check_item` 对各检查项记录结果及最多 10 条具体错误（附总数与截断标记），失败仍由原有 ERROR 事件汇总。`retest_started/completed` 关联候选、执行次数、耗时及指标，不修改评分或验收标准。
+
 `optimizer_call_failed` 保留阶段错误码，超时时 issue 标题/原因直接说明请求超时；技术详情记录适配器错误码、耗时及 HTTP 请求超时配置。`static_check_failed` 记录具体 `errors`、`checks` 和 `candidate_source`（`model`/`heuristic`），摘要区分模型、规则修复及失败后回退的候选，最多展示前三个具体错误。静态检查判定及历史事件不变。
 
 优化器输入（只含 optimize 集失败证据，不含 validation/final_test 内容）：

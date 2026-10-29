@@ -45,6 +45,7 @@ from .base import (
     resolve_secret_ref,
 )
 from .stream_events import SSEEventAssembler, SSEParseError, aggregate, extract_stream_error
+from .request_diagnostics import RequestDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,15 @@ class EnterpriseWSAdapter(ModelAdapter):
                 },
             )
             started = time.monotonic()
+            observer = effective.get("_request_observer") or (lambda payload: emit_event(
+                emit, event_types.MODEL_REQUEST_INFO, call_id=call_id, attempt=attempt, payload=payload))
+            diagnostics = RequestDiagnostics(observer, attempt, total_attempts)
+            diagnostics.emit("attempt_started", provider=self.name, stream=True,
+                             request_timeout_s=self.total_timeout_s,
+                             first_packet_timeout_s=self.first_packet_timeout_s,
+                             idle_timeout_s=self.idle_timeout_s,
+                             input_chars=sum(len(str(m.get("content") or "")) for m in messages),
+                             max_output_tokens=effective.get("max_tokens"))
             try:
                 if effective.get("cancel_check") and effective["cancel_check"]():
                     raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
@@ -246,14 +256,18 @@ class EnterpriseWSAdapter(ModelAdapter):
                     raise AdapterError("模型调用超过总超时", code="timeout", retryable=False)
                 attempt_config = dict(effective)
                 attempt_config["deadline_monotonic"] = deadline
+                attempt_config["_request_diagnostics"] = diagnostics
                 result = asyncio.run(self._run_once(
                     body, attempt_config, emit=emit, call_id=call_id, attempt=attempt))
             except AdapterError as exc:
                 exc.attempt = attempt
                 partial = bool(getattr(exc, "partial", False))
                 should_retry = exc.retryable and attempt < total_attempts and not partial
+                retry_delay = self._backoff(attempt, exc.retry_after) if should_retry else None
+                diagnostics.emit("attempt_failed", error_code=exc.code, partial_output=partial,
+                                 retry_planned=bool(should_retry), retry_in_s=retry_delay)
                 if should_retry:
-                    delay = self._backoff(attempt, exc.retry_after)
+                    delay = retry_delay
                     emit_event(
                         emit, event_types.MODEL_CALL_FAILED, level="warning",
                         call_id=call_id, attempt=attempt,
@@ -304,6 +318,7 @@ class EnterpriseWSAdapter(ModelAdapter):
                 )
                 raise
             duration_ms = int((time.monotonic() - started) * 1000)
+            diagnostics.completed(result)
             emit_event(
                 emit, event_types.MODEL_CALL_FINISHED, call_id=call_id, attempt=attempt,
                 payload={
@@ -356,8 +371,11 @@ class EnterpriseWSAdapter(ModelAdapter):
             "ping_timeout": self.heartbeat_interval_s if self.heartbeat_interval_s else None,
         }
         connect_kwargs["max_size"] = self.max_size
+        diagnostics = config.get("_request_diagnostics")
         try:
             async with connect(self.ws_url, **connect_kwargs) as websocket:
+                if diagnostics:
+                    diagnostics.emit("connection_opened")
                 await asyncio.wait_for(
                     websocket.send(json.dumps(body, ensure_ascii=False)),
                     timeout=self.connect_timeout_s)
@@ -399,6 +417,8 @@ class EnterpriseWSAdapter(ModelAdapter):
                         continue
                     last_activity = loop.time()
                     received_frames += 1
+                    if diagnostics:
+                        diagnostics.received(frame)
                     if received_frames == 1:
                         size = len(frame) if isinstance(frame, (bytes, str)) else 0
                         emit_event(
@@ -409,6 +429,8 @@ class EnterpriseWSAdapter(ModelAdapter):
                         )
                     try:
                         new_events = assembler.feed(frame)
+                        if diagnostics:
+                            diagnostics.parsed(new_events)
                     except SSEParseError as exc:
                         raise AdapterError("企业网关流格式解析失败", code="format_error",
                                            details={"error": str(exc)}, retryable=False) from exc

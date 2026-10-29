@@ -316,6 +316,8 @@ def _input_stats(context: Mapping[str, Any], messages: Sequence[Mapping[str, Any
         "file_count": len(file_paths),
         "input_files": file_paths[:100],
         "input_chars": input_chars,
+        "skill_chars": sum(len(str(value)) for value in files.values()),
+        "passing_example_count": len((context.get("passing_summary") or {}).get("cases") or []),
         "truncated": False,
         "loading_strategy": "full",
     }
@@ -1493,12 +1495,20 @@ def generate_candidate(context: Mapping[str, Any],
         "input_chars": sum(len(str(message.get("content") or ""))
                            for message in messages),
         "message_count": len(messages),
+        "stream": bool(config.get("stream", False)),
+        "max_output_tokens": config.get("max_tokens"),
+        "request_timeout_s": (config.get("timeout_s") or config.get("timeout") or 60)
+            if config.get("provider") == "openai_http" else config.get("total_timeout_s"),
+        "transport_diagnostics": config.get("provider") in {"openai_http", "enterprise_ws"},
         "truncated": False,
     }, call_id=call_id)
 
     started_at = time.monotonic()
+    runtime_config = dict(config)
+    runtime_config["_request_observer"] = lambda payload: _emit(
+        emit, event_types.OPTIMIZER_REQUEST_INFO, payload, call_id=call_id)
     try:
-        response = adapter.invoke(messages, config, [])
+        response = adapter.invoke(messages, runtime_config, [])
     except Exception as exc:  # noqa: BLE001 - direct cause must be recorded
         detail = {
             "exception_type": type(exc).__name__,
@@ -1571,6 +1581,7 @@ def generate_candidate(context: Mapping[str, Any],
     output_preview, preview_truncated = _preview(raw_text)
     captured = capture_model_response(response, config)
     _emit(emit, event_types.OPTIMIZER_CALL_FINISHED, {
+        "elapsed_ms": round((time.monotonic() - started_at) * 1000),
         "model": model if isinstance(model, str) else None,
         "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
         "usage": _jsonable(usage),

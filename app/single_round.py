@@ -330,6 +330,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
 
     # -- apply patch + static check --------------------------------------
     _stage(emitter, "static_check", "应用补丁并执行静态检查")
+    patch_started = time.monotonic()
     edits = (outcome.get("patch") or {}).get("edits") or []
     patched_files, issues = patch.apply_edits(files, edits, context["allowed_paths"])
     candidate_row = None
@@ -351,9 +352,18 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
         _record_candidate(run_id, None, outcome, checks=static_result)
         return
     all_case_ids = [case["case_id"] for case in optimize_cases]
-    static_result = patch.static_check(files, patched_files, manifest, all_case_ids)
-    emitter.emit(event_types.STATIC_CHECK_STARTED, {"checks": static_result.get("checks")},
+    emitter.emit(event_types.STATIC_CHECK_STARTED, {
+        "baseline_skill_version_id": skill_version["id"],
+        "candidate_source": "heuristic" if outcome.get("used_fallback") else "model",
+        "changed_files": outcome.get("changed_files") or [],
+        "edit_count": len(edits),
+        "patch_apply_ms": round((time.monotonic() - patch_started) * 1000)},
                  stage="static_check")
+    static_started = time.monotonic()
+    static_result = patch.static_check(files, patched_files, manifest, all_case_ids)
+    static_elapsed_ms = round((time.monotonic() - static_started) * 1000)
+    for check in static_result.get("checks") or []:
+        emitter.emit(event_types.STATIC_CHECK_ITEM, redact_output(check, env), stage="static_check")
     if not static_result.get("ok"):
         source = ("规则修复候选" if opt_config.get("provider") == "heuristic" else "规则回退候选") if outcome.get("used_fallback") else "模型候选"
         failed_checks = [item for item in static_result.get("checks", []) if not item.get("ok")]
@@ -372,6 +382,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                                    if outcome.get("used_fallback") else "按具体检查项核对候选补丁及原 Skill 后重新优化。"),
                       level="error", stage="static_check",
                       extra={"checks": static_result.get("checks"), "errors": errors,
+                             "elapsed_ms": static_elapsed_ms,
                              "candidate_source": "heuristic" if outcome.get("used_fallback") else "model"})
         _record_candidate(run_id, None, outcome, checks=static_result)
         _finish_inconclusive(
@@ -381,7 +392,7 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                      "delta": None, "validation": None, "final": None})
         return
     emitter.emit(event_types.STATIC_CHECK_PASSED,
-                 {"checks": static_result.get("checks")}, stage="static_check")
+                 {"checks": static_result.get("checks"), "elapsed_ms": static_elapsed_ms}, stage="static_check")
     candidate_version = persistence.create_skill_version(
         run["project_id"], patched_files, manifest,
         parent_id=run["baseline_skill_version_id"], status="candidate",
@@ -392,6 +403,8 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
                                   checks=static_result)
     persistence.update_run(run_id, candidate_skill_version_id=candidate_version["id"])
     emitter.emit(event_types.PATCH_APPLIED, {
+        "baseline_skill_version_id": skill_version["id"],
+        "candidate_source": "heuristic" if outcome.get("used_fallback") else "model",
         "candidate_skill_version_id": candidate_version["id"],
         "changed_files": outcome.get("changed_files") or [],
         "integrity": integrity,
@@ -400,6 +413,11 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
 
     # -- retest -----------------------------------------------------------
     _stage(emitter, "retest", "在测试集重跑候选")
+    retest_started = time.monotonic()
+    emitter.emit(event_types.RETEST_STARTED, {
+        "candidate_skill_version_id": candidate_version["id"],
+        "case_count": len(optimize_cases), "repeats": services._baseline_repeats(env),
+        "planned_executions": len(optimize_cases) * services._baseline_repeats(env)}, stage="retest")
     candidate_optimize = _evaluate_split(
         run, env, optimize_cases, phase="candidate", repeats=services._baseline_repeats(env),
         adapter=adapter, emitter=emitter, usage_tracker=usage_tracker, cancel=cancel,
@@ -407,6 +425,11 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     metrics = {"baseline": baseline_metrics, "candidate": candidate_optimize,
                "delta": services.delta_metrics(baseline_metrics, candidate_optimize),
                "validation": None, "final": None}
+    emitter.emit(event_types.RETEST_COMPLETED, {
+        "candidate_skill_version_id": candidate_version["id"],
+        "elapsed_ms": round((time.monotonic() - retest_started) * 1000),
+        "baseline": _metric_summary(baseline_metrics),
+        "candidate": _metric_summary(candidate_optimize), "delta": metrics["delta"]}, stage="retest")
     persistence.finish_run(
         run_id, status="completed", decision=None,
         decision_reason="候选已完成测试集重跑，待独立验收",

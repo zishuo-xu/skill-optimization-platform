@@ -75,6 +75,7 @@ export const EVENT_META = {
   skill_selected: { label: '选择子技能', icon: 'skill', category: 'skill' },
   skill_read: { label: '读取 Skill 文件', icon: 'file', category: 'skill' },
   model_call_started: { label: '调用模型', icon: 'spark', category: 'model' },
+  model_request_info: { label: '模型请求诊断', icon: 'info', category: 'model' },
   model_call_finished: { label: '模型返回完成', icon: 'check', category: 'model' },
   model_call_failed: { label: '模型调用失败', icon: 'x', category: 'model', defaultLevel: 'error' },
   model_delta: { label: '模型增量输出', icon: 'spark', category: 'model' },
@@ -91,6 +92,7 @@ export const EVENT_META = {
   // optimizer
   optimizer_input_built: { label: '已构建优化器输入', icon: 'info', category: 'optimizer' },
   optimizer_call_started: { label: '已提交优化请求', icon: 'spark', category: 'optimizer' },
+  optimizer_request_info: { label: '优化请求诊断', icon: 'info', category: 'optimizer' },
   optimizer_call_finished: { label: '优化器返回内容', icon: 'check', category: 'optimizer' },
   optimizer_call_failed: { label: '优化器调用失败', icon: 'x', category: 'optimizer', defaultLevel: 'error' },
   optimizer_empty_response: { label: '优化器返回空内容', icon: 'alert', category: 'optimizer', defaultLevel: 'error' },

@@ -6,6 +6,20 @@ from app import optimizer, single_round
 from app.errors import AppError
 
 
+def test_retest_info_events_link_candidate_and_metrics(demo):
+    from app import persistence
+    from tests.conftest import complete_run
+    run = complete_run(demo, 'optimize')
+    events = persistence.list_events(run['id'], limit=2000)
+    start = next(e for e in events if e['type'] == 'retest_started')
+    end = next(e for e in events if e['type'] == 'retest_completed')
+    assert start['level'] == end['level'] == 'info'
+    assert start['payload']['candidate_skill_version_id'] == run['candidate_skill_version_id']
+    assert start['payload']['planned_executions'] > 0
+    assert end['payload']['elapsed_ms'] >= 0
+    assert end['payload']['delta'] == run['metrics']['delta']
+
+
 @pytest.mark.parametrize('used_fallback', [True, False])
 def test_static_failure_reports_actual_error_and_candidate_source(demo, monkeypatch, used_fallback):
     from app import persistence
@@ -29,6 +43,12 @@ def test_static_failure_reports_actual_error_and_candidate_source(demo, monkeypa
     assert '引用目标不存在: missing-instructions.md' in issue['message']
     assert failure['candidate_source'] == ('heuristic' if used_fallback else 'model')
     assert any(error['code'] == 'dangling_reference' for error in failure['errors'])
+    checks = [event for event in events if event['type'] == 'static_check_item']
+    assert len(checks) == 6 and all(event['level'] == 'info' for event in checks)
+    failed_check = next(event['payload'] for event in checks if not event['payload']['ok'])
+    assert failed_check['name'] == 'manifest_integrity'
+    assert failed_check['errors'][0]['code'] == 'dangling_reference'
+    assert not any(event['type'] == 'retest_started' for event in events)
     assert run['candidate_skill_version_id'] is None
 
 

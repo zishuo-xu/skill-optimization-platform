@@ -33,6 +33,7 @@ from .base import (
     safe_log_config,
 )
 from .stream_events import SSEEventAssembler, SSEParseError, aggregate, extract_stream_error
+from .request_diagnostics import RequestDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -186,16 +187,29 @@ class OpenAIHTTPAdapter(ModelAdapter):
                 },
             )
             started = time.monotonic()
+            observer = effective.get("_request_observer") or (lambda payload: emit_event(
+                emit, event_types.MODEL_REQUEST_INFO, call_id=call_id, attempt=attempt, payload=payload))
+            diagnostics = RequestDiagnostics(observer, attempt, total_attempts)
+            diagnostics.emit("attempt_started", stream=bool(effective.get("stream", False)),
+                             provider=self.name, request_timeout_s=self.timeout_s,
+                             input_chars=sum(len(str(m.get("content") or "")) for m in messages),
+                             max_output_tokens=effective.get("max_tokens"),
+                             remaining_ms=max(0, round((deadline - started) * 1000)))
             try:
                 attempt_config = dict(effective)
                 attempt_config["deadline_monotonic"] = deadline
+                attempt_config["_request_diagnostics"] = diagnostics
                 result = self._invoke_once(messages, tools, attempt_config, emit=emit,
                                            call_id=call_id, attempt=attempt)
             except AdapterError as exc:
                 exc.attempt = attempt
                 should_retry = (exc.retryable and attempt < total_attempts)
+                retry_delay = self._backoff(attempt, exc.retry_after) if should_retry else None
+                diagnostics.emit("attempt_failed", error_code=exc.code,
+                                 retry_planned=bool(should_retry),
+                                 retry_in_s=retry_delay)
                 if should_retry:
-                    delay = self._backoff(attempt, exc.retry_after)
+                    delay = retry_delay
                     emit_event(
                         emit, event_types.MODEL_CALL_FAILED, level="warning",
                         call_id=call_id, attempt=attempt,
@@ -246,6 +260,7 @@ class OpenAIHTTPAdapter(ModelAdapter):
                 )
                 raise
             duration_ms = int((time.monotonic() - started) * 1000)
+            diagnostics.completed(result)
             emit_event(
                 emit, event_types.MODEL_CALL_FINISHED, call_id=call_id, attempt=attempt,
                 payload={
@@ -301,9 +316,18 @@ class OpenAIHTTPAdapter(ModelAdapter):
         try:
             with httpx.Client(timeout=timeout) as client:
                 if not stream:
-                    response = client.post(self.url, json=body, headers=headers)
-                    return self._parse_response(response, config)
+                    with client.stream("POST", self.url, json=body, headers=headers) as response:
+                        diagnostics = config.get("_request_diagnostics")
+                        if diagnostics:
+                            diagnostics.response(response.status_code)
+                        response.read()
+                        if diagnostics:
+                            diagnostics.stats["received_bytes"] = len(response.content)
+                        return self._parse_response(response, config)
                 with client.stream("POST", self.url, json=body, headers=headers) as response:
+                    diagnostics = config.get("_request_diagnostics")
+                    if diagnostics:
+                        diagnostics.response(response.status_code)
                     if response.status_code >= 400:
                         text = response.read().decode("utf-8", "replace")
                         raise _error_from_status(response.status_code, text)
@@ -395,14 +419,19 @@ class OpenAIHTTPAdapter(ModelAdapter):
         business_output = False
         done_seen = False
         emit_deltas = bool(config.get("emit_deltas", False))
+        diagnostics = config.get("_request_diagnostics")
         try:
             for chunk in response.iter_bytes():
+                if diagnostics:
+                    diagnostics.received(chunk)
                 if cancel_check is not None and cancel_check():
                     raise AdapterError("模型调用已取消", code="cancelled", retryable=False)
                 deadline = config.get("deadline_monotonic")
                 if isinstance(deadline, (int, float)) and time.monotonic() >= float(deadline):
                     raise AdapterError("模型请求总超时", code="timeout", retryable=False)
                 new_events = assembler.feed(chunk)
+                if diagnostics:
+                    diagnostics.parsed(new_events)
                 events.extend(new_events)
                 for event in new_events:
                     payload = event.get("json")

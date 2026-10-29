@@ -68,6 +68,13 @@ def test_optimizer_stream_total_timeout_and_longer_config_recovery():
                                               build_adapter(cfg), emit)
         assert result['used_fallback'] is True
         issue = emit.by_type('optimizer_call_failed')[0]['payload']['issue']
+        infos = emit.by_type('optimizer_request_info')
+        assert infos and all(e['level'] == 'info' for e in infos)
+        assert len({e['call_id'] for e in infos + emit.by_type('optimizer_call_started')}) == 1
+        last = infos[-1]['payload']
+        assert last['phase'] == 'attempt_failed' and last['error_code'] == 'timeout'
+        assert last['response_status'] == 200 and last['first_byte_ms'] is not None
+        assert last['received_bytes'] > 0
         assert issue['title'] == '优化模型请求超时'
         assert issue['technical_detail']['adapter_error_code'] == 'timeout'
         assert issue['technical_detail']['request_timeout_s'] == 0.2

@@ -288,6 +288,9 @@ def static_check(base_files: Mapping[str, Any], patched_files: Mapping[str, Any]
             "name": name,
             "ok": not check_errors,
             "message": ok_message if not check_errors else fail_message,
+            "error_count": len(check_errors),
+            "errors": check_errors[:10],
+            "errors_truncated": len(check_errors) > 10,
         })
         errors.extend(check_errors)
 

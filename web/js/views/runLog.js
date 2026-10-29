@@ -6,6 +6,7 @@
 import { api, ApiError, subscribeRunEvents } from '../api_v3.js';
 import { createRunAnalysis } from './runAnalysis.js';
 import { fixtureComparison } from '../fixtureComparison.js';
+import { requestDiagnosticTitle, requestDiagnosticSummary, requestDiagnosticCopy } from '../requestDiagnostics.js';
 import { h, mount, icon, clear, focusElement } from '../dom.js';
 import {
   button,
@@ -113,6 +114,9 @@ function eventTitle(event) {
   if (event.type === 'static_check_item') {
     return `静态检查：${payload.name || '检查项'}`;
   }
+  if (['optimizer_request_info', 'model_request_info'].includes(event.type)) {
+    return requestDiagnosticTitle(payload, event.type === 'optimizer_request_info' ? 'optimizer' : 'model');
+  }
   if (event.type === 'rule_evaluated' && payload.rule) {
     return `接受规则：${RULE_LABELS[payload.rule] || payload.rule}`;
   }
@@ -121,6 +125,7 @@ function eventTitle(event) {
 
 function eventSummary(event) {
   const p = event.payload || {};
+  if (['optimizer_request_info', 'model_request_info'].includes(event.type)) return requestDiagnosticSummary(p);
   const meta = eventMeta(event.type);
   const bits = [];
   if (event.type === 'skill_selected') bits.push(p.skill_id);
@@ -141,13 +146,19 @@ function eventSummary(event) {
   }
   if (event.type === 'optimizer_input_built') {
     bits.push(`失败 ${p.failure_count ?? '?'} 条 · 提供 ${p.provided_failures ?? p.failure_count ?? '?'} 条`);
-    if (p.files) bits.push(`${Array.isArray(p.files) ? p.files.length : p.files} 个文件`);
-    if (p.chars) bits.push(`${p.chars} 字符`);
+    if (p.file_count != null) bits.push(`${p.file_count} 个文件`);
+    if (p.input_chars != null) bits.push(`${p.input_chars} 字符`);
     bits.push(p.truncated ? '输入被截断' : '无截断');
     if (p.strategy) bits.push(`策略 ${p.strategy}`);
   }
-  if (event.type === 'optimizer_call_started' && p.model) bits.push(p.model);
+  if (event.type === 'optimizer_call_started') {
+    if (p.model) bits.push(p.model);
+    if (p.stream !== undefined) bits.push(p.stream ? '流式' : '非流式');
+    if (p.request_timeout_s != null) bits.push(`超时 ${p.request_timeout_s} 秒`);
+    if (p.max_output_tokens != null) bits.push(`输出上限 ${p.max_output_tokens} tok`);
+  }
   if (event.type === 'optimizer_call_finished') {
+    if (p.elapsed_ms != null) bits.push(`${p.elapsed_ms} ms`);
     if (p.finish_reason) bits.push(p.finish_reason);
     if (p.usage?.output_tokens) bits.push(`输出 ${p.usage.output_tokens} tok`);
     appendResponseSummary(bits, p.response_summary);
@@ -157,7 +168,9 @@ function eventSummary(event) {
   }
   if (event.type === 'patch_created') {
     if (p.summary) bits.push(p.summary);
-    if (p.edits) bits.push(`${p.edits.length} 处修改`);
+    if (p.edit_count != null) bits.push(`${p.edit_count} 处修改`);
+    else if (p.edits) bits.push(`${p.edits.length} 处修改`);
+    if (p.used_fallback !== undefined) bits.push(p.used_fallback ? '规则候选' : '模型候选');
   }
   if (event.type === 'case_started' || event.type === 'case_completed' || event.type === 'case_failed') {
     if (p.phase) bits.push(p.phase === 'baseline' ? '基线' : p.phase === 'candidate' ? '候选' : p.phase);
@@ -182,7 +195,9 @@ function eventSummary(event) {
     bits.push(p.reason);
   }
   if (event.type === 'retest_started' && p.repeats) bits.push(`重复 ${p.repeats} 次`);
+  if (event.type === 'retest_started' && p.planned_executions != null) bits.push(`计划 ${p.planned_executions} 次执行`);
   if (event.type === 'retest_completed') {
+    if (p.elapsed_ms != null) bits.push(`${p.elapsed_ms} ms`);
     if (p.improvements !== undefined) bits.push(`改善 ${p.improvements}`);
     if (p.regressions !== undefined) bits.push(`回归 ${p.regressions}`);
   }
@@ -1152,7 +1167,8 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     const actions = h(
       'div.log-detail__actions',
       null,
-      copyRedactedDetail(payload),
+      copyRedactedDetail(['optimizer_request_info', 'model_request_info'].includes(event.type)
+        ? requestDiagnosticCopy(event) : payload),
       h(
         'button.btn.btn--ghost.btn--sm',
         { type: 'button', onclick: () => locateSeq(event.seq) },
