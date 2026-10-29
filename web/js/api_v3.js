@@ -441,6 +441,12 @@ export const api = {
   getRun(runId) {
     return request('GET', `/runs/${encodeURIComponent(runId)}`);
   },
+  getRunAnalysis(runId) {
+    return request('GET', `/runs/${encodeURIComponent(runId)}/analysis`);
+  },
+  analyzeRun(runId, question = '') {
+    return request('POST', `/runs/${encodeURIComponent(runId)}/analysis`, { body: { question } });
+  },
   cancelRun(runId) {
     return request('POST', `/runs/${encodeURIComponent(runId)}/cancel`, { body: {} });
   },

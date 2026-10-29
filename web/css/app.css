@@ -4975,3 +4975,13 @@ pre,
 .guide__note { margin: 16px 0 8px; }
 .guide details summary { cursor: pointer; }
 @media (max-width: 900px) { .guide__steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Read-only diagnostic report: plain text avoids executing model HTML. */
+.run-analysis__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 480px;
+  overflow: auto;
+  font: inherit;
+  line-height: 1.65;
+}
+.run-analysis textarea { width: 100%; resize: vertical; }

@@ -4,6 +4,7 @@
  */
 
 import { api, ApiError, subscribeRunEvents } from '../api_v3.js';
+import { createRunAnalysis } from './runAnalysis.js';
 import { h, mount, icon, clear, focusElement } from '../dom.js';
 import {
   button,
@@ -263,7 +264,8 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
     scroll,
     followBar
   );
-  const element = h('div.run-log', null, issuesHost, noticeHost, toolbarHost, scrollWrap, footerHost);
+  const analysis = createRunAnalysis(run);
+  const element = h('div.run-log', null, analysis.element, issuesHost, noticeHost, toolbarHost, scrollWrap, footerHost);
 
   let subscription = null;
   let destroyed = false;
@@ -1708,6 +1710,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   }
 
   function updateRun(run) {
+    analysis.updateRun(run);
     currentRun = run;
     renderFooter();
     renderBanners();
@@ -1733,6 +1736,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   return {
     element,
     destroy() {
+      analysis.destroy();
       destroyed = true;
       if (subscription) subscription.close();
       if (noticeTimer) clearTimeout(noticeTimer);

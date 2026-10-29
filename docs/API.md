@@ -250,7 +250,13 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
 | GET | `/runs/{rid}/events/{seq}/model-output` | 查看指定模型完成事件的脱敏正文/工具参数；新记录 `source=captured`，旧记录按实际保存结果返回 `legacy_case_result`，不可恢复时为 `unavailable` |
 | GET | `/runs/{rid}/report.json` | 评测报告 JSON 下载 |
 | GET | `/runs/{rid}/report.csv` | 评测报告 CSV 下载 |
+| GET | `/runs/{rid}/analysis` | 当前分析模型摘要、最新诊断附件 `latest`、可复制的 `evidence_markdown`；不调用模型 |
+| POST | `/runs/{rid}/analysis` | `{question?: string}`（最多 2000 字）；使用当前发布环境的优化模型生成并保存只读诊断报告 |
 | POST | `/runs/{rid}/debug-cases` 或 `/projects/{pid}/debug-cases` | 试跑：立即执行一个案例并按环境评分规则评分（含评分模型），同步返回；不写入运行、案例结果与指标。见下方说明 |
+
+AI 分析协议为 `run-analysis-v1`。POST 在线程池执行，单次模型请求至多 120 秒，不自动重试或规则回退；保留优化配置的流式开关。运行未结束或已有分析请求时返回 409，缺少真实模型配置或输入非法时 422。模型调用失败返回 HTTP 200、`status=failed` 与脱敏 `error` 和诊断材料；成功为 `status=completed`。响应含 `artifact_id`、`metadata`、`analysis`、`markdown`，GET 的 `latest` 结构相同。
+
+每次 POST 新建 `kind=run_analysis` 附件，包含适配器报告的模型名、分析环境版本/hash、用量、证据 hash 和事件截止序号。流式适配器可能返回配置模型名，不能据此确认供应方内部路由。GET 返回最新附件，旧附件仍可按 ID 读取；不更新原运行事件、指标、决策或 Skill。日常案例最多采样 8 条，失败优先；事件优先前 60 条警告/错误及最后 60 条，总证据至多 60000 字符，`coverage` 说明遗漏与截断。留出运行不发送案例与事件载荷；诊断不进入优化器补丁流程。
 
 试跑请求体（`POST …/debug-cases`）：
 

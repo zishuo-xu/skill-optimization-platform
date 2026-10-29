@@ -532,6 +532,17 @@ async def get_run(request: Request) -> Response:
     return ok(services.run_view(request.path_params["run_id"]))
 
 
+async def run_analysis(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from . import run_analysis as analysis
+
+    run_id = request.path_params["run_id"]
+    if request.method == "POST":
+        body = await json_body(request)
+        return ok(await run_in_threadpool(analysis.generate, run_id, body.get("question", "")))
+    return ok(await run_in_threadpool(analysis.view, run_id))
+
+
 async def cancel_run(request: Request) -> Response:
     run = persistence.request_cancel(request.path_params["run_id"])
     return ok(services.run_view(run["id"]))
@@ -821,6 +832,7 @@ def build_routes() -> list[Route]:
         Route(f"{p}/runs", list_runs, methods=["GET"]),
         Route(f"{p}/runs", create_run, methods=["POST"]),
         Route(f"{p}/runs/{{run_id}}", get_run, methods=["GET"]),
+        Route(f"{p}/runs/{{run_id}}/analysis", run_analysis, methods=["GET", "POST"]),
         Route(f"{p}/runs/{{run_id}}/cancel", cancel_run, methods=["POST"]),
         Route(f"{p}/runs/{{run_id}}/apply", apply_run, methods=["POST"]),
         Route(f"{p}/runs/{{run_id}}/cases", run_cases, methods=["GET"]),

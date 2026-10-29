@@ -69,6 +69,7 @@ flowchart LR
 | `app/seed.py` | 演示项目初始化（真实导入/发布/执行基线/可选优化） |
 | `app/skill_package.py` | ZIP/JSON 包安全解析、manifest 校验、导出打包 |
 | `app/reports.py` | 评测报告 JSON/CSV 数据组装与脱敏 |
+| `app/run_analysis.py` | 采样脱敏运行证据、通过当前优化模型配置生成只读排障报告，独立保存 trace 附件 |
 | `web/*` | 深色中文 SPA：项目、Skill、环境、数据集、运行详情四标签页、运行记录 |
 
 ## 4. 端到端流程

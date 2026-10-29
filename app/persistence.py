@@ -1077,6 +1077,11 @@ def save_artifact(run_id: str, kind: str, data: bytes,
     return record
 
 
+def latest_artifact(run_id: str, kind: str) -> dict[str, Any] | None:
+    return _fetchone("SELECT id FROM trace_artifacts WHERE run_id = ? AND kind = ? "
+                     "ORDER BY created_at DESC, rowid DESC LIMIT 1", (run_id, kind))
+
+
 def get_artifact(run_id: str, artifact_id: str) -> dict[str, Any]:
     artifact = _fetchone(
         "SELECT * FROM trace_artifacts WHERE id = ? AND run_id = ?",
