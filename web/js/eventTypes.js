@@ -81,7 +81,7 @@ export const EVENT_META = {
   tool_call_started: { label: '调用业务工具', icon: 'terminal', category: 'tool' },
   tool_call_finished: { label: '业务工具调用完成', icon: 'check', category: 'tool' },
   tool_result: { label: '模拟工具返回', icon: 'terminal', category: 'tool' },
-  fixture_miss: { label: '模拟返回缺失', icon: 'alert', category: 'tool', defaultLevel: 'warning' },
+  fixture_miss: { label: '模拟返回未匹配', icon: 'alert', category: 'tool', defaultLevel: 'warning' },
   score_completed: { label: '评分完成', icon: 'check', category: 'score' },
   score_failed: { label: '评分失败', icon: 'x', category: 'score', defaultLevel: 'error' },
   judge_completed: { label: '评分模型完成判定', icon: 'shield', category: 'score' },

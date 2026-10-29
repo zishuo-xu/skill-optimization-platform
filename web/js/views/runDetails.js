@@ -483,7 +483,7 @@ export default async function runDetailsView(container, ctx) {
         { label: '耗时', value: formatDuration(cost.duration_ms ?? execution.duration_ms) },
         { label: 'Token', value: formatTokens(cost.total_tokens ?? cost.tokens ?? execution.tokens) },
         { label: '费用', value: formatCost(cost.amount !== undefined ? cost : null) },
-        { label: '模拟返回缺失', value: formatNumber(execution.fixture_misses) },
+        { label: '模拟返回未匹配', value: formatNumber(execution.fixture_misses) },
       ],
       { compact: true }
     );

@@ -550,7 +550,7 @@ const CASE_ERROR_LABELS = {
   context_overflow: '上下文超长',
   truncated: '模型输出被截断',
   protocol_error: '模型输出不符合协议',
-  fixture_miss: '缺少模拟工具返回',
+  fixture_miss: '模拟工具返回未匹配',
   parse_failed: '模型输出无法解析',
   auth_failed: '模型鉴权失败',
   network_error: '网络错误',

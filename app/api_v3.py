@@ -604,7 +604,7 @@ async def run_event_history(request: Request) -> Response:
         case_ids=cases,
         errors_only=_bool(request.query_params.get("errors_only", "0")))
     total = len(events)
-    return ok({"items": events[offset:offset + limit], "total": total,
+    return ok({"items": services.display_run_events(run_id, events[offset:offset + limit]), "total": total,
                "limit": limit, "offset": offset, "after_seq": after_seq})
 
 
@@ -622,6 +622,7 @@ async def run_events_sse(request: Request) -> Response:
         last_ping = time.time()
         while True:
             events = persistence.list_events(run_id, after_seq=cursor, limit=200)
+            events = services.display_run_events(run_id, events)
             for event in events:
                 cursor = event["seq"]
                 data = json.dumps(event, ensure_ascii=False)

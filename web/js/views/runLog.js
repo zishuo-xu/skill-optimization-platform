@@ -5,6 +5,7 @@
 
 import { api, ApiError, subscribeRunEvents } from '../api_v3.js';
 import { createRunAnalysis } from './runAnalysis.js';
+import { fixtureComparison } from '../fixtureComparison.js';
 import { h, mount, icon, clear, focusElement } from '../dom.js';
 import {
   button,
@@ -87,10 +88,13 @@ function normalizeIssue(item) {
     nextAction: item.next_action || item.nextAction || '',
     causeSeq: asNumber(item.cause_event_seq ?? item.causeSeq),
     technicalDetail: item.technical_detail || item.technicalDetail || null,
+    comparisonRows: item.comparison_rows || [],
+    comparisonNote: item.comparison_note || '',
   };
 }
 
 function eventTitle(event) {
+  if (event.display_issue?.title) return event.display_issue.title;
   const payload = event.payload || {};
   if (payload.title) return payload.title;
   if (payload.issue && payload.issue.title) return payload.issue.title;
@@ -402,7 +406,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
       // Different fixture failures need different fixes; do not present the
       // first case's cause as the explanation for every fixture_miss.
       const key = issue.errorCode === 'fixture_miss'
-        ? `${issue.errorCode}:${issue.message}`
+        ? `${issue.errorCode}:${issue.message}:${JSON.stringify(issue.comparisonRows)}`
         : issue.errorCode || `title:${issue.title}`;
       let group = groups.get(key);
       if (!group) {
@@ -484,7 +488,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
               h('span.log-issues__title', {
                 text:
                   groups.length === 1
-                    ? `运行遇到问题：${groups[0].title}${groups[0].instances.length > 1 ? `（${groups[0].instances.length} 条记录）` : ''}`
+                    ? `${groups[0].errorCode === 'fixture_miss' && groups[0].caseIds.size ? '案例执行问题' : '运行遇到问题'}：${groups[0].title}${groups[0].instances.length > 1 ? `（${groups[0].instances.length} 条记录）` : ''}`
                     : `发现 ${groups.length} 类问题（共 ${totalRecords} 条记录）`,
               }),
               h('span.log-issues__count', { text: `${errorCount} 错误 / ${warningCount} 警告` })
@@ -543,6 +547,7 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
                 ...issueField('影响范围', group.impact),
                 ...issueField('后续处理', group.nextAction)
               ),
+              fixtureComparison(first.comparisonRows, first.comparisonNote),
               group.related.length
                 ? h(
                     'p.issue-card__merged',
@@ -948,7 +953,8 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
   }
 
   function buildDetail(event) {
-    const payload = event.payload || {};
+    const payload = { ...(event.payload || {}) };
+    if (event.display_issue) payload.issue = event.display_issue;
     const detail = h('div.log-detail');
     const issue = payload.issue || (event.level !== 'info' ? {} : null);
 
@@ -982,6 +988,8 @@ export function createRunLog({ run, onRunActivity = null, onConnectionChange = n
           : null
       );
       detail.appendChild(issueBox);
+      const comparison = fixtureComparison(payload.issue.comparison_rows, payload.issue.comparison_note);
+      if (comparison) detail.appendChild(comparison);
     }
 
     const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];

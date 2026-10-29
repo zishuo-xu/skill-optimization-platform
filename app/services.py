@@ -1393,12 +1393,37 @@ def _stage_labels() -> dict[str, str]:
     return dict(event_types.STAGE_LABELS)
 
 
+def display_run_events(run_id: str, events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Add display diagnostics from the run's immutable dataset, without writes."""
+    if not any(event.get("type") == "fixture_miss" for event in events):
+        return [dict(event) for event in events]
+    from .fixture_display import project_event
+
+    run = persistence.get_run(run_id)
+    try:
+        credentials = persistence.get_environment(run["environment_id"])
+    except NotFoundError:
+        credentials = {}
+    cases = {}
+    result = []
+    for event in events:
+        case_id = event.get("case_id")
+        if event.get("type") == "fixture_miss" and case_id and case_id not in cases:
+            try:
+                cases[case_id] = persistence.get_case(run["dataset_id"], case_id)
+            except NotFoundError:
+                cases[case_id] = None
+        result.append(project_event(event, cases.get(case_id), credentials))
+    return result
+
+
 def _issues_summary(run_id: str, *, heuristic_mode: bool = False) -> dict[str, Any]:
     events = persistence.list_events(run_id, after_seq=0, limit=1000, errors_only=True)
+    events = display_run_events(run_id, events)
     items = []
     for event in events:
         payload = event.get("payload") or {}
-        issue = payload.get("issue")
+        issue = event.get("display_issue") or payload.get("issue")
         # EventEmitter.issue() records the issue fields at the top level of the
         # payload; adapters/optimizer nest them under "issue". Accept both.
         if not isinstance(issue, Mapping) and payload.get("error_code") and payload.get("title"):
@@ -1421,6 +1446,8 @@ def _issues_summary(run_id: str, *, heuristic_mode: bool = False) -> dict[str, A
             "next_action": issue.get("next_action"),
             "error_code": issue.get("error_code"),
             "cause_event_seq": issue.get("cause_event_seq"),
+            "comparison_rows": issue.get("comparison_rows") or [],
+            "comparison_note": issue.get("comparison_note"),
         })
     return {"items": items, "total": len(items),
             "counts": {"error": sum(1 for i in items if i["level"] == "error"),

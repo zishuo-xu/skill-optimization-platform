@@ -4985,3 +4985,6 @@ pre,
   line-height: 1.65;
 }
 .run-analysis textarea { width: 100%; resize: vertical; }
+.fixture-comparison__row {
+  grid-template-columns: minmax(120px, .7fr) repeat(3, minmax(0, 1fr));
+}

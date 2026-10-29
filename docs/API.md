@@ -254,6 +254,8 @@ PUT 不是局部字段补丁：需携带 `case_id`、`query`、`context`、`expe
 | POST | `/runs/{rid}/analysis` | `{question?: string}`（最多 2000 字）；使用当前发布环境的优化模型生成并保存只读诊断报告 |
 | POST | `/runs/{rid}/debug-cases` 或 `/projects/{pid}/debug-cases` | 试跑：立即执行一个案例并按环境评分规则评分（含评分模型），同步返回；不写入运行、案例结果与指标。见下方说明 |
 
+`event-history` 与 SSE 中的 `fixture_miss` 事件可附加 `display_issue`，保留原始 `payload`。运行问题摘要使用展示文案，并附 `comparison_rows` / `comparison_note`；每行包含 `fixture_index`、`field_path`、`actual`、`condition`，能可靠定位案例声明时增加 `expected`（均为脱敏展示文本）。此信息从运行绑定版本读取，仅供排查，不重算评分、不参与模型执行或优化。
+
 AI 分析协议为 `run-analysis-v1`。POST 在线程池执行，单次模型请求至多 120 秒，不自动重试或规则回退；保留优化配置的流式开关。运行未结束或已有分析请求时返回 409，缺少真实模型配置或输入非法时 422。模型调用失败返回 HTTP 200、`status=failed` 与脱敏 `error` 和诊断材料；成功为 `status=completed`。响应含 `artifact_id`、`metadata`、`analysis`、`markdown`，GET 的 `latest` 结构相同。
 
 每次 POST 新建 `kind=run_analysis` 附件，包含适配器报告的模型名、分析环境版本/hash、用量、证据 hash 和事件截止序号。流式适配器可能返回配置模型名，不能据此确认供应方内部路由。GET 返回最新附件，旧附件仍可按 ID 读取；不更新原运行事件、指标、决策或 Skill。日常案例最多采样 8 条，失败优先；事件优先前 60 条警告/错误及最后 60 条，总证据至多 60000 字符，`coverage` 说明遗漏与截断。留出运行不发送案例与事件载荷；诊断不进入优化器补丁流程。
