@@ -175,6 +175,7 @@ function defaults() {
       url: '',
       ws_url: '',
       model: 'frozen-heuristic-v1',
+      timeout_s: 180,
       stream: true,
       api_key_ref: '',
       request_template: {},
@@ -246,6 +247,8 @@ export function toForm(env) {
   }
   const modelConfig = { ...base.model_config, ...(env.model_config || {}) };
   const optimizerConfig = { ...base.optimizer_config, ...(env.optimizer_config || {}) };
+  // Existing configs retain their effective limit, including the legacy alias.
+  optimizerConfig.timeout_s = env.optimizer_config?.timeout_s || env.optimizer_config?.timeout || 60;
   // Published versions retain the adapter's historical default (false).
   // New/draft configurations default to streaming and persist it explicitly.
   if (env.status === 'published' && !Object.prototype.hasOwnProperty.call(env.optimizer_config || {}, 'stream')) {
@@ -522,6 +525,10 @@ export default async function environmentView(container, ctx) {
       if (!optimizerConfig.ws_url) errors['optimizer_config.ws_url'] = '优化器 WebSocket 地址不能为空';
       if (!optimizerConfig.model) errors['optimizer_config.model'] = '模型 ID 不能为空';
     } else if (optProvider !== 'heuristic') {
+      optimizerConfig.timeout_s = num(form.optimizer_config.timeout_s, null);
+      if (!Number.isFinite(optimizerConfig.timeout_s) || optimizerConfig.timeout_s <= 0) {
+        errors['optimizer_config.timeout_s'] = '请求超时必须为大于 0 的秒数';
+      }
       optimizerConfig.stream = Boolean(form.optimizer_config.stream);
       optimizerConfig.model = String(form.optimizer_config.model || '').trim();
       optimizerConfig.base_url = String(form.optimizer_config.base_url || '').trim();
@@ -939,8 +946,13 @@ export default async function environmentView(container, ctx) {
               'div.stack',
               null,
               h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle(target)),
+              target === 'optimizer' ? inputFor('optimizer_config.timeout_s', {
+                label: '优化请求超时（秒）', type: 'number',
+                hint: '限制一次完整请求的总等待时间，流式输出不会重置计时。较慢模型可先尝试 180 秒；与业务模型、单案例超时独立。',
+              }) : null,
               h('p.form-field__hint', { text: '按模型服务支持的返回方式选择；网关只支持流式请求时，请开启此项。' })
-            )
+            ),
+            { open: target === 'optimizer' && Boolean(state.fieldErrors['optimizer_config.timeout_s']) }
           )
         : null,
       legacy
@@ -974,6 +986,7 @@ export default async function environmentView(container, ctx) {
       { label: '模型 ID', value: config.model || '—', mono: true },
       { label: 'API Key', value: envRef || (keyConfigured ? '已配置' : '未配置'), mono: Boolean(envRef) },
       { label: '流式返回', value: config.stream ? '已启用' : '未启用' },
+      ...(group === 'optimizer_config' ? [{ label: '优化请求超时', value: secondsText(config.timeout_s || config.timeout || 60) }] : []),
     ];
   }
 

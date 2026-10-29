@@ -6,6 +6,32 @@ from app import optimizer, single_round
 from app.errors import AppError
 
 
+@pytest.mark.parametrize('used_fallback', [True, False])
+def test_static_failure_reports_actual_error_and_candidate_source(demo, monkeypatch, used_fallback):
+    from app import persistence
+    from tests.conftest import complete_run
+
+    original = optimizer.generate_candidate
+
+    def generate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        assert result['status'] == 'ok'
+        result['patch']['edits'][0]['replace'] += '\n[操作说明](missing-instructions.md)\n'
+        result['used_fallback'] = used_fallback
+        return result
+
+    monkeypatch.setattr(optimizer, 'generate_candidate', generate)
+    run = complete_run(demo, 'optimize')
+    events = persistence.list_events(run['id'], limit=2000)
+    failure = next(event for event in events if event['type'] == 'static_check_failed')['payload']
+    issue = failure
+    assert ('规则修复候选' if used_fallback else '模型候选') in issue['message']
+    assert '引用目标不存在: missing-instructions.md' in issue['message']
+    assert failure['candidate_source'] == ('heuristic' if used_fallback else 'model')
+    assert any(error['code'] == 'dangling_reference' for error in failure['errors'])
+    assert run['candidate_skill_version_id'] is None
+
+
 def test_expected_fixture_coverage_checks_arguments_once_and_alternatives():
     case = {"case_id": "x", "expected": {"tool_calls": [
         {"name": "edit", "arguments": {"color": "red"}},

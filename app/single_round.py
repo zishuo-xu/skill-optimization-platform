@@ -355,14 +355,24 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     emitter.emit(event_types.STATIC_CHECK_STARTED, {"checks": static_result.get("checks")},
                  stage="static_check")
     if not static_result.get("ok"):
+        source = ("规则修复候选" if opt_config.get("provider") == "heuristic" else "规则回退候选") if outcome.get("used_fallback") else "模型候选"
+        failed_checks = [item for item in static_result.get("checks", []) if not item.get("ok")]
+        errors = static_result.get("errors") or []
+        reasons = [f"{item.get('path') + '：' if item.get('path') else ''}{item.get('message') or item.get('code')}"
+                   for item in errors[:3]]
+        if not reasons:
+            reasons = [str(item.get("message") or item.get("name")) for item in failed_checks[:3]]
+        reason = "；".join(reasons)[:1000] or "检查项未通过，查看技术详情。"
         emitter.issue(event_types.STATIC_CHECK_FAILED,
                       error_code="static_check_failed",
                       title="静态检查未通过",
-                      message="候选包存在路径、引用、结构或答案硬编码问题。",
+                      message=f"{source}未通过检查：{reason}",
                       impact="本轮候选被拒绝，不进入复测。",
-                      next_action="查看检查项并修正优化器输出。",
+                      next_action=("按具体检查项核对规则补丁及原 Skill；若前面模型请求失败，先处理该原因后重新优化。"
+                                   if outcome.get("used_fallback") else "按具体检查项核对候选补丁及原 Skill 后重新优化。"),
                       level="error", stage="static_check",
-                      extra={"checks": static_result.get("checks")})
+                      extra={"checks": static_result.get("checks"), "errors": errors,
+                             "candidate_source": "heuristic" if outcome.get("used_fallback") else "model"})
         _record_candidate(run_id, None, outcome, checks=static_result)
         _finish_inconclusive(
             run, emitter, "静态检查未通过，未进入复测",

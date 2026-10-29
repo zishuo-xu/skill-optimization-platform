@@ -1,6 +1,7 @@
 """A stream-only HTTP route checks both optimizer probing and patch generation."""
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app import optimizer, persistence, services
@@ -10,6 +11,9 @@ from tests.conftest import create_demo_project
 
 
 class StreamOnlyGateway:
+    def __init__(self, chunk_delay=0):
+        self.chunk_delay = chunk_delay
+
     def __enter__(self):
         self.requests = []
         owner = self
@@ -34,7 +38,9 @@ class StreamOnlyGateway:
                     {'choices': [], 'usage': {'prompt_tokens': 7, 'completion_tokens': 5}},
                 ]
                 for chunk in chunks:
+                    time.sleep(owner.chunk_delay)
                     self.wfile.write(('data: ' + json.dumps(chunk) + '\n\n').encode())
+                    self.wfile.flush()
                 self.wfile.write(b'data: [DONE]\n\n')
                 self.wfile.flush()
 
@@ -51,6 +57,27 @@ class StreamOnlyGateway:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(3)
+
+
+def test_optimizer_stream_total_timeout_and_longer_config_recovery():
+    with StreamOnlyGateway(chunk_delay=0.12) as gateway:
+        cfg = {'provider': 'openai_http', 'base_url': gateway.url, 'model': 'stream-only',
+               'stream': True, 'timeout_s': 0.2, 'max_retries': 0}
+        emit = FakeEmit()
+        result = optimizer.generate_candidate(_context([_routing_failure()], optimizer_config=cfg),
+                                              build_adapter(cfg), emit)
+        assert result['used_fallback'] is True
+        issue = emit.by_type('optimizer_call_failed')[0]['payload']['issue']
+        assert issue['title'] == '优化模型请求超时'
+        assert issue['technical_detail']['adapter_error_code'] == 'timeout'
+        assert issue['technical_detail']['request_timeout_s'] == 0.2
+        assert '发布' in issue['next_action']
+        assert emit.types.index('optimizer_call_failed') < emit.types.index('fallback_started')
+        longer = {**cfg, 'timeout_s': 2}
+        recovered = optimizer.generate_candidate(_context([_routing_failure()], optimizer_config=longer),
+                                                 build_adapter(longer), FakeEmit())
+        assert recovered['status'] == 'ok' and recovered['used_fallback'] is False
+        assert len(gateway.requests) == 2
 
 
 def test_optimizer_probe_and_generation_use_published_stream_setting(client):

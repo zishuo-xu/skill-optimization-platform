@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import traceback
 import uuid
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -1495,6 +1496,7 @@ def generate_candidate(context: Mapping[str, Any],
         "truncated": False,
     }, call_id=call_id)
 
+    started_at = time.monotonic()
     try:
         response = adapter.invoke(messages, config, [])
     except Exception as exc:  # noqa: BLE001 - direct cause must be recorded
@@ -1502,13 +1504,20 @@ def generate_candidate(context: Mapping[str, Any],
             "exception_type": type(exc).__name__,
             "exception_message": _preview(str(exc), 500)[0],
             "traceback": _redact(traceback.format_exc())[:4000],
+            "adapter_error_code": getattr(exc, "code", None),
+            "elapsed_ms": round((time.monotonic() - started_at) * 1000),
         }
+        timed_out = detail["adapter_error_code"] == "timeout"
+        if config.get("provider") == "openai_http":
+            detail["request_timeout_s"] = config.get("timeout_s") or config.get("timeout") or 60
         event = _emit(emit, event_types.OPTIMIZER_CALL_FAILED, {
             **_issue_payload(
                 "optimizer_call_failed",
-                "调用优化模型失败，未获得可用输出。",
-                impact="本轮无法生成模型候选，将使用启发式回退（如启用）。",
-                next_action="检查模型连接、凭据与请求配置后新建运行。",
+                "优化模型请求超时，未获得完整可用输出。" if timed_out else "调用优化模型失败，未获得可用输出。",
+                title="优化模型请求超时" if timed_out else "优化器调用失败",
+                impact="本轮无法生成模型候选，将尝试启发式回退。" if allow_fallback else "本轮无法生成模型候选，未启用启发式回退。",
+                next_action=("在执行环境草稿中调整优化模型的请求超时，保存并发布后新建运行；流式输出不会重置总计时，连接测试成功也不保证完整优化请求能按时完成。"
+                             if timed_out else "检查模型连接、凭据与请求配置后新建运行。"),
                 technical_detail=detail,
             ),
             "exception_type": detail["exception_type"],

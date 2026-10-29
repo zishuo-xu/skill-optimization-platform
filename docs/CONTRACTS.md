@@ -279,6 +279,8 @@ class ModelAdapter:                     # app/adapters/base.py
 
 ### 2.7 优化器（`app/optimizer.py`, `app/patch.py`, `app/acceptance.py`）
 
+`optimizer_call_failed` 保留阶段错误码，超时时 issue 标题/原因直接说明请求超时；技术详情记录适配器错误码、耗时及 HTTP 请求超时配置。`static_check_failed` 记录具体 `errors`、`checks` 和 `candidate_source`（`model`/`heuristic`），摘要区分模型、规则修复及失败后回退的候选，最多展示前三个具体错误。静态检查判定及历史事件不变。
+
 优化器输入（只含 optimize 集失败证据，不含 validation/final_test 内容）：
 
 ```json
