@@ -227,7 +227,7 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
   但返回 warning `no_final_test`。分组不跨集合。
 - `coverage(cases, skill_ids, tools)`：见 `persistence.dataset_coverage` 的返回结构；
   未覆盖项前端显示“未评估”。
-- 已发布数据不可原地修改；可通过 `POST /datasets/{did}/draft` 复制为草稿，使用 `PUT /datasets/{did}/cases/{cid}` 携带 `expected_hash` 原子修改，再通过发布接口校验后生成新版本。草稿不参与运行，发布新版本后需要重跑基线；旧版本和历史运行保持不变。
+- 已发布数据不可原地修改；可通过 `POST /datasets/{did}/draft` 复制为草稿，使用 `PUT /datasets/{did}/cases/{cid}` 携带 `expected_hash` 原子修改，再通过发布接口校验后生成新版本。草稿不参与运行，日常内容变更后需要重跑；旧版本和历史运行保持不变。
 
 ### 2.6 模型适配层与执行循环（`app/adapters/*`, `app/execution.py`）
 
@@ -277,6 +277,8 @@ class ModelAdapter:                     # app/adapters/base.py
   `case_timeout_s`、`max_context_chars`、`context_overflow`（error/frozen_strategy）。
 - 取消/超时：`case_timeout_s` 到点→`timeout`（infrastructure）；取消→`cancelled`。
 
+优化准备阶段使用 `results_preparation`：根据 `snapshot.evaluation_reuse` 复用指定测试或前一候选复测结果，仅执行缺失/无效结果；具体来源约束、兼容条件、计数与补测失败行为见 [创建运行 API](API.md)。运行版本指纹保持历史含义，候选仍全量重跑日常集。
+
 ### 2.7 优化器（`app/optimizer.py`, `app/patch.py`, `app/acceptance.py`）
 
 模型性能诊断使用 INFO 事件 `model_request_info`（业务/评分）和 `optimizer_request_info`（优化），以 `call_id` 关联请求，payload 的 `attempt` 区分重试。HTTP 与 WebSocket 均记录开始、响应/连接、首次数据/正文/工具调用、接收进度、尝试成功或失败；评分请求保留 `purpose=judge`。时间为当前尝试起点的单调时钟毫秒数；总优化耗时另见 `optimizer_call_finished.elapsed_ms`。计数不携带正文、推理文本、URL、请求头或凭据。收到流式数据时每 10 秒最多一个 `stream_progress`，无数据阻塞期间不生成假心跳；缺失时间为 null，不记为 0。非流式只观测 HTTP 响应和完整结果，不能提供首段正文时间。推理字段只统计服务显式返回的 `reasoning_content` 长度，不代表能观察模型内部推理。
@@ -320,6 +322,7 @@ class ModelAdapter:                     # app/adapters/base.py
 - `patch.static_check(base_files, patched_files, manifest, case_ids) -> {"ok", "checks":
   [{"name","ok","message"}], "errors": []}`：路径白名单、引用完整性、结构、
   “不得写入测试 case_id / 标准答案硬编码”扫描。
+  引用扫描区分 Markdown 链接（相对当前文档）和反引号包裹的 `references/`、`skill/`、`skills/` 包内路径（相对包根目录），不为不存在的链接猜测其他位置。同一文档的同一缺失目标只报一次，并附首次位置的 `line`、`reference`、`reference_kind` 和 `resolved_path`；真实缺失文件仍拒绝候选，历史结果不改写。
 - `optimizer.build_prompt(context) -> messages`；`optimizer.parse_output(raw) -> dict`
   失败时区分 `optimizer_empty_response` / `optimizer_parse_failed`；
   `optimizer.heuristic_candidate(context) -> dict | None`（无模型/解析失败回退，
@@ -396,7 +399,7 @@ candidate_generation → static_check → retest`（成功候选重跑后 decisi
 | `POST /datasets/{did}/publish` | 草稿完整校验并发布；需 `expected_hash`、`expected_current_version`，并发冲突返回 409 |
 | `GET /projects/{pid}/versions` | 版本记录（Skill/环境/数据集） |
 | `GET /projects/{pid}/overview` | 概览：配置完整性、最近指标、最近运行 |
-| `POST /runs` | `{project_id, mode: evaluate|baseline|optimize|validate|final_test, source_run_id?, parent_run_id?, expected_*?, reuse_baseline?}` + `Idempotency-Key`；202 `run_view`（主标识为 `id`） |
+| `POST /runs` | `{project_id, mode: evaluate|baseline|optimize|validate|final_test, source_run_id?, evaluation_run_id?, parent_run_id?, expected_*?, reuse_baseline?}` + `Idempotency-Key`；202 `run_view`（主标识为 `id`） |
 | `GET /runs?project_id=` | 运行列表 |
 | `GET /runs/{rid}` | 运行详情（状态/阶段/进度/指标/决策/candidate） |
 | `POST /runs/{rid}/cancel` | 取消 |

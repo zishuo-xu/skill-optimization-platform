@@ -1,8 +1,8 @@
 * text=auto
 
 # Windows one-click start must be checked out with CRLF for cmd.exe
-*.bat -text
-*.cmd -text
+*.bat -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+*.cmd -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 
 # Unix / macOS launchers keep LF
 *.sh text eol=lf

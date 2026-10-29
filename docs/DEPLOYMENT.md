@@ -72,6 +72,7 @@ bash scripts/setup.sh
 | `SKILLOPT_PRICE_INPUT_1K` | `0` | 每 1K 输入 Token 单价；与输出单价一起配置后报告显示费用 |
 | `SKILLOPT_PRICE_OUTPUT_1K` | `0` | 每 1K 输出 Token 单价 |
 | `SKILLOPT_LOG_LEVEL` | `INFO` | 日志级别 |
+| `SKILLOPT_LOG_DIR` | `<data>/logs` | 服务进程日志目录，自动创建；写入失败会在终端告警并继续运行 |
 
 模型凭据在执行环境配置中设置，可使用 `env:变量名` 引用服务端进程环境变量；须让实际运行服务的进程能读取该变量。API 返回配置时脱敏，企业网关请求体字段按配置原样使用。不要把凭据写进 Skill 或测试数据。
 
@@ -145,6 +146,10 @@ for f in web/js/*.js web/js/views/*.js; do node --check "$f"; done
 GitHub Actions 工作流 `.github/workflows/ci.yml` 在 push / PR 时执行同样的测试与 JS 语法检查。
 
 ## 9. 常见问题
+
+通过 `start.bat`、`start.sh`、`start.command` 或 `python -m app.server` 启动后，服务日志同时实时输出到终端和实际数据目录的 `logs/server.log`，可用 `SKILLOPT_LOG_DIR` 改目录。每份文件最大约 5 MB，保留当前文件和 5 份轮转备份（`server.log.1` 至 `.5`）；重启继续追加，不清空历史。启动时会打印实际 Python、代码/数据/数据库/日志路径，以及目录、数据库、入门引导和 Worker 初始化耗时。依赖安装等服务进程启动前的脚本输出仍在终端；日志目录不可写时会明确告警并继续输出到终端。
+
+排查运行时可搜索 `run_id`，再用 `call_id` 对照模型请求的响应、首数据、正文计数、超时和重试。服务文件日志仅同步白名单元数据与最多 5 条静态错误摘要，不复制 Prompt、工具参数、模型正文、推理正文或连接配置；完整业务证据仍在页面运行记录中。默认不输出浏览器轮询的访问日志，避免把请求诊断淹没。Windows 可用 `Get-Content .\data\logs\server.log -Tail 100 -Wait`，macOS/Linux 可用 `tail -n 100 -f data/logs/server.log`；自定义数据或日志目录时替换对应路径。
 
 | 现象 | 原因/处理 |
 | --- | --- |

@@ -2,7 +2,7 @@
 
 Stages (§18):
 
-``preflight → baseline_eval → error_analysis → candidate_generation →
+``preflight → results_preparation → error_analysis → candidate_generation →
 static_check → retest → decision``
 
 Baseline runs only execute ``baseline_eval``; final-test runs only execute
@@ -25,7 +25,7 @@ from . import judge as judge_mod
 from . import optimizer, services, skill_package, fixtures
 from .model_output import redact_output
 from .adapters.registry import build_adapter
-from .errors import AppError
+from .errors import ConflictError, AppError
 from .run_events import EventEmitter
 
 log = logging.getLogger(__name__)
@@ -216,37 +216,63 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     snapshot = run.get("snapshot") or {}
     if snapshot.get("source_run_id"):
         source, _ = services._validate_source(
-            persistence.get_project(run["project_id"]), snapshot["source_run_id"])
+            persistence.get_project(run["project_id"]), snapshot["source_run_id"], for_optimization=True)
         frozen = snapshot.get("skill_version") or {}
         current = persistence.get_skill_version(run["baseline_skill_version_id"])
         root = (source.get("snapshot") or {}).get("root_skill_version_id") or source["baseline_skill_version_id"]
+        if persistence.get_project(run['project_id'])['current_environment_id'] != run['environment_id']:
+            raise ConflictError('排队期间当前环境已变化，请重新启动优化', code='version_conflict')
         if (source.get("candidate_skill_version_id") != current["id"]
                 or frozen.get("id") != current["id"]
                 or frozen.get("content_hash") != current.get("content_hash")
                 or snapshot.get("root_skill_version_id") != root):
             raise AppError("继续优化预检失败：来源或冻结版本已变化")
 
-    # -- baseline ---------------------------------------------------------
-    cached_rows = persistence.get_case_results_for_run(run_id, "baseline")
-    cached_case_ids = {row["case_id"] for row in cached_rows}
-    if (cached_rows and cached_case_ids >= {case["case_id"] for case in optimize_cases}
-            and {(case["case_id"], repeat) for case in optimize_cases
-                 for repeat in range(1, services._baseline_repeats(env) + 1)}
-                <= {(row["case_id"], row.get("repeat_index", 1)) for row in cached_rows}):
-        emitter.set_stage("baseline_eval", message="复用兼容基线结果")
-        emitter.emit(event_types.STAGE_STARTED, {
-            "message": "复用兼容基线", "baseline_run_id": run.get("baseline_run_id"),
-            "cases": len(cached_rows)}, stage="baseline_eval")
-        baseline_metrics = _metrics_from_rows(run, optimize_cases, cached_rows,
-                                              planned=len(optimize_cases) * services._baseline_repeats(env))
-        emitter.emit(event_types.STAGE_COMPLETED, {
-            "metrics": _metric_summary(baseline_metrics), "cache_hit": True,
-        }, stage="baseline_eval")
+    # Prepare existing daily evidence, executing only missing/invalid results.
+    cached_rows = persistence.get_case_results_for_run(run_id, 'baseline')
+    reusable_keys = {(row['case_id'], row.get('repeat_index', 1))
+                     for row in cached_rows if services.reusable_result(row)}
+    expected_keys = {(case['case_id'], repeat) for case in optimize_cases
+                     for repeat in range(1, services._baseline_repeats(env) + 1)}
+    reusable_keys &= expected_keys
+    plan = snapshot.get('evaluation_reuse') or {}
+    missing_count = len(expected_keys - reusable_keys)
+    origin = plan.get('source_run_id') or run.get('baseline_run_id')
+    if not missing_count:
+        kind = '上一轮候选复测结果' if plan.get('source_phase') == 'candidate' else '测试结果'
+        message = f'已复用{kind} {origin}，共 {len(reusable_keys)} 条，本阶段未调用模型'
     else:
-        _stage(emitter, "baseline_eval", "执行优化集基线评测")
+        message = f"复用 {len(reusable_keys)} 条，补测 {missing_count} 条：{plan.get('reason') or '缺少完整测试结果'}"
+    emitter.set_stage('results_preparation', message=message)
+    emitter.emit(event_types.STAGE_STARTED, {
+        'message': message, 'source_run_id': origin,
+        'source_phase': plan.get('source_phase') or 'baseline',
+        'skill_version_id': run['baseline_skill_version_id'],
+        'reused_count': len(reusable_keys), 'execute_count': missing_count,
+        'reason': plan.get('reason'),
+    })
+    if missing_count:
         baseline_metrics = _evaluate_split(
-            run, env, optimize_cases, phase="baseline", repeats=services._baseline_repeats(env),
-            adapter=adapter, emitter=emitter, usage_tracker=usage_tracker, cancel=cancel)
+            run, env, optimize_cases, phase='baseline', repeats=services._baseline_repeats(env),
+            adapter=adapter, emitter=emitter, usage_tracker=usage_tracker, cancel=cancel,
+            reusable_keys=reusable_keys)
+    else:
+        baseline_metrics = _metrics_from_rows(run, optimize_cases, cached_rows,
+                                              planned=len(expected_keys), count_usage=False)
+        emitter.emit(event_types.STAGE_COMPLETED, {
+            'message': message, 'metrics': _metric_summary(baseline_metrics), 'cache_hit': True,
+            'reused_count': len(reusable_keys), 'execute_count': 0, 'source_run_id': origin,
+        })
+    ready_rows = persistence.get_case_results_for_run(run_id, 'baseline')
+    ready_keys = {(row['case_id'], row.get('repeat_index', 1))
+                  for row in ready_rows if services.reusable_result(row)}
+    if ready_keys != expected_keys:
+        _finish_inconclusive(run, emitter,
+            '补测后仍有基础设施错误或缺失结果，请修复模型连接或评分服务后重新优化；本轮未调用优化器。',
+            error_code='evaluation_incomplete',
+            metrics={'baseline': baseline_metrics, 'candidate': None, 'delta': None,
+                     'validation': None, 'final': None})
+        return
 
     # -- error analysis ---------------------------------------------------
     _stage(emitter, "error_analysis", "聚合失败证据（仅优化集）")
@@ -755,7 +781,8 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                     repeats: int, adapter: Any, emitter: EventEmitter,
                     usage_tracker: "_UsageTracker", cancel: "_CancellationToken",
                     skill_version_id: str | None = None,
-                    repeat_index: int | None = None) -> dict[str, Any]:
+                    repeat_index: int | None = None,
+                    reusable_keys: set | None = None) -> dict[str, Any]:
     run_id = run["id"]
     skill_version_id = skill_version_id or run["baseline_skill_version_id"]
     manifest = persistence.get_skill_version(skill_version_id).get("manifest") or {}
@@ -771,6 +798,14 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
     usage_total: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     duration_total = 0
     rows: list[dict[str, Any]] = []
+    reusable_keys = reusable_keys or set()
+    if reusable_keys:
+        for row in persistence.get_case_results_for_run(run_id, phase):
+            if (row['case_id'], row.get('repeat_index', 1)) in reusable_keys:
+                rows.append({'case': cases_by_id[row['case_id']], 'score': row['scores'],
+                             'actual': row.get('actual') or {}})
+        completed = len(rows)
+        emitter.progress(completed=completed, total=total)
     compare_rules = (env.get("scorer_config") or {}).get("compare")
     value_judge = judge_mod.ValueJudge.from_env(env)
 
@@ -786,6 +821,9 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
 
     def run_one(case: Mapping[str, Any], repeat: int) -> dict[str, Any]:
         emitter.case_started(case["case_id"])
+        emitter.emit(event_types.CASE_STARTED, {'phase': phase, 'repeat_index': repeat},
+                     case_id=case['case_id'], split=case.get('split'),
+                     variant='main', repeat_index=repeat)
         request_payload = _case_request(run, env, case, skill_version_id,
                                         manifest, loader_config, run_config, cancel)
         request_payload.update(stage=emitter.stage, split=case.get("split"),
@@ -860,6 +898,8 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
     futures = {}
     for repeat in repeat_indices:
         for case in cases:
+            if (case['case_id'], repeat) in reusable_keys:
+                continue
             if cancel.cancelled():
                 break
             futures[executor.submit(run_one, case, repeat)] = (case, repeat)
@@ -911,6 +951,7 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                            for entry in rows))
     emitter.emit(event_types.STAGE_COMPLETED, {
         "phase": phase, "count": len(rows), "metrics": _metric_summary(metrics),
+        "reused_count": len(reusable_keys), "execute_count": len(futures),
         "duration_ms": int((time.monotonic() - started) * 1000),
     }, stage=emitter.stage)
     return metrics
@@ -987,7 +1028,7 @@ def _case_request(run: Mapping[str, Any], env: Mapping[str, Any],
 
 def _metrics_from_rows(run: Mapping[str, Any], cases: Sequence[Mapping[str, Any]],
                        rows: Sequence[Mapping[str, Any]], *,
-                       planned: int | None = None) -> dict[str, Any]:
+                       planned: int | None = None, count_usage: bool = True) -> dict[str, Any]:
     cases_by_id = {case["case_id"]: case for case in cases}
     pairs = []
     usage_total: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
@@ -997,12 +1038,13 @@ def _metrics_from_rows(run: Mapping[str, Any], cases: Sequence[Mapping[str, Any]
         if case is None:
             continue
         pairs.append((case, row.get("scores") or {}))
-        usage = row.get("usage") or {}
+        usage = (row.get("usage") or {}) if count_usage else {}
         for key in ("input_tokens", "output_tokens"):
             value = usage.get(key)
             if isinstance(value, (int, float)):
                 usage_total[key] += int(value)
-        duration += int(row.get("duration_ms") or 0)
+        if count_usage:
+            duration += int(row.get("duration_ms") or 0)
     return evaluation.aggregate_metrics(
         pairs, planned=planned or len(rows), duration_ms=duration,
         usage=usage_total, cost=_cost_value(usage_total),

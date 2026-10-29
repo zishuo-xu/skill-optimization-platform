@@ -44,8 +44,8 @@ def test_environment_versions_are_immutable_and_invalidate_baseline(demo, baseli
     assert not cache_events
     baseline_events = [event for event in events
                        if event["type"] == "stage_started"
-                       and (event.get("payload") or {}).get("message")
-                       == "执行优化集基线评测"]
+                       and event.get('stage') == 'results_preparation'
+                       and (event.get('payload') or {}).get('execute_count', 0) > 0]
     assert baseline_events
 
 

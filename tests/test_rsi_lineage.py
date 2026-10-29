@@ -63,7 +63,13 @@ def test_continue_rejects_stale_and_foreign_sources(demo):
     with pytest.raises(ConflictError):
         services.create_run({'project_id': other['project']['id'], 'mode': 'optimize', 'source_run_id': source['id']})
     services.create_environment(demo['project']['id'], environment_payload(), status='published', set_current=True)
-    assert not services.run_view(source['id'])['can_continue_optimization']
+    assert services.run_view(source['id'])['can_continue_optimization']
+    assert not services.run_view(source['id'])['can_validate']
+    continued = services.create_run({'project_id': demo['project']['id'], 'mode': 'optimize', 'source_run_id': source['id']})
+    assert continued['baseline_cache_hit']
+    # Changing the published root still rejects continuation.
+    from tests.conftest import build_package_zip
+    services.create_skill_version(demo['project']['id'], zip_bytes=build_package_zip(), status='published', set_current=True)
     with pytest.raises(ConflictError):
         services.create_run({'project_id': demo['project']['id'], 'mode': 'optimize', 'source_run_id': source['id']})
 
@@ -75,7 +81,9 @@ def test_evaluation_cache_rejects_infrastructure_error_and_incomplete_repeats(de
         split='optimize', scores={'status': 'infra'}, error_code='provider_error')
     run = services.create_run({'project_id': demo['project']['id'], 'mode': 'optimize'})
     assert not run['baseline_cache_hit']
-    assert not persistence.get_case_results_for_run(run['id'])
+    copied = persistence.get_case_results_for_run(run['id'])
+    assert len(copied) == len(rows) - 1
+    assert all(row['case_id'] != rows[0]['case_id'] for row in copied)
 
 
 def test_evaluation_cache_requires_matching_rules(demo):

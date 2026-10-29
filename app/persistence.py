@@ -673,7 +673,8 @@ def create_run(project_id: str, *, mode: str, baseline_skill_version_id: str,
                snapshot: Mapping[str, Any] | None = None,
                idempotency_key: str | None = None,
                fingerprint: str = "", status: str = "queued",
-               stage: str = "preflight") -> dict[str, Any]:
+               stage: str = "preflight",
+               baseline_results: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     run_id = ids.new_id("run")
     stamp = now_iso()
     with transaction() as conn:
@@ -689,6 +690,25 @@ def create_run(project_id: str, *, mode: str, baseline_skill_version_id: str,
              baseline_run_id, _dumps(acceptance or {}),
              fingerprint, idempotency_key, stamp, stamp),
         )
+        # Make the queued run and copied evidence visible atomically. The Worker
+        # must never claim a run while its baseline is only partially copied.
+        for row in baseline_results:
+            copied = conn.execute(
+                "INSERT INTO case_results (run_id, case_id, variant, repeat_index, phase, split, "
+                "selected_skills_json, action, tool_calls_json, missing_fields_json, actual_json, "
+                "scores_json, error_code, error_message, result_source, capabilities_json, "
+                "usage_json, duration_ms, created_at) "
+                "SELECT ?, case_id, variant, repeat_index, 'baseline', split, "
+                "selected_skills_json, action, tool_calls_json, missing_fields_json, actual_json, "
+                "scores_json, error_code, error_message, result_source, capabilities_json, "
+                "usage_json, duration_ms, ? FROM case_results WHERE id = ? AND run_id = ?",
+                (run_id, stamp, row['id'], row['run_id']))
+            if copied.rowcount != 1:
+                raise ConflictError('来源测试结果已变化，请重新启动', code='evaluation_source_changed')
+        plan = (snapshot or {}).get('evaluation_reuse') or {}
+        cache_hit = bool(baseline_results) and plan.get('execute_count') == 0
+        conn.execute('UPDATE runs SET rules_version = ?, baseline_cache_hit = ? WHERE id = ?',
+                     ((snapshot or {}).get('rules_version'), int(cache_hit), run_id))
     return get_run(run_id)
 
 
@@ -748,6 +768,14 @@ def find_latest_evaluation(project_id: str, fingerprint: str) -> dict[str, Any] 
         " AND status = 'completed' ORDER BY created_at DESC LIMIT 1",
         (project_id, fingerprint),
     )
+
+
+def evaluation_sources(project_id: str) -> list[dict[str, Any]]:
+    """Completed daily evidence only; validation/final-test results never qualify."""
+    return _fetchall(
+        "SELECT * FROM runs WHERE project_id = ? AND status = 'completed' "
+        "AND mode IN ('evaluate', 'baseline', 'optimize') ORDER BY created_at DESC",
+        (project_id,))
 
 
 def find_cached_baseline(project_id: str, fingerprint: str, rules_version: str | None = None) -> dict[str, Any] | None:

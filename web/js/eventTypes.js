@@ -8,6 +8,7 @@
 export const STAGES = [
   { id: 'preflight', label: '预检', description: '检查文件、环境和数据' },
   { id: 'baseline_eval', label: '基线评测', description: '在测试集上执行基线 Skill' },
+  { id: 'results_preparation', label: '准备测试结果', description: '复用已有结果，补测缺失或失效部分' },
   { id: 'error_analysis', label: '错误分析', description: '聚合失败证据与归因' },
   { id: 'candidate_generation', label: '生成候选', description: '请求优化器生成本地补丁' },
   { id: 'static_check', label: '静态检查', description: '检查路径、引用与禁止修改项' },

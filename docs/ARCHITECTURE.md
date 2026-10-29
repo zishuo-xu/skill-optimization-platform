@@ -53,7 +53,7 @@ flowchart LR
 | --- | --- |
 | `app/api_v3.py` | HTTP/SSE 路由、入参校验、错误映射、资源下载 |
 | `app/services.py` | 应用服务：项目详情/概览、版本导入发布、数据集预检、运行创建/视图、应用候选、报告 |
-| `app/single_round.py` | 单轮流水线：预检、基线、错误分析、候选生成、静态检查、复测、决策；取消控制 |
+| `app/single_round.py` | 单轮流水线：预检、准备测试结果、错误分析、候选生成、静态检查、复测、决策；取消控制 |
 | `app/execution.py` | 单案例执行循环：固定消息构造、内部工具、业务工具 + fixture、步数/超时/取消 |
 | `app/adapters/*` | `ModelAdapter` 接口与 demo/HTTP/WS 适配器、WS 分帧与事件聚合、文本协议解析 |
 | `app/obs_tools.py` | `select_skill` / `read_skill` / `finish` 协议与路由事件 |
@@ -84,7 +84,7 @@ flowchart LR
    仅保留文件划分且未指定用途的案例按 group 固定种子分配 →
    发布 `DatasetVersion`（不可原地修改）。
 5. 修订数据集时复制已发布版本为草稿，逐案例保存并更新 hash/校验报告；发布前完整校验，
-   同一事务核对草稿 hash 与项目当前数据集指针。草稿不用于运行，发布后旧运行仍引用原版本，新版本需重跑基线。
+   同一事务核对草稿 hash 与项目当前数据集指针。草稿不用于运行，发布后旧运行仍引用原版本，日常案例内容变化后需重跑，内容不变或仅补充留出案例可复用日常结果。
 
 环境页的连接测试与评测运行独立：复用正式 HTTP/WS 适配器发送一次自定义输入短请求，
 不调用业务工具，不创建运行或保存配置；同步探测在 threadpool 执行。详情见 [连接测试](CONNECTION_TEST.md)。
@@ -111,7 +111,7 @@ stateDiagram-v2
 1. `evaluate`：`preflight → baseline_eval`，只评测日常优化集，不生成候选或接受结论。
 2. `baseline`：只执行日常优化集 `baseline_eval`，自身不复制缓存；已完成的 `evaluate`/`baseline`
    运行都可作为后续 `optimize` 的缓存来源，复用发生在 optimize 创建/执行时。
-3. `optimize`：`preflight → baseline_eval → error_analysis → candidate_generation → static_check → retest`。
+3. `optimize`：`preflight → results_preparation → error_analysis → candidate_generation → static_check → retest`。
    失败证据只来自优化集；候选补丁只应用于隔离副本，通过检查后创建不可变 `status=candidate`
    版本，候选在优化集重跑；成功生成候选时运行以“待独立验收”完成且不写入 accept/reject。
    没有失败证据、候选未生成或静态检查失败时，运行可完成为 `inconclusive`；平台异常则为 `failed`。
@@ -122,8 +122,7 @@ stateDiagram-v2
 5. `final_test`：只执行 `final_test` 集，不参与候选生成或选择。
 
 候选链以最初 root 基线 Skill 版本为锚点；后续优化必须从前一优化运行的候选继续，但每次候选仍写入
-隔离的不可变版本并保留 `parent_id`/`source_run_id`。项目当前 Skill、环境与 root 基线不一致时，
-来源校验或应用时的 CAS 检查返回冲突，不能静默覆盖当前版本。
+隔离的不可变版本并保留 `parent_id`/`source_run_id`。项目当前 Skill 与 root 不一致时拒绝继续优化；环境变化时可继续优化但必须重新检查测试证据兼容性。正式验收仍严格检查来源环境，应用时的版本 CAS 保护保持不变。
 
 ## 5. 数据模型
 
@@ -166,8 +165,7 @@ erDiagram
 
 - R/A/J 的计算口径、严格 JSON 比较、clarify/no_action、infra 与能力失败的区别见
   [评分口径（score-v1）](SCORING.md)。
-- 基线缓存指纹 = Skill 版本 + 环境版本 + 数据版本 + 评分器版本 + 基础重复次数；
-  任一变化即缓存失效并重新评测，概览会说明不可复用原因。
+- 运行指纹仍冻结 Skill/环境/数据版本、评分器和重复次数以追溯历史。测试证据复用另按实际日常内容及执行/评分配置比较，排除优化模型、日志与留出内容；协议变化仍失效。指定来源时不替换记录；继续优化使用前一候选复测，部分有效结果按案例及重复次数复用，仅补测缺失/基础设施错误。来源和计划保存在 `snapshot.evaluation_reuse`，补测不完整时禁止生成候选。
 - `accept-v1` 只用于独立 `validate`：R/A 不降、至少一项严格升、J 不降、critical 不回归、无基础设施/
   包完整性错误，且验证完整、配对重复至少 3 次；全部持平拒绝，证据不足判 `inconclusive`。
   默认配对重复次数为 3；若环境显式配置低于 3，验收证据不足并判 `inconclusive`。规则与重复次数在运行启动时冻结。

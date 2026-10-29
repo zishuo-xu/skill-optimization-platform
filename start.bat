@@ -13,6 +13,8 @@ rem    start.bat --help
 rem ============================================================================
 
 setlocal EnableExtensions EnableDelayedExpansion
+set "PYTHONUNBUFFERED=1"
+set "PYTHONUTF8=1"
 chcp 65001 >nul
 
 cd /d "%~dp0"
@@ -148,9 +150,11 @@ if "%OPEN_BROWSER%"=="1" (
 
 echo.
 echo [start] Starting server: %BASE_URL%
+echo [start] Project directory: %ROOT%
+echo [start] Runtime paths, log file and initialization progress follow below.
 echo [start] Press Ctrl+C to stop the server.
 echo.
-"%VENV_PY%" -m app.server
+"%VENV_PY%" -u -m app.server
 set "EXITCODE=%ERRORLEVEL%"
 echo.
 if not "%EXITCODE%"=="0" (

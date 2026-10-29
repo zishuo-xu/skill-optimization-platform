@@ -691,7 +691,7 @@ export default async function runDetailsView(container, ctx) {
         button({ label: state.validateBusy ? '正在启动验收…' : '独立验收', variant: 'secondary', iconName: 'shield', disabled: state.validateBusy || run.can_validate === false, onClick: startValidation }),
         button({ label: '看改了什么', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') }),
         button({ label: '查看案例对比', variant: 'secondary', iconName: 'run', onClick: () => switchTab('cases') }),
-        run.can_validate === false ? h('span.small.muted', { text: '当前版本或运行条件已变化，请返回工作台重新优化。' }) : null,
+        run.can_validate === false ? h('span.small.muted', { text: run.can_continue_optimization ? '环境已更新，可继续优化；新运行会判断是否需要补测，再进行独立验收。' : '当前 Skill 或候选已变化，请返回工作台重新评测。' }) : null,
       ];
     }
     if (run.mode !== 'evaluate' && run.decision === 'accept') {
@@ -906,7 +906,25 @@ export default async function runDetailsView(container, ctx) {
         sectionCard({ title: '执行与成本', body: executionStats() })
       )
     );
-    mount(resultHost, h('div.stack', null, verdictCard(), changeSummaryCard(), caseChangeCard(), metricDetails));
+    mount(resultHost, h('div.stack', null, verdictCard(), evaluationReuseCard(), changeSummaryCard(), caseChangeCard(), metricDetails));
+  }
+
+  function evaluationReuseCard() {
+    const plan = state.run.snapshot?.evaluation_reuse;
+    if (state.run.mode !== 'optimize' || !plan) return null;
+    const reused = Number(plan.reused_count || 0);
+    const executed = Number(plan.execute_count || 0);
+    return sectionCard({
+      title: '准备测试结果',
+      description: executed === 0 ? '直接分析已有失败案例，本阶段未调用模型。' : plan.reason,
+      body: h('div.stack', null,
+        h('p.small', { text: `复用 ${reused} 条 · 需执行 ${executed} 条（按案例 × 重复次数统计）` }),
+        h('p.small.muted', { text: `Skill：${plan.skill_version_id}` }),
+        plan.source_run_id ? button({
+          label: `${plan.source_phase === 'candidate' ? '上一轮候选复测' : '来源测试运行'}：${plan.source_run_id}`,
+          variant: 'ghost', href: `#/runs/${encodeURIComponent(plan.source_run_id)}/result`,
+        }) : null),
+    });
   }
 
   async function startOptimization(fromCandidate) {
@@ -919,8 +937,8 @@ export default async function runDetailsView(container, ctx) {
       const confirmed = await confirmDialog({
         title: fromCandidate ? '基于此候选继续优化' : '根据测试结果优化',
         message: fromCandidate
-          ? '以此候选为起点，使用当前日常测试集优化并重跑。不会发布候选或改变当前正式版本；整条迭代链的测试数据都将与独立验收隔离。'
-          : '使用本次评测的 Skill、模型配置与测试集生成候选并重跑。完整且兼容的测试结果会自动复用。',
+          ? '以此候选为起点，优先复用上一轮复测结果，分析失败并修改 Skill，再重跑完整日常测试集。执行条件变化或结果不完整时先补测；不会自动发布候选。'
+          : '固定使用本次测试记录作为来源，分析失败并修改 Skill，再重跑完整日常测试集。若当前业务执行配置或日常测试数据已变化，会先重新测试；只改优化模型配置可复用已有结果。',
         confirmText: '开始优化',
       });
       if (!confirmed) return;

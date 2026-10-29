@@ -41,7 +41,6 @@ from .base import (
     emit_event,
     json_dumps,
     normalize_tool_definitions,
-    safe_log_config,
     resolve_secret_ref,
 )
 from .stream_events import SSEEventAssembler, SSEParseError, aggregate, extract_stream_error
@@ -219,11 +218,11 @@ class EnterpriseWSAdapter(ModelAdapter):
         if isinstance(configured_deadline, (int, float)):
             deadline = min(deadline, float(configured_deadline))
         logger.info("enterprise_ws invoke %s", json_dumps({
-            "ws_url": self.ws_url,
+            "call_id": call_id,
             "model": body.get("model"),
             "messages": len(messages),
             "tools": len(tools or []),
-            "config": safe_log_config(effective),
+            "total_timeout_s": self.total_timeout_s,
         }))
         attempt = 0
         while True:

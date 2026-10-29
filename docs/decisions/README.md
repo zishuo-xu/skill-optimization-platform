@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | D01 | 优化 Skill 的工具执行准确率，单次生成一个候选 | `app/optimizer.py`、`app/patch.py`、`tests/test_a06_optimizer.py` |
 | D02 | 业务规则只有 Prompt + Skill，不另配 Tool Schema | `app/execution.py`、`tests/test_environment_prompt_skill_only.py` |
-| D03 | 日常评测与优化共用测试集，独立验收另行启动 | `app/single_round.py`、`app/services.py`、`tests/test_rsi_lineage.py` |
+| D03 | 日常结果优先复用，候选全量重跑，独立验收另行启动 | `app/single_round.py`、`app/services.py`、`tests/test_rsi_lineage.py` |
 | D04 | 隔离答案与留出数据，验收追溯 root 基线 | `app/services.py`、`app/single_round.py`、`tests/test_rsi_pipeline_feedback.py` |
 | D05 | 先加载新 Skill 正文，再生成业务调用 | `app/execution.py`、`app/obs_tools.py`、`tests/test_progressive_loop_boundaries.py` |
 | D06 | 业务工具用 fixture 模拟，保留失败调用证据 | `app/fixtures.py`、`app/execution.py`、`tests/test_fixture_diagnostics.py` |
@@ -40,6 +40,8 @@
 ## D03：日常迭代与正式验收分开
 
 **决定**：evaluate/baseline/optimize 使用日常集，内部字段仍叫 optimize。优化成功后只是候选完成重跑；validate(source_run_id) 才使用 validation 配对评测，并按 accept-v1 决定接受与否。final_test 作为额外留出，不参与候选选择。
+
+**结果复用**：从测试结果启动优化时固定证据来源；继续优化复用前一候选的复测结果。运行版本指纹与执行条件兼容性分开，优化模型或其超时变化不使业务结果失效。缺失或基础设施错误按案例及重复次数补测，仍不完整则停止生成候选；候选生成后仍重跑完整日常集。保留原始 root、历史快照和正式验收门槛。
 
 **原因**：日常只需一套测试数据便能启动迭代；正式应用需要未参与优化的证据，避免把对已知答案的适配当作泛化提升。
 

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from . import config, event_types, persistence
 from .model_output import response_json
+from .runtime_logging import log_run_event
 
 
 class EventEmitter:
@@ -111,6 +112,7 @@ class EventEmitter:
                 split=split, variant=variant, repeat_index=repeat_index,
                 attempt=attempt, call_id=call_id, level=level,
                 payload=safe_payload)
+        log_run_event(event)
         return event
 
     def issue(self, event_type: str, *, error_code: str, title: str, message: str,

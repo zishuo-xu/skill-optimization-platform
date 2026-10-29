@@ -1505,6 +1505,7 @@ def generate_candidate(context: Mapping[str, Any],
 
     started_at = time.monotonic()
     runtime_config = dict(config)
+    runtime_config["call_id"] = call_id
     runtime_config["_request_observer"] = lambda payload: _emit(
         emit, event_types.OPTIMIZER_REQUEST_INFO, payload, call_id=call_id)
     try:

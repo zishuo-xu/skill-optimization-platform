@@ -12,6 +12,7 @@
 # macOS 用户也可以直接双击 start.command。
 
 set -euo pipefail
+export PYTHONUNBUFFERED=1
 
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
@@ -279,7 +280,8 @@ on_signal() {
 trap on_signal INT TERM HUP
 
 log "启动服务：${BASE_URL}（按 Ctrl+C 停止）"
-"$VENV_PY" -m app.server &
+log "启动目录：${ROOT}；实际数据、日志文件位置及初始化进度见下方"
+"$VENV_PY" -u -m app.server &
 SERVER_PID=$!
 mkdir -p "$ROOT/.run"
 printf '%s\n' "$SERVER_PID" > "$ROOT/.run/server.pid"
@@ -310,7 +312,11 @@ PY
 )"
 
 printf '\n'
-log "服务已就绪：$BASE_URL"
+if [ "$ready" -eq 1 ]; then
+  log "服务已就绪（健康检查通过）：$BASE_URL"
+else
+  warn "进程仍在运行，但健康检查尚未通过：$BASE_URL"
+fi
 if [ -n "$project_links" ]; then
   while IFS='|' read -r name link; do
     [ -n "$name" ] && log "示例项目（${name}）：${link}"

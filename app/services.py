@@ -784,6 +784,99 @@ def run_fingerprint(skill_version_id: str, environment_id: str, dataset_id: str,
     })
 
 
+def evaluation_inputs(skill_id: str, env: Mapping[str, Any], dataset_id: str) -> dict[str, Any]:
+    """Execution evidence identity; optimizer/logging/holdout settings are excluded."""
+    daily = [{key: case.get(key) for key in
+              ('case_id', 'query', 'context', 'expected', 'fixtures', 'tags', 'group_id', 'critical')}
+             for case in persistence.all_cases(dataset_id)
+             if (case.get('split') or 'optimize') == 'optimize']
+    daily.sort(key=lambda case: case['case_id'])
+    run_config = dict(env.get('run_config') or {})
+    for key in ('validation_repeats', 'repeats_validation', 'log_level', 'transport_diagnostics'):
+        run_config.pop(key, None)
+    model_config = {key: value for key, value in (env.get('model_config') or {}).items()
+                    if key not in ('transport_diagnostics', 'log_level')}
+    return {
+        'skill': skill_id,
+        'daily_cases': hashing.hash_json(daily),
+        'prompt': hashing.hash_json(env.get('prompt') or ''),
+        'model': hashing.hash_json(model_config),
+        'loader': hashing.hash_json(env.get('loader_config') or {}),
+        'scorer': hashing.hash_json(env.get('scorer_config') or {}),
+        'execution': hashing.hash_json(run_config),
+    }
+
+
+def reusable_result(row: Mapping[str, Any]) -> bool:
+    score = row.get('scores') or {}
+    actual = row.get('actual') or {}
+    return (row.get('variant') == 'main' and score.get('status') in ('pass', 'fail')
+            and score.get('error_kind') != 'infrastructure'
+            and actual.get('error_kind') != 'infrastructure')
+
+
+def prepare_evaluation_reuse(project_id, skill_id, env, dataset_id, rules_version,
+                             *, source=None, phase='baseline', enabled=True):
+    """Choose one source; never silently replace an explicitly selected run."""
+    expected = {(case['case_id'], repeat)
+                for case in persistence.all_cases(dataset_id)
+                if (case.get('split') or 'optimize') == 'optimize'
+                for repeat in range(1, _baseline_repeats(env) + 1)}
+    plan = {'source_run_id': source['id'] if source else None, 'source_phase': phase,
+            'skill_version_id': skill_id, 'reused_count': 0, 'planned_count': len(expected),
+            'execute_count': len(expected), 'reused_results': [],
+            'reason': '尚无可复用的测试结果'}
+    if not enabled:
+        return {**plan, 'reason': '已要求重新执行测试'}, []
+    target = evaluation_inputs(skill_id, env, dataset_id)
+    labels = {'skill': 'Skill 版本', 'daily_cases': '日常测试案例、预期或模拟返回',
+              'prompt': '执行 Prompt', 'model': '业务模型配置', 'loader': 'Skill 加载配置',
+              'scorer': '评分配置', 'execution': '执行限制或重复次数'}
+    candidates = [source] if source else persistence.evaluation_sources(project_id)
+    best_rows = []
+    matched = False
+    for candidate in candidates:
+        candidate_phase = phase if source else 'baseline'
+        old_env = persistence.get_environment(candidate['environment_id'])
+        old_skill = candidate['candidate_skill_version_id'] if candidate_phase == 'candidate' else candidate['baseline_skill_version_id']
+        old_fingerprint = run_fingerprint(candidate['baseline_skill_version_id'], old_env['id'],
+            candidate['dataset_id'], (old_env.get('scorer_config') or {}).get('version') or config.SCORER_VERSION,
+            _baseline_repeats(old_env))
+        reason = None
+        if candidate.get('fingerprint') != old_fingerprint:
+            reason = '执行或评分协议已变化，需要重新测试'
+        elif candidate.get('rules_version') != rules_version:
+            reason = '规则版本已变化，需要重新测试'
+        else:
+            previous = evaluation_inputs(old_skill, old_env, candidate['dataset_id'])
+            changed = [label for key, label in labels.items() if previous[key] != target[key]]
+            if changed:
+                reason = '、'.join(changed) + '发生变化，需要重新测试'
+        if reason:
+            if not matched:
+                plan['reason'] = reason
+            continue
+        rows = persistence.get_case_results_for_run(candidate['id'], candidate_phase)
+        counts = {}
+        for row in rows:
+            key = (row['case_id'], row.get('repeat_index'))
+            counts[key] = counts.get(key, 0) + 1
+        valid = [row for row in rows if reusable_result(row)
+                 and (row['case_id'], row.get('repeat_index')) in expected
+                 and counts[(row['case_id'], row.get('repeat_index'))] == 1]
+        if len(valid) > len(best_rows) or source or not matched:
+            matched = True
+            best_rows = valid
+            plan.update(source_run_id=candidate['id'], source_phase=candidate_phase,
+                        reused_count=len(valid), execute_count=len(expected) - len(valid),
+                        reused_results=[[r['case_id'], r['repeat_index']] for r in valid],
+                        reason=('测试结果完整且执行条件一致' if len(valid) == len(expected)
+                                else '部分结果缺失、重复或存在基础设施错误，需要补测'))
+        if len(valid) == len(expected):
+            break
+    return plan, best_rows
+
+
 def _baseline_repeats(env: Mapping[str, Any]) -> int:
     run_config = env.get("run_config") or {}
     return int(run_config.get("base_repeats") or 1)
@@ -796,14 +889,14 @@ def _validation_repeats(env: Mapping[str, Any]) -> int:
                or run_config.get("validation_repeats") or 3)
 
 
-def _validate_source(project: Mapping[str, Any], source_run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _validate_source(project: Mapping[str, Any], source_run_id: str, *, for_optimization: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     source = persistence.get_run(source_run_id)
     if (source.get("project_id") != project["id"] or source.get("mode") != "optimize"
             or source.get("status") != "completed" or source.get("decision") is not None):
         raise ConflictError("验收来源必须是本项目已完成测试集重跑的优化运行", code="invalid_source_run")
     root_id = (source.get("snapshot") or {}).get("root_skill_version_id") or source.get("baseline_skill_version_id")
     if (project.get("current_skill_version_id") != root_id
-            or project.get("current_environment_id") != source.get("environment_id")):
+            or (not for_optimization and project.get("current_environment_id") != source.get("environment_id"))):
         raise ConflictError("当前 Skill 或环境与优化运行不一致，请重新优化", code="version_conflict")
     candidate = persistence.get_candidate_for_run(source_run_id)
     version_id = source.get("candidate_skill_version_id")
@@ -894,7 +987,7 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     if mode == "validate" and not source_run_id:
         raise ValidationError("正式验收需要 source_run_id", field_path="source_run_id")
     if source_run_id:
-        source, candidate = _validate_source(project, source_run_id)
+        source, candidate = _validate_source(project, source_run_id, for_optimization=mode == "optimize")
         if mode == "validate":
             _check_validation_independence(source, cases)
             skill_version_id = (source.get("snapshot") or {}).get("root_skill_version_id") or source["baseline_skill_version_id"]
@@ -922,15 +1015,26 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
     parent_run_id = source["id"] if source else payload.get("parent_run_id")
     baseline_run_id = None
     baseline_cache_hit = False
-    if mode == "optimize":
-        reuse = payload.get("reuse_baseline", True)
-        cached = persistence.find_cached_baseline(project_id, fingerprint, acceptance["rules_version"]) if reuse else None
-        if cached:
-            baseline_run_id = cached["id"]
-            baseline_cache_hit = True
-        elif parent_run_id is None:
-            parent = persistence.find_cached_baseline(project_id, fingerprint)
-            parent_run_id = parent["id"] if parent else None
+    reuse_plan = None
+    reuse_rows = []
+    evaluation_id = payload.get('evaluation_run_id')
+    if evaluation_id and (mode != 'optimize' or source_run_id):
+        raise ValidationError('evaluation_run_id 仅用于从测试记录启动优化，不能与 source_run_id 同时使用')
+    if mode == 'optimize':
+        evidence = source
+        if evaluation_id:
+            evidence = persistence.get_run(evaluation_id)
+            if (evidence['project_id'] != project_id or evidence['mode'] not in ('evaluate', 'baseline')
+                    or evidence['status'] != 'completed' or evidence['baseline_skill_version_id'] != skill_version_id):
+                raise ConflictError('所选测试记录不属于当前项目和 Skill，或尚未完成', code='invalid_evaluation_source')
+        reuse_plan, reuse_rows = prepare_evaluation_reuse(
+            project_id, skill_version_id, env, dataset_id, acceptance['rules_version'],
+            source=evidence, phase='candidate' if source else 'baseline',
+            enabled=payload.get('reuse_baseline', True))
+        baseline_run_id = reuse_plan['source_run_id']
+        baseline_cache_hit = bool(reuse_rows) and reuse_plan['execute_count'] == 0
+        if parent_run_id is None:
+            parent_run_id = baseline_run_id
     snapshot = {
         "project": {"id": project["id"], "name": project["name"]},
         "skill_version": _version_snapshot(skill_version_id),
@@ -948,6 +1052,8 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         "adapter_hash": env.get("adapter_hash"),
         "reproducibility_note": env.get("reproducibility_note") or "",
     }
+    if reuse_plan is not None:
+        snapshot['evaluation_reuse'] = reuse_plan
     snapshot["root_skill_version_id"] = ((source.get("snapshot") or {}).get("root_skill_version_id") or source["baseline_skill_version_id"]) if source else project["current_skill_version_id"]
     if source:
         snapshot["source_run_id"] = source["id"]
@@ -959,8 +1065,7 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
         candidate_skill_version_id=(source.get("candidate_skill_version_id") if mode == "validate" and source else None), parent_run_id=parent_run_id,
         baseline_run_id=baseline_run_id, acceptance=acceptance,
         snapshot=snapshot, idempotency_key=idempotency_key,
-        fingerprint=fingerprint)
-    persistence.update_run(run["id"], rules_version=acceptance["rules_version"])
+        fingerprint=fingerprint, baseline_results=reuse_rows)
     if candidate and mode == "validate":
         persistence.create_candidate(
             run["id"], skill_version_id=candidate["skill_version_id"],
@@ -968,12 +1073,6 @@ def create_run(payload: Mapping[str, Any]) -> dict[str, Any]:
             changed_files=candidate.get("changed_files") or [], patch=candidate.get("patch") or {},
             expected_effect=candidate.get("expected_effect") or "", risk_cases=candidate.get("risk_cases") or [],
             checks=candidate.get("checks") or {})
-    if baseline_cache_hit and baseline_run_id:
-        _copy_baseline_results(baseline_run_id, run["id"])
-        persistence.update_run(run["id"], baseline_cache_hit=1,
-                               baseline_run_id=baseline_run_id,
-                               stage_progress={"stage": "preflight", "completed": 0,
-                                               "total": 0, "message": "已复用兼容基线"})
     persistence.append_audit(project_id, "run.create",
                              {"run_id": run["id"], "mode": mode,
                               "fingerprint": fingerprint,
@@ -991,29 +1090,6 @@ def _version_snapshot(version_id: str) -> dict[str, Any]:
             "status": version.get("status"), "content_hash": version.get("content_hash"),
             "created_at": version.get("created_at"),
             "subskill_count": len((version.get("manifest") or {}).get("subskills") or [])}
-
-
-def _copy_baseline_results(source_run_id: str, target_run_id: str) -> None:
-    rows = persistence.get_case_results_for_run(source_run_id, "baseline")
-    for row in rows:
-        persistence.save_case_result(
-            target_run_id, row["case_id"], "baseline",
-            variant=row.get("variant") or "main",
-            repeat_index=row.get("repeat_index") or 1,
-            split=row.get("split") or "",
-            selected_skills=row.get("selected_skills") or [],
-            action=row.get("action"),
-            tool_calls=row.get("tool_calls") or [],
-            missing_fields=row.get("missing_fields") or [],
-            actual=row.get("actual") or {},
-            scores=row.get("scores") or {},
-            error_code=row.get("error_code"),
-            error_message=row.get("error_message"),
-            result_source=row.get("result_source"),
-            capabilities=row.get("capabilities") or {},
-            usage=row.get("usage") or {},
-            duration_ms=row.get("duration_ms"),
-        )
 
 
 def _metric_block(metrics: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -1092,10 +1168,12 @@ def overview(project_id: str) -> dict[str, Any]:
         scorer_version = (env.get("scorer_config") or {}).get("version") or config.SCORER_VERSION
         fingerprint = run_fingerprint(skill_version["id"], env["id"], dataset["id"],
                                       scorer_version, _baseline_repeats(env))
-        baseline = persistence.find_cached_baseline(project_id, fingerprint,
+        reuse_plan, _ = prepare_evaluation_reuse(project_id, skill_version['id'], env, dataset['id'],
             (env.get("acceptance_config") or {}).get("rules_version") or config.ACCEPTANCE_RULES_VERSION)
+        baseline = (persistence.get_run(reuse_plan['source_run_id'])
+                    if reuse_plan['source_run_id'] and reuse_plan['execute_count'] == 0 else None)
         compatible = baseline is not None
-        reason = "" if compatible else "当前 Skill 包/环境/数据集/评分器/重复次数组合尚无兼容基线"
+        reason = "" if compatible else "尚无完整兼容基线：" + reuse_plan["reason"]
     items["baseline"] = {
         "ok": compatible,
         "label": "兼容基线",
@@ -1139,7 +1217,7 @@ def overview(project_id: str) -> dict[str, Any]:
                 if latest.get("decision_code") == "no_failures" else None)
         if source_id:
             try:
-                iteration_source, _ = _validate_source(project, source_id)
+                iteration_source, _ = _validate_source(project, source_id, for_optimization=True)
             except (ConflictError, NotFoundError):
                 pass
     no_failures = bool(ready and compatible and _baseline_has_no_failures(metrics))
@@ -1350,6 +1428,10 @@ def run_view(run_id: str) -> dict[str, Any]:
         try:
             _validate_source(project, run_id)
             run["can_validate"] = True
+        except (ConflictError, NotFoundError):
+            pass
+        try:
+            _validate_source(project, run_id, for_optimization=True)
             run["can_continue_optimization"] = True
         except (ConflictError, NotFoundError):
             pass
@@ -1571,7 +1653,8 @@ def _events_for_result(row: Mapping[str, Any], events: list[dict[str, Any]]) -> 
     variant = row.get("variant") or "main"
     repeat = row.get("repeat_index") or 1
     scoped = [e for e in events if e.get("case_id") == row.get("case_id")
-              and e.get("stage") == stage and e.get("repeat_index") == repeat]
+              and e.get("stage") in ({stage, "results_preparation"} if phase == "baseline" else {stage})
+              and e.get("repeat_index") == repeat]
     # CASE_COMPLETED/FAILED identifies the phase, but lacks variant. Its preceding
     # boundary separates validation baseline and candidate at the same stage.
     starts = 0
@@ -1754,7 +1837,7 @@ def run_model_output(run_id: str, seq: int) -> dict[str, Any]:
     if not event.get("case_id"):
         return result
     rows = persistence.list_case_results(run_id, case_id=event["case_id"], limit=1000)["items"]
-    if event.get("stage") == "baseline_eval" or run["mode"] == "baseline":
+    if event.get("stage") in ("baseline_eval", "results_preparation") or run["mode"] == "baseline":
         rows = [row for row in rows if row["phase"] == "baseline"]
     elif run["mode"] == "final_test":
         rows = [row for row in rows if row["phase"] == "final"]

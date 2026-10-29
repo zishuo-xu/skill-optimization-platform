@@ -386,21 +386,31 @@ def static_check(base_files: Mapping[str, Any], patched_files: Mapping[str, Any]
         if text is None:
             continue
         directory = posixpath.dirname(path)
-        targets: list[str] = []
+        targets: list[tuple[int, str, str, str]] = []
         for match in _MD_LINK_RE.finditer(text):
             link = match.group(1)
             if link.startswith("/") or _ABSOLUTE_RE.match(link):
                 continue
-            targets.append(posixpath.normpath(posixpath.join(directory, link)))
+            targets.append((match.start(), link, "markdown_link",
+                            posixpath.normpath(posixpath.join(directory, link))))
         for match in _REF_BACKTICK_RE.finditer(text):
             link = match.group(1)
-            targets.append(posixpath.normpath(posixpath.join(directory, link)))
-        for target in targets:
+            # Inline references/... paths name files from the package root,
+            # as read_skill does. They are not Markdown hyperlink destinations.
+            targets.append((match.start(), link, "package_path", posixpath.normpath(link)))
+        seen_targets: set[str] = set()
+        for offset, reference, kind, target in sorted(targets):
             if normalize_path(target) is None:
                 continue
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
             if target not in patched_norm:
-                manifest_errors.append(_issue("dangling_reference", path,
-                                              f"引用目标不存在: {target}"))
+                manifest_errors.append({
+                    **_issue("dangling_reference", path, f"引用目标不存在: {target}"),
+                    "reference": reference, "reference_kind": kind,
+                    "resolved_path": target, "line": text.count("\n", 0, offset) + 1,
+                })
     add_check("manifest_integrity", manifest_errors,
               "manifest 引用完整，无重复 ID / 路径", "manifest 引用或结构不完整")
 

@@ -35,7 +35,7 @@ def test_full_edit_publish_flow_preserves_run_and_invalidates_baseline(client, d
     assert draft["status"] == "draft" and draft["parent_id"] == original["id"]
     assert [editable(row) for row in persistence.all_cases(draft["id"])] == [editable(row) for row in old_rows]
     assert persistence.get_project(demo["project"]["id"])["current_dataset_id"] == original["id"]
-    selected = next(row for row in old_rows if any("project_id" in call.get("arguments", {})
+    selected = next(row for row in old_rows if row['split'] == 'optimize' and any("project_id" in call.get("arguments", {})
                     for call in row["expected"].get("tool_calls", [])))
     case = editable(selected)
     case["query"] += "（在线修订）"

@@ -30,7 +30,6 @@ from .base import (
     normalize_usage,
     parse_tool_arguments,
     resolve_secret_ref,
-    safe_log_config,
 )
 from .stream_events import SSEEventAssembler, SSEParseError, aggregate, extract_stream_error
 from .request_diagnostics import RequestDiagnostics
@@ -298,9 +297,9 @@ class OpenAIHTTPAdapter(ModelAdapter):
         cancel_check = config.get("cancel_check")
         stream = bool(body.get("stream"))
         logger.info("openai_http invoke %s", json_dumps({
-            "url": self.url, "model": body.get("model"), "stream": stream,
+            "call_id": call_id, "attempt": attempt, "model": body.get("model"), "stream": stream,
             "messages": len(messages), "tools": len(tools or []),
-            "config": safe_log_config(config)}))
+            "timeout_s": self.timeout_s}))
         configured_deadline = config.get("deadline_monotonic")
         deadline = time.monotonic() + self.timeout_s
         if isinstance(configured_deadline, (int, float)):

@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | evaluate | 日常测试集 optimize | 普通评测，不调用优化器 | 结果可作为条件一致时的基线来源 |
 | baseline | 日常测试集 optimize | 显式建立基线，不调用优化器 | 保存基线结果 |
-| optimize | 日常测试集 optimize | 获取/复用基线、分析失败、生成候选、候选重跑 | 候选待独立验收，不产生 accept |
+| optimize | 日常测试集 optimize | 复用测试结果或补测、分析失败、生成候选、完整日常集重跑 | 候选待独立验收，不产生 accept |
 | validate | 独立验收集 validation | 携带 source_run_id，配对比较原始基线与来源候选 | accept / reject / inconclusive |
 | final_test | 最终测试集 final_test | 额外阶段留出检查 | 单独评测结果，不参与候选选择 |
 

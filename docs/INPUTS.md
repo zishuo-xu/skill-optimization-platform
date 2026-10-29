@@ -96,6 +96,7 @@ your-skill.zip
 ### 渐进式 Skill 的写法
 
 渐进式 Skill 先选中子技能：`select_skill` 返回选中正文；如需其他 reference，可再按需使用 `read_skill`。
+`read_skill.path` 使用包根目录相对路径，例如 `references/b.md`；文档中反引号包裹的这类包内路径也按包根目录检查。普通 Markdown 链接则相对当前文档：在 `references/a.md` 中链接同目录文件，应写 `[B](b.md)`，链接主技能可写 `[主技能](../SKILL.md)`。
 平台**只把显式子技能选择计入 R**，读取更多 reference 不计分、也不需要写进数据集：
 
 - 只选一次子技能（最常见）：用上面的最小示例即可，`skill` 写那一个子技能。

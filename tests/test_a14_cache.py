@@ -30,7 +30,7 @@ def test_baseline_cache_reuse_and_invalidation(demo, baseline_run):
     assert third["baseline_cache_hit"] == 0
     assert not _cache_hit_events(third["id"])
 
-    # New dataset version also invalidates the cache.
+    # Republishing identical daily content preserves evidence. Changed content invalidates it.
     from pathlib import Path as _Path
 
     dataset = services.create_dataset(demo["project"]["id"], {
@@ -43,7 +43,14 @@ def test_baseline_cache_reuse_and_invalidation(demo, baseline_run):
     })
     assert dataset["version_seq"] == demo["dataset"]["version_seq"] + 1
     fourth = complete_run(demo, "optimize")
-    assert fourth["baseline_cache_hit"] == 0
+    assert fourth["baseline_cache_hit"] == 1
+    content = services.export_dataset(dataset['id']).decode()
+    cases = [json.loads(line) for line in content.splitlines()]
+    next(case for case in cases if case['split'] == 'optimize')['query'] += ' 新条件'
+    from tests.conftest import dataset_payload
+    services.create_dataset(demo['project']['id'], dataset_payload(content='\n'.join(json.dumps(c) for c in cases)))
+    fifth = complete_run(demo, 'optimize')
+    assert fifth['baseline_cache_hit'] == 0
 
 
 def test_fingerprint_covers_skill_environment_dataset_scorer_repeats():

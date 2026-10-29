@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { requestDiagnosticTitle, requestDiagnosticSummary, requestDiagnosticCopy } from '../web/js/requestDiagnostics.js';
 import { isOptimizerEvent } from '../web/js/eventTypes.js';
+import { redactValue } from '../web/js/format.js';
+
+test('numeric output limits remain visible while credentials and nonnumeric values stay masked', () => {
+  assert.deepEqual(redactValue({max_output_tokens:4096,access_token:'secret',token:123}),
+    {max_output_tokens:4096,access_token:'***',token:'***'});
+  assert.equal(redactValue({max_output_tokens:'secret'}).max_output_tokens,'***');
+  const copied = redactValue(requestDiagnosticCopy({call_id:'call1',
+    payload:{max_output_tokens:12000}}));
+  assert.equal(copied.max_output_tokens,12000);
+});
 
 test('request logs distinguish optimizer, business and judge and show slow partial output', () => {
   assert.equal(requestDiagnosticTitle({phase:'first_content'}), '优化请求开始返回正文');

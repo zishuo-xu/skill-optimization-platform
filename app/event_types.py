@@ -27,6 +27,7 @@ from __future__ import annotations
 STAGES = [
     "preflight",
     "baseline_eval",
+    "results_preparation",
     "error_analysis",
     "candidate_generation",
     "static_check",
@@ -38,6 +39,7 @@ STAGES = [
 STAGE_LABELS = {
     "preflight": "预检",
     "baseline_eval": "基线评测",
+    "results_preparation": "准备测试结果",
     "error_analysis": "错误分析",
     "candidate_generation": "生成候选",
     "static_check": "静态检查",

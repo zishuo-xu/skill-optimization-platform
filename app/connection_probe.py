@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from .adapters.base import AdapterError
 from .adapters.registry import build_adapter
 from .model_output import redact_output
+from .runtime_logging import log_run_event
 from .services import normalize_model_config
 
 
@@ -67,7 +68,11 @@ def probe_connection(model_config: Mapping[str, Any], *, target: str = "business
     try:
         adapter = build_adapter(effective)
         base["performed"] = True
-        result = adapter.invoke([{"role": "user", "content": prompt}], effective, [], emit=None)
+        def probe_emit(event):
+            log_run_event({**event, 'payload': {
+                **(event.get('payload') or {}), 'purpose': f'connection_probe:{target}'}})
+
+        result = adapter.invoke([{"role": "user", "content": prompt}], effective, [], emit=probe_emit)
         if not isinstance(result, Mapping) or not any(result.get(key)
                                                       for key in ("content", "tool_calls", "finish_reason")):
             raise AdapterError("模型响应格式无效", code="format_error", retryable=False)

@@ -73,7 +73,8 @@ def test_infrastructure_error_baseline_is_not_reused(demo, baseline_run):
         actual={'error': {'code': 'timeout'}})
     run = services.create_run({'project_id': demo['project']['id'], 'mode': 'optimize'})
     assert not run['baseline_cache_hit']
-    assert run['baseline_run_id'] is None
+    assert run['baseline_run_id'] == baseline_run['id']
+    assert run['snapshot']['evaluation_reuse']['execute_count'] == 1
 
 
 def test_incomplete_and_inconclusive_baselines_are_not_cached(demo, baseline_run):

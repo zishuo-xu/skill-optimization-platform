@@ -279,6 +279,7 @@ AI 分析协议为 `run-analysis-v1`。POST 在线程池执行，单次模型请
   "mode": "evaluate | baseline | optimize | validate | final_test",
   "reuse_baseline": true,
   "source_run_id": null,
+  "evaluation_run_id": null,
   "parent_run_id": null,
   "skill_version_id": null
 }
@@ -293,8 +294,12 @@ AI 分析协议为 `run-analysis-v1`。POST 在线程池执行，单次模型请
   静态检查、版本完整性及 validation 集独立性，然后在独立 validation 集上按冻结配置的重复次数配对执行
   `accept-v1`。默认重复 3 次，可配置更多；若配置低于 3，验收证据不足并为 `inconclusive`。
   validation 集不得与来源链的 optimize/final_test 案例在 case_id、规范化 query 或 group_id 上重叠。
-- `reuse_baseline` 为 true 且存在指纹一致的 completed `evaluate`/`baseline` 时，复制其优化集结果，
-  `baseline_cache_hit=true`。
+- `evaluation_run_id` 仅用于 `optimize`，绑定本项目已完成的 `evaluate`/`baseline` 记录及当前 Skill；不能与 `source_run_id` 同用。明确来源时不会替换为其他较新的结果。
+- `source_run_id` 用于继续优化时，优先使用该来源的 `candidate` 复测结果；新运行的 root 基线仍指向迭代链起点。环境更新后可继续优化，由执行条件决定是否补测；独立验收的来源环境检查保持严格。
+- `reuse_baseline` 默认 true。未指定来源时，从本项目已完成的日常评测/优化运行中选择一个兼容来源的 baseline 结果，不混合多个运行；不会读取 validation/final_test 结果。
+- 兼容条件包括 Skill、日常案例内容及 expected/fixtures、Prompt、业务模型、加载/执行/评分配置、重复次数与执行协议。优化模型、日志设置、仅留出数据变化不触发日常重测；原运行 fingerprint 和版本快照不改写。
+- `snapshot.evaluation_reuse` 记录来源运行/phase、Skill、原因、复用/待执行数量及 `(case_id, repeat_index)` 清单。仅 pass/fail 且无基础设施错误的唯一结果可复用；缺失、重复、infra 等结果补测。全部复用时 `baseline_cache_hit=true`，部分复用仍为 false，`baseline_run_id` 保留实际来源。
+- 优化使用 `results_preparation` 阶段。补测后仍有缺失或基础设施错误，以 `evaluation_incomplete` 结束，不调用优化器。复用结果保留历史证据和用量，但历史用量不重复计入新运行指标成本；候选仍重跑完整日常集。
 - 返回 202 与 `run_view`；后台 Worker 异步执行。
 
 运行对象关键字段（以下示例为成功 `optimize` 完成、尚待验收；`validate` 完成后才会填充最终 decision）：

@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import api_v3, config, db, onboarding, worker
 from .errors import AppError
+from .runtime_logging import configure_logging, startup_step
 
 log = logging.getLogger(__name__)
 
@@ -64,16 +65,24 @@ async def generic_error_handler(request, exc: Exception) -> JSONResponse:
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
-    db.init_db()
-    config.ensure_dirs()
-    onboarding.ensure_guide()
+    with startup_step('data_directories'):
+        config.ensure_dirs()
+    with startup_step('database'):
+        db.init_db()
+    with startup_step('onboarding'):
+        onboarding.ensure_guide()
     started = False
     disable = os.environ.get("SKILLOPT_DISABLE_WORKER", "").lower() in ("1", "true", "yes")
     if not disable:
-        persistence_recover()
-        worker.start_worker()
+        with startup_step('worker_recovery'):
+            persistence_recover()
+        with startup_step('worker_start'):
+            worker.start_worker()
         started = True
         log.info("worker started")
+    else:
+        log.warning('Worker 已禁用；排队中的运行不会执行 SKILLOPT_DISABLE_WORKER=true')
+    log.info('应用初始化完成 host=%s port=%s worker_enabled=%s', config.HOST, config.PORT, started)
     try:
         yield
     finally:
@@ -121,14 +130,12 @@ def create_app(*, start_worker: bool | None = None) -> Starlette:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.environ.get("SKILLOPT_LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging()
     import uvicorn
 
     app = create_app()
-    print(f"Skill 优化平台: http://{config.HOST}:{config.PORT}")
-    uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
+    log.info('准备监听 http://%s:%s', config.HOST, config.PORT)
+    uvicorn.run(app, host=config.HOST, port=config.PORT, log_config=None, access_log=False)
 
 
 if __name__ == "__main__":

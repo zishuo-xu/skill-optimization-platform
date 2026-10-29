@@ -74,6 +74,8 @@ class Worker:
             time.sleep(max(1.0, self.lease_seconds / 3))
 
     def _execute(self, run_id: str) -> None:
+        started = time.monotonic()
+        log.info('Worker 开始运行 run_id=%s worker_id=%s', run_id, self.worker_id)
         self._current_run_id = run_id
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop, name=f"heartbeat-{run_id}", daemon=True)
@@ -103,6 +105,8 @@ class Worker:
             except Exception:
                 log.exception("failed to persist crash state")
         finally:
+            log.info('Worker 结束处理 run_id=%s elapsed_ms=%s',
+                     run_id, round((time.monotonic() - started) * 1000))
             self._current_run_id = None
 
 
