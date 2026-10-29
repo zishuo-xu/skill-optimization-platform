@@ -22,6 +22,7 @@ def test_guide_assets_and_idempotence():
     assert env['status'] == 'draft'
     assert env['model_config']['model'] == env['model_config']['base_url'] == ''
     assert env['optimizer_config']['model'] == env['optimizer_config']['base_url'] == ''
+    assert env['optimizer_config']['stream'] is True
     assert 'judge' not in env['scorer_config']
     assert env['scorer_config']['compare']['field_rules'][0]['mode'] == 'semantic'
     assert persistence.list_runs(project_id=project['id'])['total'] == 0

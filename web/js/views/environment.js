@@ -175,6 +175,7 @@ function defaults() {
       url: '',
       ws_url: '',
       model: 'frozen-heuristic-v1',
+      stream: true,
       api_key_ref: '',
       request_template: {},
       headers: {},
@@ -230,7 +231,7 @@ function defaults() {
 }
 
 
-function toForm(env) {
+export function toForm(env) {
   const base = defaults();
   if (!env) {
     return {
@@ -245,6 +246,11 @@ function toForm(env) {
   }
   const modelConfig = { ...base.model_config, ...(env.model_config || {}) };
   const optimizerConfig = { ...base.optimizer_config, ...(env.optimizer_config || {}) };
+  // Published versions retain the adapter's historical default (false).
+  // New/draft configurations default to streaming and persist it explicitly.
+  if (env.status === 'published' && !Object.prototype.hasOwnProperty.call(env.optimizer_config || {}, 'stream')) {
+    optimizerConfig.stream = false;
+  }
   if (env.model_config?.heartbeat_interval_s == null && env.model_config?.heartbeat_s != null) {
     modelConfig.heartbeat_interval_s = env.model_config.heartbeat_s;
   }
@@ -516,6 +522,7 @@ export default async function environmentView(container, ctx) {
       if (!optimizerConfig.ws_url) errors['optimizer_config.ws_url'] = '优化器 WebSocket 地址不能为空';
       if (!optimizerConfig.model) errors['optimizer_config.model'] = '模型 ID 不能为空';
     } else if (optProvider !== 'heuristic') {
+      optimizerConfig.stream = Boolean(form.optimizer_config.stream);
       optimizerConfig.model = String(form.optimizer_config.model || '').trim();
       optimizerConfig.base_url = String(form.optimizer_config.base_url || '').trim();
       delete optimizerConfig.url;
@@ -840,20 +847,20 @@ export default async function environmentView(container, ctx) {
   }
 
   function streamToggle(target = 'business') {
+    const group = groupPaths(target).cfg;
     return h(
       'label.checkbox-line',
       null,
       h('input', {
         type: 'checkbox',
-        checked: Boolean(target === 'judge' ? state.form.judge_config?.stream : state.form.model_config.stream),
+        checked: Boolean(state.form[group]?.stream),
         disabled: !EDITABLE(),
         onchange: (event) => {
-          if (target === 'judge') state.form.judge_config.stream = event.target.checked;
-          else state.form.model_config.stream = event.target.checked;
+          state.form[group].stream = event.target.checked;
           markDirty();
         },
       }),
-      h('span', { text: target === 'judge' ? '启用 SSE 式增量返回（usage 在尾部聚合）' : '启用 SSE 式增量返回（usage 在尾部聚合）' })
+      h('span', { text: '启用 SSE 式增量返回（usage 在尾部聚合）' })
     );
   }
 
@@ -925,14 +932,14 @@ export default async function environmentView(container, ctx) {
             )
           )
         : null,
-      target === 'judge'
+      ['judge', 'optimizer'].includes(target)
         ? advancedSettings(
-            '高级：评分请求',
+            target === 'judge' ? '高级：评分请求' : '高级：优化请求',
             h(
               'div.stack',
               null,
-              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle('judge')),
-              h('p.form-field__hint', { text: '按评分模型服务支持的返回方式选择；网关只支持流式请求时，请开启此项。' })
+              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle(target)),
+              h('p.form-field__hint', { text: '按模型服务支持的返回方式选择；网关只支持流式请求时，请开启此项。' })
             )
           )
         : null,
@@ -966,7 +973,7 @@ export default async function environmentView(container, ctx) {
       { label: 'URL', value: config.base_url || config.url || '—', mono: true },
       { label: '模型 ID', value: config.model || '—', mono: true },
       { label: 'API Key', value: envRef || (keyConfigured ? '已配置' : '未配置'), mono: Boolean(envRef) },
-      ...(['judge_config', 'model_config'].includes(group) ? [{ label: '流式返回', value: config.stream ? '已启用' : '未启用' }] : []),
+      { label: '流式返回', value: config.stream ? '已启用' : '未启用' },
     ];
   }
 
@@ -1798,7 +1805,7 @@ export default async function environmentView(container, ctx) {
   async function publishDraft() {
     if (!state.env) return;
     // Pre-filled or previously saved drafts still need validation before publish.
-    const { errors } = serialize({ includeStatus: 'published' });
+    const { payload, errors } = serialize({ includeStatus: 'published' });
     state.fieldErrors = { ...errors };
     if (Object.keys(errors).length) {
       renderForm();
@@ -1812,7 +1819,10 @@ export default async function environmentView(container, ctx) {
     });
     if (!ok) return;
     let target = state.env;
-    if (state.dirty) {
+    // Persist the displayed default even when an older draft was not edited.
+    const streamChanged = payload.optimizer_config?.provider === 'openai_http'
+      && payload.optimizer_config.stream !== state.env.optimizer_config?.stream;
+    if (state.dirty || streamChanged) {
       const saved = await saveDraft('draft');
       if (!saved) return;
       target = saved;

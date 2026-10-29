@@ -32,7 +32,7 @@ def _assets():
     env = json.loads((config.SAMPLES_DIR / 'environment.json').read_text(encoding='utf-8'))
     env['prompt'] = (root / 'prompt.md').read_text(encoding='utf-8')
     env['model_config'] = {'provider': 'openai_http', 'base_url': '', 'model': '', 'max_tokens': 2048, 'temperature': 0, 'timeout_s': 60}
-    env['optimizer_config'] = {'provider': 'openai_http', 'base_url': '', 'model': '', 'max_tokens': 12000, 'temperature': 0, 'timeout_s': 120}
+    env['optimizer_config'] = {'provider': 'openai_http', 'base_url': '', 'model': '', 'max_tokens': 12000, 'temperature': 0, 'timeout_s': 120, 'stream': True}
     env['scorer_config'] = {'version': 'score-v1', 'compare': {'version': 'compare-v2', 'mode': 'strict', 'allow_extra_keys': False, 'field_rules': [{'path': '$.description', 'tool': 'create_task', 'mode': 'semantic'}]}}
     env['reproducibility_note'] = '任务协作入门示例；配置业务、优化及评分模型后发布环境。业务工具使用 fixture。'
     model = env['model_config']
