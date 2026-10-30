@@ -74,7 +74,7 @@ class _HTTPStream:
 def _adapter(base_url, **extra):
     config = {
         "provider": "openai_http", "base_url": base_url, "model": "local",
-        "api_key": "local-secret", "stream": True, "timeout_s": 2,
+        "api_key_ref": "local-secret", "stream": True, "timeout_s": 2,
         "max_retries": 0, "retry_backoff_s": 0,
     }
     config.update(extra)
@@ -100,21 +100,6 @@ def test_normal_delayed_first_chunk_and_inter_chunk_gap_do_not_timeout():
     with _HTTPStream([(200, chunks, 0.35, 0.35)]) as gateway:
         result = _adapter(gateway.url, timeout_s=2).invoke([], {}, [])
     assert result["content"] == "a"
-
-
-def test_extra_body_cannot_replace_frozen_execution_fields():
-    with _HTTPStream([(200, [_sse({"choices": [{"delta": {"content": "ok"}}]}), _sse("[DONE]")], 0)]) as gateway:
-        adapter = _adapter(gateway.url, extra_body={
-            "messages": [{"role": "system", "content": "spoof"}],
-            "tools": [{"name": "spoof"}], "model": "spoof", "stream": False,
-            "custom_gateway_flag": True,
-        })
-        adapter.invoke([{"role": "user", "content": "real"}], {}, [])
-    body = gateway.requests[0]["body"]
-    assert body["model"] == "local"
-    assert body["messages"] == [{"role": "user", "content": "real"}]
-    assert body["stream"] is True
-    assert body["custom_gateway_flag"] is True
 
 
 def test_missing_explicit_env_secret_is_auth_failure_before_request():
@@ -170,27 +155,6 @@ def test_active_stream_does_not_bypass_global_deadline():
         assert exc.value.code == "timeout"
         assert time.monotonic() - started < 0.7
     assert len(gateway.requests) == 1
-
-
-def test_http_request_preserves_gateway_body_headers_and_full_endpoint():
-    chunks = [_sse({"choices": [{"delta": {"content": "ok"}}]}), _sse("[DONE]")]
-    with _HTTPStream([(200, chunks, 0)]) as gateway:
-        adapter = _adapter(gateway.url, url=gateway.url + "/company/custom-chat",
-            headers={"Authorization": "Custom LOCAL_ONLY", "X-Company": "tenant-a"},
-            api_key_ref="env:NOT_NEEDED_WHEN_AUTH_HEADER_IS_EXPLICIT",
-            request_template={"api_key": "ServiceName", "user": "local-user",
-                              "extra_body": {"enable_thinking": False},
-                              "stream_options": {"include_usage": False, "custom": True}})
-        assert adapter.url.endswith("/company/custom-chat")
-        result = adapter.invoke([], {}, [])
-    request = gateway.requests[0]
-    assert request["path"] == "/v1/company/custom-chat"
-    assert request["headers"]["Authorization"] == "Custom LOCAL_ONLY"
-    assert request["headers"]["X-Company"] == "tenant-a"
-    assert request["body"]["api_key"] == "ServiceName"
-    assert request["body"]["extra_body"] == {"enable_thinking": False}
-    assert request["body"]["stream_options"] == {"include_usage": False, "custom": True}
-    assert result["content"] == "ok"
 
 
 def test_template_cannot_inject_tools_when_executor_supplies_none():

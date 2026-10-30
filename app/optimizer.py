@@ -1503,7 +1503,7 @@ def generate_candidate(context: Mapping[str, Any],
         "message_count": len(messages),
         "stream": bool(config.get("stream", False)),
         "max_output_tokens": config.get("max_tokens"),
-        "request_timeout_s": (config.get("timeout_s") or config.get("timeout") or 60)
+        "request_timeout_s": (config.get("timeout_s") or 60)
             if config.get("provider") == "openai_http" else config.get("total_timeout_s"),
         "transport_diagnostics": config.get("provider") in {"openai_http", "enterprise_ws"},
         "truncated": False,
@@ -1526,7 +1526,7 @@ def generate_candidate(context: Mapping[str, Any],
         }
         timed_out = detail["adapter_error_code"] == "timeout"
         if config.get("provider") == "openai_http":
-            detail["request_timeout_s"] = config.get("timeout_s") or config.get("timeout") or 60
+            detail["request_timeout_s"] = config.get("timeout_s") or 60
         event = _emit(emit, event_types.OPTIMIZER_CALL_FAILED, {
             **_issue_payload(
                 "optimizer_call_failed",

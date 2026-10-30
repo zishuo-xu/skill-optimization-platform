@@ -114,5 +114,5 @@ def test_adapter_error_message_is_redacted(monkeypatch):
 
     monkeypatch.setattr("app.connection_probe.build_adapter", lambda cfg: Failing())
     result = probe_connection({"provider": "openai_http", "base_url": "http://127.0.0.1:1",
-                               "model": "m", "api_key": "local-secret"})
+                               "model": "m", "api_key_ref": "local-secret"})
     assert "local-secret" not in result["message"]

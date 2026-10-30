@@ -170,9 +170,9 @@ def test_registry_builds_every_provider():
                       EnterpriseWSAdapter)
     demo = build_adapter({"provider": "demo_scripted"})
     assert getattr(demo, "name", "") == "demo_scripted"
-    # documented aliases resolve to the canonical adapters
-    assert isinstance(build_adapter({"provider": "openai"}), OpenAIHTTPAdapter)
-    assert isinstance(build_adapter({"provider": "ws"}), EnterpriseWSAdapter)
+    # aliases are not accepted
+    with pytest.raises(AppError):
+        build_adapter({"provider": "openai"})
 
 
 def test_registry_unknown_provider_raises_app_error():
@@ -683,7 +683,7 @@ class _FakeHTTP:
 
 def _http_adapter(url: str, **overrides) -> OpenAIHTTPAdapter:
     config = {"provider": "openai_http", "base_url": url, "model": "fake-http",
-              "api_key": "sk-test-secret", "timeout_s": 5,
+              "api_key_ref": "sk-test-secret", "timeout_s": 5,
               "retry_backoff_s": 0.0, "max_retries": 2}
     config.update(overrides)
     return OpenAIHTTPAdapter(config)

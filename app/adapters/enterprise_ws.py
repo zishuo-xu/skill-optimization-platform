@@ -131,7 +131,7 @@ class EnterpriseWSAdapter(ModelAdapter):
     def __init__(self, model_config: Mapping[str, Any] | None = None):
         super().__init__(model_config)
         config = self.model_config
-        self.ws_url = str(config.get("ws_url") or config.get("url") or "").strip()
+        self.ws_url = str(config.get("ws_url") or "").strip()
         self.connect_timeout_s = float(config.get("connect_timeout_s", 10.0))
         self.first_packet_timeout_s = float(config.get("first_packet_timeout_s", 30.0))
         self.idle_timeout_s = float(config.get("idle_timeout_s", 60.0))

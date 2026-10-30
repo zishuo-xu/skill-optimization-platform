@@ -27,7 +27,7 @@ def _endpoint_missing(cfg: Mapping[str, Any] | None, label: str) -> list[str]:
     if provider in ("demo_scripted", "heuristic"):
         return []
     issues = []
-    endpoint = cfg.get("ws_url") if provider == "enterprise_ws" else (cfg.get("base_url") or cfg.get("url"))
+    endpoint = cfg.get("ws_url") if provider == "enterprise_ws" else cfg.get("base_url")
     if not str(endpoint or "").strip():
         issues.append(f"{label}缺少地址")
     if not str(cfg.get("model") or "").strip():

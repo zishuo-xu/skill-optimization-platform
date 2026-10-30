@@ -247,19 +247,6 @@ export function toForm(env) {
   }
   const modelConfig = { ...base.model_config, ...(env.model_config || {}) };
   const optimizerConfig = { ...base.optimizer_config, ...(env.optimizer_config || {}) };
-  // Existing configs retain their effective limit, including the legacy alias.
-  optimizerConfig.timeout_s = env.optimizer_config?.timeout_s || env.optimizer_config?.timeout || 60;
-  // Published versions retain the adapter's historical default (false).
-  // New/draft configurations default to streaming and persist it explicitly.
-  if (env.status === 'published' && !Object.prototype.hasOwnProperty.call(env.optimizer_config || {}, 'stream')) {
-    optimizerConfig.stream = false;
-  }
-  if (env.model_config?.heartbeat_interval_s == null && env.model_config?.heartbeat_s != null) {
-    modelConfig.heartbeat_interval_s = env.model_config.heartbeat_s;
-  }
-  if (env.optimizer_config?.heartbeat_interval_s == null && env.optimizer_config?.heartbeat_s != null) {
-    optimizerConfig.heartbeat_interval_s = env.optimizer_config.heartbeat_s;
-  }
   // Literal credentials are masked by the public API. Keep those inputs empty
   // so saving can request server-side inheritance instead of persisting ***.
   modelConfig.api_key_ref = publicCredential(modelConfig.api_key_ref);
@@ -274,13 +261,6 @@ export function toForm(env) {
     judgeConfig.stream = Boolean(judgeSource.stream);
   }
   judgeConfig.api_key_ref = publicCredential(judgeConfig.api_key_ref);
-  // Standard API has a single URL field; a former full request URL moves into it.
-  for (const config of [modelConfig, optimizerConfig, judgeConfig]) {
-    if (config.provider === 'openai_http' && !String(config.base_url || '').trim() && String(config.url || '').trim()) {
-      config.base_url = config.url;
-    }
-    if (config.provider === 'openai_http') config.url = '';
-  }
   const runConfig = env.run_config || {};
   const acceptanceConfig = env.acceptance_config || {};
   const scorerConfig = env.scorer_config || {};
@@ -296,13 +276,13 @@ export function toForm(env) {
       ...runConfig,
       concurrency: runConfig.concurrency ?? base.run_config.concurrency,
       case_timeout_s: runConfig.case_timeout_s ?? base.run_config.case_timeout_s,
-      base_repeats: runConfig.base_repeats ?? runConfig.repeats_baseline ?? 1,
-      validation_repeats: runConfig.validation_repeats ?? runConfig.repeats_validation ?? 3,
+      base_repeats: runConfig.base_repeats ?? 1,
+      validation_repeats: runConfig.validation_repeats ?? 3,
     },
     scorer_config: {
       ...base.scorer_config,
       ...scorerConfig,
-      version: scorerConfig.version ?? scorerConfig.scorer_version ?? 'score-v1',
+      version: scorerConfig.version ?? 'score-v1',
     },
     acceptance_config: {
       ...base.acceptance_config,
@@ -476,7 +456,7 @@ export default async function environmentView(container, ctx) {
       modelConfig.model = form.model_config.model || 'demo-scripted-v1';
       removeModelFields(['base_url', 'url', 'ws_url', 'api_key_ref', 'request_template', 'stream_parser',
         'connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s',
-        'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s', 'max_size', 'max_retries',
+        'heartbeat_interval_s', 'close_timeout_s', 'max_size', 'max_retries',
         'retry_backoff_s', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas', 'headers']);
     } else if (provider === 'enterprise_ws') {
       modelConfig.ws_url = String(form.model_config.ws_url || '').trim();
@@ -485,7 +465,6 @@ export default async function environmentView(container, ctx) {
       modelConfig.request_template = requestTemplate;
       modelConfig.headers = modelHeaders;
       delete modelConfig.stream_parser;
-      delete modelConfig.heartbeat_s;
       removeModelFields(['base_url', 'url']);
       for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
         'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
@@ -498,12 +477,11 @@ export default async function environmentView(container, ctx) {
       modelConfig.base_url = String(form.model_config.base_url || '').trim();
       modelConfig.model = String(form.model_config.model || '').trim();
       modelConfig.api_key_ref = credentialForSubmit(form.model_config.api_key_ref);
-      modelConfig.request_template = requestTemplate;
-      modelConfig.headers = modelHeaders;
+      removeModelFields(['request_template', 'headers']);
       if (!modelConfig.base_url) errors['model_config.base_url'] = 'URL 不能为空';
       if (!modelConfig.model) errors['model_config.model'] = '模型 ID 不能为空';
       removeModelFields(['url', 'ws_url', 'stream_parser', 'connect_timeout_s', 'first_packet_timeout_s',
-        'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s', 'heartbeat_s', 'close_timeout_s',
+        'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s', 'close_timeout_s',
         'max_size', 'end_markers', 'accept_finish_reason_as_done', 'emit_deltas']);
     }
 
@@ -523,7 +501,6 @@ export default async function environmentView(container, ctx) {
       delete optimizerConfig.base_url;
       delete optimizerConfig.url;
       delete optimizerConfig.stream_parser;
-      delete optimizerConfig.heartbeat_s;
       for (const key of ['connect_timeout_s', 'first_packet_timeout_s',
         'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
         const value = num(form.optimizer_config[key], null);
@@ -541,15 +518,14 @@ export default async function environmentView(container, ctx) {
       optimizerConfig.base_url = String(form.optimizer_config.base_url || '').trim();
       delete optimizerConfig.url;
       optimizerConfig.api_key_ref = credentialForSubmit(form.optimizer_config.api_key_ref);
-      optimizerConfig.request_template = optimizerRequestTemplate;
-      optimizerConfig.headers = optimizerHeaders;
+      delete optimizerConfig.request_template;
+      delete optimizerConfig.headers;
       delete optimizerConfig.ws_url;
       delete optimizerConfig.connect_timeout_s;
       delete optimizerConfig.first_packet_timeout_s;
       delete optimizerConfig.idle_timeout_s;
       delete optimizerConfig.total_timeout_s;
       delete optimizerConfig.heartbeat_interval_s;
-      delete optimizerConfig.heartbeat_s;
       if (!optimizerConfig.model) errors['optimizer_config.model'] = '模型 ID 不能为空';
       if (!optimizerConfig.base_url) errors['optimizer_config.base_url'] = 'URL 不能为空';
     } else if (form.optimizer_config.model) {
@@ -565,7 +541,6 @@ export default async function environmentView(container, ctx) {
       delete optimizerConfig.idle_timeout_s;
       delete optimizerConfig.total_timeout_s;
       delete optimizerConfig.heartbeat_interval_s;
-      delete optimizerConfig.heartbeat_s;
     }
 
     if (!form.prompt || !String(form.prompt).trim()) errors.prompt = '业务系统 Prompt 不能为空';
@@ -600,8 +575,6 @@ export default async function environmentView(container, ctx) {
         provider: judgeProvider,
         model: String(judgeForm.model || '').trim(),
         api_key_ref: credentialForSubmit(judgeForm.api_key_ref),
-        request_template: judgeRequestTemplate,
-        headers: judgeHeaders,
         temperature: 0,
         max_tokens: num(judgeForm.max_tokens, 1024),
       };
@@ -611,6 +584,8 @@ export default async function environmentView(container, ctx) {
         if (!judgeConfig.base_url) errors['judge_config.base_url'] = 'URL 不能为空';
       } else {
         judgeConfig.ws_url = String(judgeForm.ws_url || '').trim();
+        judgeConfig.request_template = judgeRequestTemplate;
+        judgeConfig.headers = judgeHeaders;
         for (const key of ['connect_timeout_s', 'first_packet_timeout_s', 'idle_timeout_s', 'total_timeout_s', 'heartbeat_interval_s']) {
           const value = num(judgeForm[key], null);
           if (value !== null) judgeConfig[key] = value;
@@ -953,11 +928,7 @@ export default async function environmentView(container, ctx) {
 
   /** Standard API (OpenAI compatible): URL, model id and API key. */
   function standardApiFields(target) {
-    const { cfg, template: templatePath, headers: headersPath } = groupPaths(target);
-    // Body/header overrides belong to the former "enterprise HTTP gateway" setup.
-    // They are not part of the standard form, but configs that still carry them
-    // stay visible so nothing is sent that the page does not show.
-    const legacy = hasJsonContent(state.form[templatePath]) || hasJsonContent(state.form[headersPath]);
+    const { cfg } = groupPaths(target);
     return h(
       'div.stack',
       null,
@@ -1004,26 +975,7 @@ export default async function environmentView(container, ctx) {
             { open: target === 'optimizer' && Boolean(state.fieldErrors['optimizer_config.timeout_s']) }
           )
         : null,
-      legacy
-        ? advancedSettings(
-            '旧配置：请求体附加字段与请求头',
-            h(
-              'div.stack',
-              null,
-              callout({
-                tone: 'warning',
-                title: '标准 API 不需要这两项',
-                body: '这是早期「企业 HTTP 网关」写法留下的配置，仍会随请求发送。确认不需要后清空为 {} 并保存，即可移除。',
-              }),
-              h(
-                'div.form-grid',
-                null,
-                inputFor(templatePath, { label: '请求体附加字段（JSON）', rows: 5, mono: true }),
-                inputFor(headersPath, { label: '请求头（JSON）', rows: 5, mono: true })
-              )
-            ),
-          )
-        : null
+      null
     );
   }
 
@@ -1031,7 +983,7 @@ export default async function environmentView(container, ctx) {
     const envRef = publicCredential(config.api_key_ref);
     const keyConfigured = Boolean(envRef) || Boolean(state.credentialStatus?.[group]?.api_key_ref);
     return [
-      { label: 'URL', value: config.base_url || config.url || '—', mono: true },
+      { label: 'URL', value: config.base_url || '—', mono: true },
       { label: '模型 ID', value: config.model || '—', mono: true },
       { label: 'API Key', value: envRef || (keyConfigured ? '已配置' : '未配置'), mono: Boolean(envRef) },
       { label: '流式返回', value: config.stream ? '已启用' : '未启用' },
@@ -2011,8 +1963,15 @@ export default async function environmentView(container, ctx) {
     };
     if (provider !== 'heuristic' && provider !== 'demo_scripted') {
       config.api_key_ref = credentialForSubmit(config.api_key_ref);
+    }
+    if (provider === 'enterprise_ws') {
       config.request_template = parseObject(templatePath, target === 'optimizer' ? '优化器请求模板' : '请求模板');
       config.headers = parseObject(headersPath, target === 'optimizer' ? '优化器自定义 Headers' : '自定义 Headers');
+    }
+    if (provider === 'openai_http') {
+      delete config.request_template;
+      delete config.headers;
+      delete config.url;
     }
     if (provider === 'openai_http' && !String(config.base_url || '').trim()) {
       throw new Error('URL 不能为空');

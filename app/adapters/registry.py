@@ -12,29 +12,20 @@ from .openai_http import OpenAIHTTPAdapter
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ADAPTER_PROVIDERS", "REMOVED_PROVIDERS", "build_adapter", "provider_name"]
+__all__ = ["ADAPTER_PROVIDERS", "build_adapter", "provider_name"]
 
-#: Canonical provider names (contract) plus accepted aliases.
+#: Supported provider names; no aliases.
 ADAPTER_PROVIDERS = {
     "demo_scripted": "demo_scripted",
     "openai_http": "openai_http",
-    "openai": "openai_http",
-    "http": "openai_http",
-    "chat_completions": "openai_http",
     "enterprise_ws": "enterprise_ws",
-    "enterprise_gateway": "enterprise_ws",
-    "ws": "enterprise_ws",
 }
-
-#: Providers that were supported earlier and have been removed on purpose.
-REMOVED_PROVIDERS = {"flow", "python_flow", "python"}
-REMOVED_PROVIDER_MESSAGE = "Python 流程接入已移除，请改用标准 API 或 WebSocket 网关"
 
 
 def provider_name(model_config: Mapping[str, Any] | None) -> str:
     if not isinstance(model_config, Mapping):
         return ""
-    value = model_config.get("provider") or model_config.get("type") or ""
+    value = model_config.get("provider") or ""
     return str(value).strip().lower()
 
 
@@ -51,9 +42,6 @@ def build_adapter(model_config: Mapping[str, Any] | None) -> ModelAdapter:
     raw_provider = provider_name(model_config)
     if not raw_provider:
         raise AppError("模型配置缺少 provider", code="config_error",
-                       status_code=422, field_path="model_config.provider")
-    if raw_provider in REMOVED_PROVIDERS:
-        raise AppError(REMOVED_PROVIDER_MESSAGE, code="unknown_provider",
                        status_code=422, field_path="model_config.provider")
     canonical = ADAPTER_PROVIDERS.get(raw_provider)
     if canonical is None:

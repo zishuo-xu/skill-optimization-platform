@@ -121,11 +121,11 @@ def test_cross_project_parent_is_rejected():
 def test_connection_environment_id_uses_server_config_without_returning_it():
     demo = create_demo_project(env_overrides={
         "model_config": {"provider": "openai_http", "base_url": "http://local",
-                          "api_key": "SERVER_ONLY"}
+                          "api_key_ref": "SERVER_ONLY"}
     })
     result = services.test_connection({"environment_id": demo["environment"]["id"]})
     assert result["ok"] is True
-    assert persistence.get_environment(demo["environment"]["id"])["model_config"]["api_key"] == "SERVER_ONLY"
+    assert persistence.get_environment(demo["environment"]["id"])["model_config"]["api_key_ref"] == "SERVER_ONLY"
     assert "SERVER_ONLY" not in repr(result)
 
 

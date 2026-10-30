@@ -45,7 +45,7 @@ flowchart LR
 - API：Starlette，同步业务逻辑 + SSE 流；不依赖 pydantic（避免原生扩展签名问题）。
 - Worker：进程内线程，通过数据库租约 + 心跳领取任务；任务持久化在 `runs` 表。
 - 存储：SQLite 保存元数据与事件；不可变 Skill 包、trace 资源、导出文件保存在磁盘。
-- 企业 HTTP 网关复用 `openai_http`，支持完整请求地址、Body 扩展与 Headers；响应仍需兼容 Chat Completions/SSE，特殊协议在适配层调整。见 [接入说明](HTTP_GATEWAY_INTEGRATION.md)。
+- 标准 API（`openai_http`）只接收 URL、模型 ID 和 API Key 等标准字段；需要自定义请求体/请求头的企业网关使用 WebSocket 接入。见 [接入说明](HTTP_GATEWAY_INTEGRATION.md)。
 
 ## 3. 组件职责
 

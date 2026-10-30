@@ -36,17 +36,16 @@ def normalize_model_config(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValidationError("model_config 必须是对象", field_path="model_config")
     provider = raw.get("provider")
-    if provider in ("flow", "python_flow", "python"):
-        raise ValidationError("Python 流程接入已移除，请改用标准 API 或 WebSocket 网关",
-                              field_path="model_config.provider")
     if provider not in ("demo_scripted", "openai_http", "enterprise_ws", "heuristic"):
         raise ValidationError(
             f"不支持的模型提供方: {provider!r}", field_path="model_config.provider")
     normalized = dict(raw)
-    if provider == "enterprise_ws":
-        if "heartbeat_interval_s" not in normalized and "heartbeat_s" in normalized:
-            normalized["heartbeat_interval_s"] = normalized["heartbeat_s"]
-        normalized.pop("heartbeat_s", None)
+    if provider == "openai_http":
+        # The standard API form only has URL, model ID and API key; gateway
+        # body/header overrides are not part of the configuration.
+        for key in ("url", "endpoint", "headers", "request_template", "request_body",
+                    "extra_body", "timeout", "api_key", "stream_parser"):
+            normalized.pop(key, None)
     return normalized
 
 
@@ -225,10 +224,9 @@ def create_environment(project_id: str, payload: Mapping[str, Any], *,
     loader_config["strict_finish"] = strict_finish
     run_config = dict(payload.get("run_config") or {})
     scorer_config = dict(payload.get("scorer_config") or {})
-    # Accept legacy field names from older UI/API clients and normalise them.
-    run_config.setdefault("base_repeats", run_config.get("repeats_baseline", 1))
-    run_config.setdefault("validation_repeats", run_config.get("repeats_validation", 3))
-    scorer_config.setdefault("version", scorer_config.get("scorer_version", config.SCORER_VERSION))
+    run_config.setdefault("base_repeats", 1)
+    run_config.setdefault("validation_repeats", 3)
+    scorer_config.setdefault("version", config.SCORER_VERSION)
     compare_error = evaluation.compare_rules_error(scorer_config.get("compare"))
     if compare_error:
         raise ValidationError(f"评分规则无效：{compare_error}", field_path="scorer_config.compare")
@@ -383,7 +381,7 @@ def _normalise_judge_config(scorer_config: dict[str, Any],
     if not str(judge.get("model") or "").strip():
         raise ValidationError("评分模型 ID 不能为空", field_path="scorer_config.judge.model")
     endpoint = judge.get("ws_url") if judge["provider"] == "enterprise_ws" else (
-        judge.get("base_url") or judge.get("url"))
+        judge.get("base_url"))
     if not str(endpoint or "").strip():
         raise ValidationError("评分模型地址不能为空", field_path="scorer_config.judge")
     scorer_config["judge"] = judge
@@ -442,10 +440,9 @@ def test_connection(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "message": "未配置优化模型，运行时将记录 optimizer_not_configured 并使用冻结启发式回退",
                 "capabilities": {"model": False, "heuristic": True}}
     if provider == "openai_http":
-        base_url = model_config.get("url") or model_config.get("endpoint") or model_config.get("base_url")
+        base_url = model_config.get("base_url")
         if not base_url:
-            return {"ok": False, "provider": provider,
-                    "message": "缺少 API 根地址或完整请求地址"}
+            return {"ok": False, "provider": provider, "message": "缺少 URL"}
         return {"ok": True, "provider": provider,
                 "message": "已配置标准 API 接入；实际连通性需在该环境可访问网关时验证",
                 "capabilities": {"routing": True, "tool_arguments": True,
@@ -792,7 +789,7 @@ def evaluation_inputs(skill_id: str, env: Mapping[str, Any], dataset_id: str) ->
              if (case.get('split') or 'optimize') == 'optimize']
     daily.sort(key=lambda case: case['case_id'])
     run_config = dict(env.get('run_config') or {})
-    for key in ('validation_repeats', 'repeats_validation', 'log_level', 'transport_diagnostics'):
+    for key in ('validation_repeats', 'log_level', 'transport_diagnostics'):
         run_config.pop(key, None)
     model_config = {key: value for key, value in (env.get('model_config') or {}).items()
                     if key not in ('transport_diagnostics', 'log_level')}

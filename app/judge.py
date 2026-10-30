@@ -66,7 +66,7 @@ def judge_identity(config: Mapping[str, Any]) -> str:
     """Model identity that becomes part of every cache key (no credentials)."""
     return json_dumps_compact({
         "provider": config.get("provider"),
-        "endpoint": config.get("base_url") or config.get("url") or config.get("ws_url") or "",
+        "endpoint": config.get("base_url") or config.get("ws_url") or "",
         "model": config.get("model") or "",
         "temperature": config.get("temperature", 0),
         "prompt": JUDGE_PROMPT_VERSION,

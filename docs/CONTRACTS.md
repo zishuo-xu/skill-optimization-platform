@@ -246,7 +246,7 @@ class ModelAdapter:                     # app/adapters/base.py
 
 - `app/adapters/registry.py::build_adapter(model_config) -> ModelAdapter`：
   `provider` ∈ `demo_scripted`（仅示例与测试）/ `openai_http` / `enterprise_ws`。
-  `flow` / `python_flow` / `python` 已移除，构建时返回 `unknown_provider`（422）。
+  只接受 `demo_scripted` / `openai_http` / `enterprise_ws`，不接受别名；其他值构建时返回 `unknown_provider`（422）。
 - `app/adapters/openai_http.py`：标准 Chat Completions HTTP，超时/重试分类
   （401→auth_failed 不重试；超时/429 最多重试 2 次并上报 retry 事件）。
 - `app/adapters/enterprise_ws.py`：企业网关 WebSocket 适配器，按 §38/§40：

@@ -35,7 +35,7 @@ def probe_connection(model_config: Mapping[str, Any], *, target: str = "business
         base.update(performed=False, ok=True,
                     message="演示/启发式适配器不执行真实网络探测")
         return base
-    url = cfg.get("ws_url") if provider == "enterprise_ws" else (cfg.get("url") or cfg.get("endpoint") or cfg.get("base_url"))
+    url = cfg.get("ws_url") if provider == "enterprise_ws" else cfg.get("base_url")
     parsed = urlparse(str(url)) if url else None
     allowed = ("ws", "wss") if provider == "enterprise_ws" else ("http", "https")
     if not parsed or parsed.scheme not in allowed or not parsed.netloc:

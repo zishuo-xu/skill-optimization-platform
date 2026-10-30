@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- 移除模型配置的旧兼容逻辑（开发阶段，不保留兼容）：标准 API 不再接受 `url`/`endpoint` 完整地址、`headers`、`request_template`/`request_body`/`extra_body`、`timeout`、`api_key` 别名，保存时直接丢弃，适配器也不读取；页面删除「旧配置：请求体附加字段与请求头」区块及加载时的 `url` 合并。删除 provider 别名（`openai`/`http`/`ws` 等）和 `type` 字段、Python 流程专用报错、`heartbeat_s` / `repeats_baseline` / `repeats_validation` / `scorer_version` 旧字段名，以及“已发布环境缺少流式字段按非流式显示”“优化超时缺省显示 60 秒”的兼容规则。WebSocket 网关的请求模板与请求头保持不变。相应回归改为验证新行为。
+
 - 页面与使用流程重构：项目只保留「首页」与「设置」。首页是一条流程（准备 → 测试 → 优化 → 验收 → 应用），只突出当前步骤、关键分数（原版 → 候选及修好/变差/仍失败计数）和一个主按钮；设置合并 Skill、Prompt 与模型、测试集和版本历史。修改改为“编辑即保存”：保存为待生效工作副本，首页启动测试或新一轮优化时由服务端自动发布并切换（数据集带 hash/指针 CAS，未变化的副本丢弃）；继续优化、独立验收、最终测试不吸收新修改。新增 `GET /projects/{pid}/pipeline`、`/workspace` 系列与 `POST /projects/{pid}/start`，旧发布/激活接口及旧页面路径保持兼容。运行页改为「结果 / 改动 / 过程日志」：运行中默认显示结果页而非原始事件流，顶部实时显示阶段、通过/未通过/出错计数、预计剩余时间和最近未通过案例（`stage_progress.outcomes/recent_failures/reused`）；案例列表并入结果页，AI 排障分析默认收起。运行类型改称「测试 / 优化 / 独立验收」。新增 10 项回归（tests/test_workspace_pipeline.py）。`?mock=1` 演示假后端尚未覆盖新接口。
 
 - 现有修图示例调整为 10 个子技能：9 个直接编辑，质感风格单独执行“查询版本 → 检查能力与范围 → 编辑或替代处理”。新增脱敏风格契约及分方法 fixture，112 条案例覆盖版本差异、范围截断、未知版本、失败停止、替代路由与复合操作；离线模拟器只根据 Skill 契约和实际查询返回选参。原已发布包与历史记录保留，可通过 `--refresh-image` 发布新版示例。

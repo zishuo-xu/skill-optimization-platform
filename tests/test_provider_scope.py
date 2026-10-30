@@ -1,4 +1,4 @@
-"""Connection scope: standard API and WebSocket gateway; Python flow is removed."""
+"""Connection scope: standard API and WebSocket gateway only."""
 
 from __future__ import annotations
 
@@ -9,14 +9,6 @@ from app.adapters.openai_http import OpenAIHTTPAdapter
 from app.adapters.registry import build_adapter
 from app.errors import AppError
 from tests.conftest import environment_payload
-
-
-@pytest.mark.parametrize("provider", ["flow", "python_flow", "python"])
-def test_registry_rejects_removed_python_flow(provider):
-    with pytest.raises(AppError) as excinfo:
-        build_adapter({"provider": provider})
-    assert excinfo.value.code == "unknown_provider"
-    assert "Python 流程接入已移除" in excinfo.value.message
 
 
 def test_supported_transports_still_build():
@@ -33,7 +25,7 @@ def test_environment_api_rejects_python_flow(client, demo, field):
                            json={**payload, "status": "draft"})
     assert response.status_code == 422, response.text
     error = response.json()["error"]
-    assert "Python 流程接入已移除" in error["message"]
+    assert "不支持的模型提供方" in error["message"]
 
 
 def test_connection_test_rejects_python_flow(client):
@@ -42,7 +34,7 @@ def test_connection_test_rejects_python_flow(client):
         "model_config": {"provider": "flow", "python_entry": "pkg.run"},
     })
     assert response.status_code == 422, response.text
-    assert "Python 流程接入已移除" in response.json()["error"]["message"]
+    assert "不支持的模型提供方" in response.json()["error"]["message"]
 
 
 # --------------------------------------------------------------------------- #

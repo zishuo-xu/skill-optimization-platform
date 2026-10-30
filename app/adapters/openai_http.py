@@ -77,12 +77,10 @@ class OpenAIHTTPAdapter(ModelAdapter):
     def __init__(self, model_config: Mapping[str, Any] | None = None):
         super().__init__(model_config)
         config = self.model_config
-        base_url = (config.get("base_url") or config.get("baseUrl")
-                    or os.environ.get("OPENAI_BASE_URL") or "")
+        base_url = config.get("base_url") or os.environ.get("OPENAI_BASE_URL") or ""
         self.base_url = str(base_url).strip()
-        explicit = config.get("url") or config.get("endpoint")
-        self.url = str(explicit) if explicit else self._default_url(self.base_url)
-        self.timeout_s = float(config.get("timeout_s") or config.get("timeout") or 60.0)
+        self.url = self._default_url(self.base_url)
+        self.timeout_s = float(config.get("timeout_s") or 60.0)
         self.max_retries = int(config.get("max_retries", 2))
         self.retry_backoff_s = float(config.get("retry_backoff_s", 0.5))
 
@@ -106,25 +104,21 @@ class OpenAIHTTPAdapter(ModelAdapter):
         return effective
 
     def _headers(self, config: Mapping[str, Any]) -> dict[str, str]:
-        headers = {str(k): str(v) for k, v in (config.get("headers") or {}).items()}
-        lowered = {key.lower() for key in headers}
-        ref = config.get("api_key_ref") if config.get("api_key_ref") is not None else config.get("api_key")
-        secret = None if "authorization" in lowered else resolve_secret_ref(ref)
-        if "authorization" not in lowered and isinstance(ref, str) and ref.startswith("env:") and not secret:
+        headers = {"Content-Type": "application/json"}
+        ref = config.get("api_key_ref")
+        secret = resolve_secret_ref(ref)
+        if isinstance(ref, str) and ref.startswith("env:") and not secret:
             raise AdapterError("模型服务鉴权引用未解析", code="auth_failed", retryable=False)
-        if "authorization" not in lowered and isinstance(ref, Mapping) and ref.get("env") and not secret:
+        if isinstance(ref, Mapping) and ref.get("env") and not secret:
             raise AdapterError("模型服务鉴权引用未解析", code="auth_failed", retryable=False)
-        if secret and "authorization" not in lowered:
+        if secret:
             headers["Authorization"] = f"Bearer {secret}"
-        if "content-type" not in lowered:
-            headers["Content-Type"] = "application/json"
         return headers
 
     def _build_body(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                     config: Mapping[str, Any]) -> dict[str, Any]:
-        template = config.get("request_template") or config.get("request_body") or {}
-        body: dict[str, Any] = dict(template) if isinstance(template, Mapping) else {}
-        body["model"] = config.get("model") or body.get("model") or ""
+        body: dict[str, Any] = {}
+        body["model"] = config.get("model") or ""
         body["messages"] = list(messages)
         body["stream"] = bool(config.get("stream", False))
         if config.get("temperature") is not None:
@@ -138,18 +132,6 @@ class OpenAIHTTPAdapter(ModelAdapter):
             body["tools"] = tool_defs
             if config.get("tool_choice") is not None:
                 body["tool_choice"] = config["tool_choice"]
-        else:
-            body.pop("tools", None)
-            body.pop("tool_choice", None)
-        extra_body = config.get("extra_body")
-        if isinstance(extra_body, Mapping):
-            # Gateway extensions are allowed, but the execution protocol is
-            # frozen here: callers cannot replace the messages/tools/model or
-            # stream controls assembled from the actual case.
-            frozen = {"model", "messages", "tools", "stream", "stream_options",
-                      "temperature", "max_tokens", "top_p", "tool_choice"}
-            body.update({key: value for key, value in extra_body.items()
-                         if key not in frozen})
         if body.get("stream"):
             stream_options = dict(body.get("stream_options") or {})
             stream_options.update(config.get("stream_options") or {})

@@ -28,22 +28,19 @@ def config(api_root, **patch):
 
 def test_published_business_and_optimizer_probe_inherit_secrets_without_mutation(client):
     with _FakeHTTP([(200, answer()), (200, answer())]) as gateway:
-        business = config(gateway.url, api_key_ref={"value": "BUSINESS_PRIVATE"},
-                          request_template={"api_key": "BODY_PRIVATE", "user": "before"},
-                          headers={"X-Company": "local"})
+        business = config(gateway.url, api_key_ref={"value": "BUSINESS_PRIVATE"})
         optimizer = config(gateway.url, api_key_ref={"value": "OPTIMIZER_PRIVATE"})
         demo = create_demo_project(env_overrides={"model_config": business, "optimizer_config": optimizer})
         before = copy.deepcopy(persistence.get_environment(demo["environment"]["id"]))
         public = services.public_environment(before)["model_config"]
-        public["request_template"]["user"] = "unsaved"
+        public["model"] = "unsaved-model"
         first = client.post(URL, json={"environment_id": before["id"], "target": "business", "model_config": public})
         second = client.post(URL, json={"environment_id": before["id"], "target": "optimizer"})
         assert first.json()["ok"] and second.json()["ok"]
         assert first.json()["target"] == "business" and second.json()["target"] == "optimizer"
         assert gateway.requests[0]["headers"]["authorization"] == "Bearer BUSINESS_PRIVATE"
         assert gateway.requests[1]["headers"]["authorization"] == "Bearer OPTIMIZER_PRIVATE"
-        assert gateway.requests[0]["body"]["api_key"] == "BODY_PRIVATE"
-        assert gateway.requests[0]["body"]["user"] == "unsaved"
+        assert gateway.requests[0]["body"]["model"] == "unsaved-model"
         assert gateway.requests[0]["body"]["messages"] == [{"role": "user", "content": "只回复 OK"}]
         assert "tools" not in gateway.requests[0]["body"]
         assert gateway.requests[0]["body"]["max_tokens"] <= 64
@@ -69,14 +66,12 @@ def test_stream_probe_uses_configured_endpoint_and_returns_usage(client):
               (_sse({"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 1}})).encode(),
               b"data: [DONE]\n\n"]
     with _HTTPStream([(200, chunks, 0)]) as gateway:
-        cfg = config("", url=gateway.url + "/company/invoke", stream=True,
-                     headers={"Authorization": "Custom PRIVATE"}, request_template={"user": "tenant"})
+        cfg = config(gateway.url, stream=True, api_key_ref={"value": "PRIVATE"})
         result = client.post(URL, json={"model_config": cfg}).json()
         assert result["ok"] and result["response_preview"] == "OK"
         assert result["usage"]["total_tokens"] == 4
-        assert gateway.requests[0]["path"] == "/v1/company/invoke"
-        assert gateway.requests[0]["headers"]["Authorization"] == "Custom PRIVATE"
-        assert gateway.requests[0]["body"]["user"] == "tenant"
+        assert gateway.requests[0]["path"] == "/v1/chat/completions"
+        assert gateway.requests[0]["headers"]["Authorization"] == "Bearer PRIVATE"
         assert gateway.requests[0]["body"]["stream"] is True
 
 
