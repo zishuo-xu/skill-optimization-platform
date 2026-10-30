@@ -5462,3 +5462,65 @@ button.live__failure:hover { background: var(--surface-hover); }
 @media (max-width: 900px) {
   .pipeline { grid-template-columns: 1fr; }
 }
+
+/* ---- 简化的 Prompt 与模型 ---------------------------------------------- */
+.simple-card {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 1080px;
+}
+
+.simple-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.simple-card__head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.model-row {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.model-row__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-row__spacer { flex: 1; }
+
+.model-row__fields {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 10px;
+}
+
+.model-row__fields .form-field,
+.simple-card .form-field { margin-bottom: 0; }
+
+.model-row__more { border: 0; background: transparent; }
+.model-row__more .collapsible__summary { padding: 2px 0; }
+
+.segmented--sm .segmented__btn {
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 900px) {
+  .model-row__fields { grid-template-columns: 1fr; }
+}
+.model-row__copy { font-size: 12.5px; }

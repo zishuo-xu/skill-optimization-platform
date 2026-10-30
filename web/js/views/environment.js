@@ -4,23 +4,14 @@ import { api } from '../api_v3.js';
 import { h, mount, icon } from '../dom.js';
 import {
   button,
-  chip,
-  statusBadge,
-  pageHeader,
-  sectionCard,
   collapsible,
-  callout,
   loadingState,
   errorState,
-  emptyState,
   confirmDialog,
   toast,
   formField,
   inlineError,
-  kvList,
-  jsonViewer,
 } from '../components.js';
-import { formatDateTime } from '../format.js';
 
 const DEFAULT_PROMPT = `你是使用 Skill 包完成用户任务的执行 Agent。
 
@@ -231,7 +222,6 @@ function defaults() {
   };
 }
 
-
 export function toForm(env) {
   const base = defaults();
   if (!env) {
@@ -316,7 +306,6 @@ export function toForm(env) {
   };
 }
 
-
 export default async function environmentView(container, ctx) {
   const { project } = ctx;
   const state = {
@@ -343,7 +332,7 @@ export default async function environmentView(container, ctx) {
 
   // In the settings workspace every field is editable: saving writes the
   // working copy, which is frozen automatically when the next run starts.
-  const EDITABLE = () => Boolean(ctx.workspace) || !state.env || state.env.status === 'draft';
+  const EDITABLE = () => true;
   const workspace = { pending: false, draftId: null };
 
   function markDirty() {
@@ -360,10 +349,8 @@ export default async function environmentView(container, ctx) {
   }
 
   function updateFooter() {
-    if (ctx.workspace) {
-      renderWorkspaceBar();
-      return;
-    }
+    renderWorkspaceBar();
+    return;
     const status = document.getElementById('env-save-status');
     if (status) {
       status.textContent = state.dirty ? '● 有未保存修改' : state.env ? '已保存' : '未发布';
@@ -757,125 +744,12 @@ export default async function environmentView(container, ctx) {
   }
 
   function renderVersionBar() {
-    if (ctx.workspace) return renderWorkspaceBar();
-    if (state.loading && !state.env && !state.versions.length) {
-      mount(versionHost, loadingState('正在加载执行环境…', { compact: true }));
-      return;
-    }
-    if (state.error) {
-      mount(versionHost, errorState(state.error, { title: '无法加载执行环境', retry: () => load() }));
-      return;
-    }
-    const env = state.env;
-    const select = h(
-      'select.select',
-      {
-        style: { width: 'auto', minWidth: '240px' },
-        'aria-label': '选择执行环境版本',
-        onchange: (event) => selectVersion(event.target.value),
-      },
-      ...state.versions.map((item) =>
-        h('option', { value: item.id, selected: env && item.id === env.id }, `v${item.version_seq} · ${item.status === 'draft' ? '草稿' : '已发布'}`)
-      )
-    );
-    mount(
-      versionHost,
-      h(
-        'div.version-bar',
-        null,
-        h('span.muted.small', { text: '环境版本' }),
-        state.versions.length ? select : h('span.muted.small', { text: '尚无版本' }),
-        env ? statusBadge(env.status, 'version') : null,
-        env && env.id === project.current_environment_id ? chip('当前版本', 'accent') : null,
-        env ? h('span.xsmall.muted', { text: `创建于 ${formatDateTime(env.created_at)}` }) : null,
-        h('span.version-bar__spacer'),
-        env && env.status === 'published' && env.id !== project.current_environment_id
-          ? button({ label: '设为当前', variant: 'ghost', size: 'sm', iconName: 'check', onClick: () => publishExisting(env), disabled: state.busy })
-          : null,
-        env && env.status === 'draft'
-          ? button({ label: '保存草稿', variant: 'secondary', size: 'sm', iconName: 'save', className: 'env-save-draft', onClick: () => saveDraft(), disabled: state.busy || !state.dirty })
-          : null,
-        env && env.status === 'draft'
-          ? button({ label: '保存并使用', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => publishDraft(), disabled: state.busy })
-          : null,
-        !state.versions.length
-          ? button({ label: '保存并使用', variant: 'primary', size: 'sm', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
-          : null
-      )
-    );
+    renderWorkspaceBar();
   }
 
   /* ---------------- 配置展示 ---------------- */
   // Selectable connection methods. The offline demo model is kept only for the
   // bundled sample projects and is shown read-only, never offered as a choice.
-  const BUSINESS_PROVIDERS = [
-    { value: 'openai_http', label: '标准 API' },
-    { value: 'enterprise_ws', label: 'WebSocket 网关' },
-  ];
-  const LEGACY_PROVIDER_LABELS = {
-    demo_scripted: '演示模型（离线）',
-  };
-  const OPTIMIZER_PROVIDERS = [
-    { value: 'heuristic', label: '规则修复（不调用模型）' },
-    { value: 'openai_http', label: '标准 API' },
-    { value: 'enterprise_ws', label: 'WebSocket 网关' },
-  ];
-
-  function providerLabel(provider) {
-    return (BUSINESS_PROVIDERS.find((item) => item.value === provider) || {}).label || LEGACY_PROVIDER_LABELS[provider] || provider || '未设置';
-  }
-
-  function optimizerLabel(provider) {
-    return (OPTIMIZER_PROVIDERS.find((item) => item.value === provider) || {}).label || provider || '未设置';
-  }
-
-  function secondsText(value) {
-    const seconds = Number(value);
-    if (!Number.isFinite(seconds) || seconds <= 0) return '未设置';
-    if (seconds < 60) return `${seconds} 秒`;
-    if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.round((seconds % 3600) / 60);
-    return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
-  }
-
-  function factsList(items) {
-    return kvList(items.filter(Boolean), { compact: true });
-  }
-
-  function advancedSettings(summary, body, { open = false } = {}) {
-    return collapsible({ summary: h('span', { text: summary }), body, open, className: 'advanced-settings' });
-  }
-
-  function providerSegments(provider) {
-    return h(
-      'div.segmented',
-      { role: 'group', 'aria-label': '业务模型接入方式' },
-      ...BUSINESS_PROVIDERS.map((option) =>
-        h(
-          `button.segmented__btn${provider === option.value ? ' is-active' : ''}`,
-          {
-            type: 'button',
-            title: EDITABLE() ? `切换为${option.label}` : '当前版本只读；点击会提示创建草稿后切换',
-            onclick: async () => {
-              if (provider === option.value) return;
-              if (!EDITABLE()) {
-                await createDraftWithProvider(option, provider);
-                return;
-              }
-              // The demo model id means nothing to a real endpoint; start blank.
-              if (provider === 'demo_scripted') state.form.model_config.model = '';
-              state.form.model_config.provider = option.value;
-              clearFormCredentialMasks('model_config');
-              markDirty();
-              renderForm();
-            },
-          },
-          option.label
-        )
-      )
-    );
-  }
 
   function streamToggle(target = 'business') {
     const group = groupPaths(target).cfg;
@@ -891,7 +765,7 @@ export default async function environmentView(container, ctx) {
           markDirty();
         },
       }),
-      h('span', { text: '启用 SSE 式增量返回（usage 在尾部聚合）' })
+      h('span', { text: '开启' })
     );
   }
 
@@ -919,181 +793,6 @@ export default async function environmentView(container, ctx) {
       },
       '填入示例'
     );
-  }
-
-  function hasJsonContent(text) {
-    const raw = String(text || '').trim();
-    return Boolean(raw) && raw !== '{}';
-  }
-
-  /** Standard API (OpenAI compatible): URL, model id and API key. */
-  function standardApiFields(target) {
-    const { cfg } = groupPaths(target);
-    return h(
-      'div.stack',
-      null,
-      h(
-        'div.form-grid.form-grid--3',
-        null,
-        inputFor(`${cfg}.base_url`, {
-          label: 'URL',
-          placeholder: 'https://api.example.com/v1',
-          hint: 'OpenAI 兼容地址，平台自动补 /chat/completions；也可直接填完整的 …/chat/completions。',
-        }),
-        inputFor(`${cfg}.model`, { label: '模型 ID', placeholder: 'gpt-4o-mini' }),
-        inputFor(`${cfg}.api_key_ref`, {
-          label: 'API Key',
-          hint: '以 Authorization: Bearer 发送；也可写 env:变量名 从环境变量读取。',
-        })
-      ),
-      target === 'business'
-        ? advancedSettings(
-            '高级：采样与超时',
-            h(
-              'div.form-grid',
-              null,
-              inputFor('model_config.temperature', { label: '温度', type: 'number', hint: '评测建议固定为 0。' }),
-              inputFor('model_config.max_tokens', { label: '最大输出 Token', type: 'number' }),
-              inputFor('model_config.timeout_s', { label: '超时（秒）', type: 'number' }),
-              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle('business'))
-            )
-          )
-        : null,
-      ['judge', 'optimizer'].includes(target)
-        ? advancedSettings(
-            target === 'judge' ? '高级：评分请求' : '高级：优化请求',
-            h(
-              'div.stack',
-              null,
-              h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle(target)),
-              target === 'optimizer' ? inputFor('optimizer_config.timeout_s', {
-                label: '优化请求超时（秒）', type: 'number',
-                hint: '限制一次完整请求的总等待时间，流式输出不会重置计时。较慢模型可先尝试 180 秒；与业务模型、单案例超时独立。',
-              }) : null,
-              h('p.form-field__hint', { text: '按模型服务支持的返回方式选择；网关只支持流式请求时，请开启此项。' })
-            ),
-            { open: target === 'optimizer' && Boolean(state.fieldErrors['optimizer_config.timeout_s']) }
-          )
-        : null,
-      null
-    );
-  }
-
-  function standardApiFacts(config, group) {
-    const envRef = publicCredential(config.api_key_ref);
-    const keyConfigured = Boolean(envRef) || Boolean(state.credentialStatus?.[group]?.api_key_ref);
-    return [
-      { label: 'URL', value: config.base_url || '—', mono: true },
-      { label: '模型 ID', value: config.model || '—', mono: true },
-      { label: 'API Key', value: envRef || (keyConfigured ? '已配置' : '未配置'), mono: Boolean(envRef) },
-      { label: '流式返回', value: config.stream ? '已启用' : '未启用' },
-      ...(group === 'optimizer_config' ? [{ label: '优化请求超时', value: secondsText(config.timeout_s || config.timeout || 60) }] : []),
-    ];
-  }
-
-  /** Read-only summary: field names only, never header or credential values. */
-  function wsGatewayFacts(config, group) {
-    const keys = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : []);
-    const templateKeys = keys(config.request_template).filter((key) => key !== 'api_key');
-    const headerKeys = keys(config.headers);
-    const serviceConfigured = Boolean(config.api_key_ref) || Boolean(state.credentialStatus?.[group]?.api_key_ref)
-      || keys(config.request_template).includes('api_key');
-    return [
-      { label: 'WebSocket 地址', value: config.ws_url || '—', mono: true },
-      { label: '模型 ID', value: config.model || '—', mono: true },
-      { label: '接入服务名', value: serviceConfigured ? '已配置' : '未配置' },
-      { label: '请求体附加字段', value: templateKeys.length ? templateKeys.join('、') : '未设置', mono: templateKeys.length > 0 },
-      { label: '握手请求头', value: headerKeys.length ? headerKeys.join('、') : '未设置', mono: headerKeys.length > 0 },
-      { label: '总超时', value: secondsText(config.total_timeout_s || 180) },
-    ];
-  }
-
-  /** WebSocket gateway form shared by the business and optimizer models. */
-  function wsGatewayFields(target) {
-    const { cfg, template: templatePath, headers: headersPath } = groupPaths(target);
-    return h(
-      'div.stack',
-      null,
-      h(
-        'div.form-grid',
-        null,
-        inputFor(`${cfg}.ws_url`, { label: 'WebSocket 地址', hint: 'ws:// 或 wss://，形如 ws://网关地址/网关路径。' }),
-        inputFor(`${cfg}.model`, { label: '模型 ID', hint: '网关可路由多种厂商模型；按网关支持的模型 ID 填写。' }),
-        inputFor(`${cfg}.api_key_ref`, {
-          label: '接入服务名（api_key）',
-          hint: '放入请求体 api_key，不生成 Authorization 头；可写 env:变量名 从环境变量读取。请求模板里已有 api_key 时以模板为准。',
-        })
-      ),
-      h(
-        'div.form-grid',
-        null,
-        h(
-          'div.stack.stack--sm',
-          null,
-          inputFor(templatePath, {
-            label: '请求体附加字段（JSON）',
-            rows: 6,
-            mono: true,
-            hint: '与 OpenAI Chat Completions 同构；model、messages、tools、stream、temperature、max_tokens 由平台填写，这里放 user、extra_body、stream_options 等网关字段。',
-          }),
-          fillExampleButton(templatePath, WS_TEMPLATE_EXAMPLE)
-        ),
-        h(
-          'div.stack.stack--sm',
-          null,
-          inputFor(headersPath, {
-            label: '握手请求头（JSON）',
-            rows: 6,
-            mono: true,
-            hint: '建立 WebSocket 连接时发送，例如网关用于识别调用人的 sender 工号。不会自动添加 Authorization。',
-          }),
-          fillExampleButton(headersPath, WS_HEADERS_EXAMPLE)
-        )
-      ),
-      advancedSettings(
-        '高级：超时与心跳',
-        h(
-          'div.stack',
-          null,
-          h(
-            'div.form-grid',
-            null,
-            inputFor(`${cfg}.connect_timeout_s`, { label: '连接超时（秒）', type: 'number' }),
-            inputFor(`${cfg}.first_packet_timeout_s`, { label: '首包超时（秒）', type: 'number' }),
-            inputFor(`${cfg}.idle_timeout_s`, { label: '空闲超时（秒）', type: 'number' }),
-            inputFor(`${cfg}.total_timeout_s`, { label: '总超时（秒）', type: 'number' }),
-            inputFor(`${cfg}.heartbeat_interval_s`, { label: '心跳间隔（秒）', type: 'number' })
-          ),
-          callout({
-            tone: 'info',
-            title: '返回流解析',
-            body: '逐帧完整 JSON 与 SSE 均可解析。没有 [DONE] 时以 finish_reason 或连接关闭判定结束；每帧都带 usage 时取最后一帧；result_info、debug_info 等遥测字段解析后即丢弃，不写入运行记录。',
-          })
-        )
-      )
-    );
-  }
-
-  function modelFields(provider) {
-    if (provider === 'demo_scripted') {
-      return h(
-        'div.stack',
-        null,
-        inputFor('model_config.model', {
-          label: '模型标识',
-          hint: '演示适配器的标识，无需网络与凭据。',
-        }),
-        callout({
-          tone: 'info',
-          title: '示例项目使用离线演示模型',
-          body: '离线演示模型是规则模拟器，仅用于示例与自动化测试，不能再新选。接入真实业务请在上方选择标准 API 或 WebSocket 网关；切换只影响草稿，保存并发布后生效。',
-        })
-      );
-    }
-    if (provider === 'enterprise_ws') {
-      return wsGatewayFields('business');
-    }
-    return standardApiFields('business');
   }
 
   function testResultView(target) {
@@ -1137,10 +836,6 @@ export default async function environmentView(container, ctx) {
     );
   }
 
-  function testHint(target, provider) {
-    return '单次模型测试，最多 64 个输出 Token；不运行 Skill 或业务工具，可能产生少量调用费用。';
-  }
-
   /** Clear masked credentials left in the form after switching a connection method. */
   function clearFormCredentialMasks(group) {
     const removed = [];
@@ -1158,312 +853,6 @@ export default async function environmentView(container, ctx) {
     return removed;
   }
 
-  function isOffline(provider) {
-    return provider === 'heuristic' || provider === 'demo_scripted';
-  }
-
-  /** Probe input, hint and result; offline modes send nothing, so show nothing. */
-  function testBlock(target, provider) {
-    if (isOffline(provider)) return null;
-    return h(
-      'div.stack.stack--sm',
-      null,
-      testInputView(target, provider),
-      h('p.form-field__hint', { text: testHint(target, provider) }),
-      testResultView(target)
-    );
-  }
-
-  function testInputView(target, provider) {
-    const offline = isOffline(provider);
-    return h(
-      'div.form-field.test-input-field',
-      null,
-      h('span.form-field__label', { text: '本次测试输入' }),
-      h('textarea.textarea', {
-        rows: 2,
-        maxLength: 16000,
-        value: state.testInput[target],
-        disabled: offline,
-        'aria-label': `${TARGET_LABELS[target] || '业务模型'}测试输入`,
-        oninput: (event) => {
-          state.testInput[target] = event.target.value;
-          state.testSeq[target] += 1;
-          state.testLoading[target] = false;
-          state.testResult[target] = null;
-          document.querySelector(`[data-test-result="${target}"]`)?.remove();
-          document.querySelector(`.test-connection-button--${target}`)?.removeAttribute('disabled');
-        },
-      }),
-      h('p.form-field__hint', { text: offline ? '离线模式不发送测试请求。' : '仅用于本次单次探测，不会写入环境配置；留空时服务端使用 ping。' })
-    );
-  }
-
-  function modelFacts() {
-    const config = state.form.model_config || {};
-    const provider = config.provider;
-    const items = [{ label: '接入方式', value: providerLabel(provider) }];
-    if (provider === 'demo_scripted') {
-      items.push({ label: '模型标识', value: config.model || 'demo-scripted-v1', mono: true });
-    } else if (provider === 'enterprise_ws') {
-      items.push(...wsGatewayFacts(config, 'model_config'));
-    } else {
-      items.push(...standardApiFacts(config, 'model_config'));
-    }
-    return factsList(items);
-  }
-
-  function promptSection() {
-    const editable = EDITABLE();
-    const prompt = state.form.prompt || '';
-    const textarea = h('textarea.textarea.textarea--code', {
-      rows: 12,
-      value: prompt,
-      disabled: !editable,
-      'aria-label': '业务系统 Prompt',
-      oninput: (event) => {
-        state.form.prompt = event.target.value;
-        markDirty();
-      },
-    });
-    const preview = h(
-      'pre.prompt-preview',
-      {
-        style: {
-          whiteSpace: 'pre-wrap',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '12.5px',
-          lineHeight: '1.7',
-          background: 'var(--bg)',
-          border: '1px solid var(--line-soft)',
-          borderRadius: '8px',
-          padding: '12px 14px',
-          maxHeight: 'none',
-          overflow: 'auto',
-          color: 'var(--text-2)',
-          margin: 0,
-        },
-      },
-      prompt
-    );
-    const details = collapsible({
-      summary: h('span', { text: editable ? '编辑 Prompt' : '查看完整 Prompt' }),
-      body: h('div.stack', null, editable ? textarea : preview, state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null),
-      open: state.promptOpen || Boolean(state.fieldErrors.prompt),
-    });
-    details.addEventListener('toggle', () => { state.promptOpen = details.open; });
-    return sectionCard({
-      title: '业务系统 Prompt',
-      description: `${prompt.length.toLocaleString()} 字符 · 优化器不会修改 Prompt`,
-      actions: editable
-        ? [button({
-            label: '恢复内置模板', variant: 'ghost', size: 'sm', iconName: 'refresh',
-            onClick: async () => {
-              const ok = await confirmDialog({
-                title: '恢复内置模板',
-                message: '将用内置业务 Prompt 模板替换当前内容，已发布版本不会受影响。',
-                confirmText: '恢复模板',
-              });
-              if (!ok) return;
-              state.form.prompt = DEFAULT_PROMPT;
-              state.promptOpen = true;
-              markDirty();
-              renderForm();
-            },
-          })]
-        : [chip('只读', 'neutral')],
-      body: h('div.stack', null,
-        h('p.small.muted', { text: prompt.trim().slice(0, 160) + (prompt.trim().length > 160 ? '…' : '') || '尚未填写 Prompt' }),
-        details
-      ),
-    });
-  }
-
-  function businessModelSection() {
-    const editable = EDITABLE();
-    const config = state.form.model_config || {};
-    const provider = config.provider;
-    const body = h(
-      'div.stack',
-      null,
-      h('div.form-field', null, h('span.form-field__label', { text: '接入方式' }), providerSegments(provider)),
-      !editable
-        ? h('p.form-field__hint', { text: '当前版本已发布，配置只读；点击任一接入方式会提示创建草稿后切换。' })
-        : null,
-      editable ? modelFields(provider) : modelFacts(),
-      testBlock('business', provider)
-    );
-    return sectionCard({
-      title: '业务模型',
-      description: `${providerLabel(provider)} · ${config.model || '未设置模型'}`,
-      actions: [
-        isOffline(provider)
-          ? null
-          : button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--business', onClick: () => testConnection('business'), disabled: state.testLoading.business }),
-        provider === 'demo_scripted' ? chip('离线演示', 'info') : null,
-      ].filter(Boolean),
-      body,
-    });
-  }
-
-  function optimizerFacts() {
-    const config = state.form.optimizer_config || {};
-    const provider = config.provider || 'heuristic';
-    const items = [{ label: '接入方式', value: optimizerLabel(provider) }];
-    if (provider === 'enterprise_ws') {
-      items.push(...wsGatewayFacts(config, 'optimizer_config'));
-    } else if (provider !== 'heuristic') {
-      items.push(...standardApiFacts(config, 'optimizer_config'));
-    }
-    return factsList(items);
-  }
-
-  function optimizerSection() {
-    const editable = EDITABLE();
-    const config = state.form.optimizer_config || {};
-    const provider = config.provider || 'heuristic';
-    const body = editable
-      ? h(
-          'div.stack',
-          null,
-          inputFor('optimizer_config.provider', {
-            label: '接入方式',
-            options: OPTIMIZER_PROVIDERS,
-            hint: '与业务模型独立配置；优化器 Prompt 同样版本化并在本轮固定。',
-          }),
-          provider === 'heuristic'
-            ? callout({
-                tone: 'info',
-                title: '不调用优化模型',
-                body: '按固定规则尝试修复分发关键词、澄清条件、参数映射或缺失字段，运行记录中显示为「规则修复模式」。候选仍须通过静态检查和配对验证。',
-              })
-            : provider === 'enterprise_ws'
-            ? wsGatewayFields('optimizer')
-            : standardApiFields('optimizer'),
-          advancedSettings(
-            '高级：采样参数',
-            h(
-              'div.form-grid',
-              null,
-              inputFor('optimizer_config.temperature', { label: '温度', type: 'number' }),
-              inputFor('optimizer_config.max_tokens', { label: '最大输出 Token', type: 'number' })
-            )
-          ),
-          testBlock('optimizer', provider)
-        )
-      : h(
-          'div.stack',
-          null,
-          optimizerFacts(),
-          testBlock('optimizer', provider)
-        );
-    return sectionCard({
-      title: '优化模型',
-      description: `${optimizerLabel(provider)}${provider === 'heuristic' ? '' : ` · ${config.model || '未设置模型'}`}`,
-      actions: isOffline(provider)
-        ? []
-        : [
-            button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--optimizer', onClick: () => testConnection('optimizer'), disabled: state.testLoading.optimizer }),
-          ],
-      collapsible: true,
-      open: provider !== 'heuristic' || Boolean(state.testResult.optimizer) || state.testLoading.optimizer || Boolean(state.fieldErrors['optimizer_config.model']),
-      body,
-    });
-  }
-
-  function loaderFacts() {
-    const loader = state.form.loader_config || {};
-    return factsList([
-      { label: '主 Skill 注入', value: loader.main_skill_mode === 'file_tool' ? '通过文件工具读取' : '注入系统消息' },
-      { label: '子技能读取工具', value: loader.subskill_tool || 'read_skill', mono: true },
-      { label: '最大步数', value: String(loader.max_steps ?? 8) },
-      { label: '每案例模型调用', value: String(loader.max_model_calls ?? 12) },
-      { label: '最大上下文字符', value: Number(loader.max_context_chars || 60000).toLocaleString() },
-      { label: '上下文超限', value: loader.context_overflow === 'frozen_strategy' ? '执行冻结加载策略' : '显式报错' },
-      { label: '结束协议', value: loader.strict_finish ? '必须调用 finish' : '缺少 finish 仍按业务评分' },
-    ]);
-  }
-
-  function loaderSection() {
-    const editable = EDITABLE();
-    const loader = state.form.loader_config || {};
-    const body = editable
-      ? h(
-          'div.stack',
-          null,
-          h(
-            'div.form-grid',
-            null,
-            inputFor('loader_config.max_steps', { label: '最大步数', type: 'number' }),
-            inputFor('loader_config.max_model_calls', { label: '每案例最大模型调用', type: 'number' }),
-            inputFor('loader_config.max_context_chars', { label: '最大上下文字符数', type: 'number' })
-          ),
-          advancedSettings(
-            '高级：注入与超限策略',
-            h(
-              'div.form-grid',
-              null,
-              inputFor('loader_config.main_skill_mode', {
-                label: '主 Skill 注入方式',
-                options: [
-                  { value: 'inject', label: '注入系统消息' },
-                  { value: 'file_tool', label: '通过文件工具读取' },
-                ],
-              }),
-              h('div.form-field', null, h('span.form-field__label', { text: '子技能读取工具（内部配置）' }), h('span.mono', { text: loader.subskill_tool || 'read_skill' })),
-              inputFor('loader_config.context_overflow', {
-                label: '上下文超限处理',
-                options: [
-                  { value: 'error', label: '显式报错' },
-                  { value: 'frozen_strategy', label: '执行冻结加载策略' },
-                ],
-              }),
-              inputFor('loader_config.strict_finish', {
-                label: '严格结束协议', type: 'checkbox', hint: '缺少 finish 时将案例记为协议失败'
-              })
-            )
-          )
-        )
-      : loaderFacts();
-    return sectionCard({
-      title: '上下文加载',
-      description: `最大 ${loader.max_steps ?? 8} 步 · ${Number(loader.max_context_chars || 60000).toLocaleString()} 字符`,
-      collapsible: true,
-      open: false,
-      body,
-    });
-  }
-
-  function runFacts() {
-    const run = state.form.run_config || {};
-    return factsList([
-      { label: '并发案例数', value: String(run.concurrency ?? 3) },
-      { label: '单案例超时', value: secondsText(run.case_timeout_s ?? 120) },
-      { label: '日常测试重复次数', value: String(run.base_repeats ?? 1) },
-    ]);
-  }
-
-  function runParamsSection() {
-    const editable = EDITABLE();
-    const run = state.form.run_config || {};
-    const body = editable
-      ? h(
-          'div.form-grid',
-          null,
-          inputFor('run_config.concurrency', { label: '并发案例数', type: 'number' }),
-          inputFor('run_config.case_timeout_s', { label: '单案例超时（秒）', type: 'number' }),
-          inputFor('run_config.base_repeats', { label: '日常测试重复次数', type: 'number', hint: '原版本与候选使用相同次数；正式验收次数在验收规则中设置。' })
-        )
-      : runFacts();
-    return sectionCard({
-      title: '运行参数',
-      description: `并发 ${run.concurrency ?? 3} · 单案例 ${secondsText(run.case_timeout_s ?? 120)} · 日常测试 ${run.base_repeats ?? 1} 次`,
-      collapsible: true,
-      open: false,
-      body,
-    });
-  }
-
   const COMPARE_MODE_OPTIONS = [
     { value: 'semantic', label: '语义（大模型判断）' },
     { value: 'lenient', label: '宽松（字段一致，值归一化后相等）' },
@@ -1477,12 +866,6 @@ export default async function environmentView(container, ctx) {
     { value: 'semantic', label: '语义（大模型）' },
     { value: 'ignore', label: '不比较（可缺省）' },
   ];
-  const COMPARE_MODE_HINTS = {
-    semantic: '子技能、工具名、字段是否齐全由规则判断；参数值是否「意思一致」交给评分模型。命中数据集中写的关键词、或归一化后相等的值直接算对，不调用模型。',
-    lenient: '字段必须一致；值去掉首尾空格、全半角、大小写差异后比较，"3" 与 3、数组顺序不同都算相等。',
-    keys: '只要求字段一致（预期字段都在），不比较取值，也不校验取值的类型、枚举与范围。',
-    strict: '字段与取值都要完全相等，与旧版评分一致。',
-  };
 
   function fieldRulesEditor() {
     const editable = EDITABLE();
@@ -1534,188 +917,166 @@ export default async function environmentView(container, ctx) {
     );
   }
 
-  function scoringRulesSection() {
-    const compare = state.form.scorer_compare;
-    const judgeReady = ['openai_http', 'enterprise_ws'].includes(state.form.judge_config?.provider);
-    const body = h(
-      'div.stack',
-      null,
-      inputFor('scorer_compare.mode', {
-        label: '参数比较方式',
-        options: COMPARE_MODE_OPTIONS,
-        hint: COMPARE_MODE_HINTS[compare.mode] || '',
-      }),
-      compare.mode === 'semantic' && !judgeReady
-        ? callout({ tone: 'warning', title: '需要评分模型', body: '当前选择了语义比较，请配置评分模型后再运行；平台不会自动换成其他评分方式。' })
-        : null,
-      inputFor('scorer_compare.allow_extra_keys', {
-        label: '多余字段',
-        type: 'checkbox',
-        hint: '允许模型多传预期里没有的字段',
-      }),
-      fieldRulesEditor(),
-      advancedSettings(
-        '数据集里怎么写判断依据',
-        h(
-          'div.stack.stack--sm',
-          null,
-          h('p.small', { text: '语义比较时，可以给某个字段写关键词或一句要求，评分模型据此判断；关键词按字面全部出现时直接算对。也可以在单个案例里用 compare 覆盖这里的设置。' }),
-          h('pre.code-block', { text: '{"query": "把图调成蓝色", "skill": "image_color_transfer",\n "tool": {"name": "editImage", "args": {"targetColor": "蓝色"}},\n "judge": {"$.args.targetColor": {"keywords": ["蓝"], "requirement": "表示蓝色系即可"}}}' })
-        )
-      )
-    );
-    const card = sectionCard({
-      title: '评分规则',
-      description: `参数比较：${(COMPARE_MODE_OPTIONS.find((item) => item.value === compare.mode) || {}).label || compare.mode}${compare.field_rules?.length ? ` · ${compare.field_rules.length} 条字段规则` : ''} · 点击展开${EDITABLE() ? '编辑' : '查看'}`,
-      collapsible: true,
-      open: state.scoringOpen || (compare.mode === 'semantic' && !judgeReady),
-      body,
-    });
-    card.addEventListener('toggle', () => { state.scoringOpen = card.open; });
-    return card;
-  }
+  /* ---------------- 简化配置页（设置 → Prompt 与模型） ---------------- */
+  // 只保留调模型需要的东西：Prompt、三个模型的地址/模型/密钥、参数比较方式。
+  // 加载、并发、验收等运行参数沿用已保存的值或默认值，不在页面展示。
 
-  const JUDGE_PROVIDERS = [
-    { value: 'none', label: '不使用（语义比较按宽松规则）' },
-    { value: 'openai_http', label: '标准 API' },
-    { value: 'enterprise_ws', label: 'WebSocket 网关' },
+  const MODEL_ROWS = [
+    { target: 'business', cfg: 'model_config', title: '业务模型', desc: '执行 Skill、调用工具' },
+    { target: 'optimizer', cfg: 'optimizer_config', title: '优化模型', desc: '根据失败案例修改 Skill' },
+    { target: 'judge', cfg: 'judge_config', title: '评分模型', desc: '只在语义比较时使用' },
+  ];
+  const SIMPLE_PROVIDERS = {
+    business: [{ value: 'openai_http', label: '标准 API' }, { value: 'enterprise_ws', label: 'WebSocket' }],
+    optimizer: [{ value: 'openai_http', label: '标准 API' }, { value: 'enterprise_ws', label: 'WebSocket' }, { value: 'heuristic', label: '不用模型' }],
+    judge: [{ value: 'openai_http', label: '标准 API' }, { value: 'enterprise_ws', label: 'WebSocket' }, { value: 'none', label: '不用' }],
+  };
+  const SIMPLE_COMPARE = [
+    { value: 'strict', label: '严格：值必须完全相等' },
+    { value: 'lenient', label: '宽松：忽略大小写、空格、类型差异' },
+    { value: 'semantic', label: '语义：意思一致即可（需要评分模型）' },
   ];
 
-  function judgeSection() {
-    const config = state.form.judge_config || {};
-    const provider = config.provider || 'none';
-    const active = provider === 'openai_http' || provider === 'enterprise_ws';
-    const editable = EDITABLE();
-    const connection = provider === 'enterprise_ws' ? wsGatewayFields('judge') : provider === 'openai_http' ? standardApiFields('judge') : null;
-    const facts = active
-      ? factsList([{ label: '接入方式', value: (JUDGE_PROVIDERS.find((item) => item.value === provider) || {}).label },
-          ...(provider === 'enterprise_ws' ? wsGatewayFacts(config, 'judge_config') : standardApiFacts(config, 'judge_config'))])
-      : null;
-    const body = h(
-      'div.stack',
-      null,
-      editable
-        ? inputFor('judge_config.provider', {
-            label: '接入方式',
-            options: JUDGE_PROVIDERS,
-            hint: '只用于判断参数值是否语义一致，与业务模型、优化模型相互独立；温度固定为 0，相同输出的判定会缓存复用。',
-          })
-        : null,
-      editable ? connection : facts,
-      active ? testBlock('judge', provider) : null
-    );
-    return sectionCard({
-      title: '评分模型',
-      description: active ? `${(JUDGE_PROVIDERS.find((item) => item.value === provider) || {}).label} · ${config.model || '未设置模型'}` : '未配置',
-      actions: active
-        ? [button({ label: '测试连接', variant: 'secondary', size: 'sm', iconName: 'link', className: 'test-connection-button test-connection-button--judge', onClick: () => testConnection('judge'), disabled: state.testLoading.judge })]
-        : [],
-      collapsible: true,
-      open: state.form.scorer_compare?.mode === 'semantic' || (state.form.scorer_compare?.field_rules || []).some((rule) => rule.mode === 'semantic'),
-      body,
-    });
+  function switchProvider(row, value) {
+    const config = state.form[row.cfg] || (state.form[row.cfg] = {});
+    if (config.provider === value) return;
+    if (config.provider === 'demo_scripted') config.model = '';
+    config.provider = value;
+    clearFormCredentialMasks(row.cfg);
+    markDirty();
+    renderForm();
   }
 
-  function acceptanceFacts() {
-    const acceptance = state.form.acceptance_config || {};
-    return h(
-      'div.stack',
-      null,
-      factsList([
-        { label: '判定规则', value: 'accept-v1（启动时冻结）' },
-        { label: '核心指标', value: 'R、A 不下降；R 或 A 至少一项严格提高；J 不下降' },
-        { label: '关键案例', value: 'critical 案例不得从通过变失败（强制）' },
-        { label: '阻断条件', value: '基础设施错误或包完整性错误 → 不自动晋级' },
-        { label: '正式验收重复', value: `${acceptance.validation_repeats ?? 3} 次配对` },
-        { label: '评分器', value: 'score-v1（冻结）' },
-      ]),
-      h('p.form-field__hint', { text: '阈值在运行启动时冻结，不能为当前候选临时调低；全部指标持平则拒绝。' })
-    );
+  function simpleModelRow(row) {
+    const config = state.form[row.cfg] || {};
+    const provider = config.provider || (row.target === 'judge' ? 'none' : 'heuristic');
+    const off = provider === 'heuristic' || provider === 'none';
+    const demo = provider === 'demo_scripted';
+    const options = SIMPLE_PROVIDERS[row.target];
+    const segments = h('div.segmented.segmented--sm', { role: 'group', 'aria-label': `${row.title}接入方式` },
+      ...options.map((option) => h(`button.segmented__btn${provider === option.value ? ' is-active' : ''}`, {
+        type: 'button', onclick: () => switchProvider(row, option.value),
+      }, option.label)));
+    let fields = null;
+    if (demo) {
+      fields = h('p.small.muted', { text: '离线演示模型（示例项目专用，不发网络请求）。要接真实模型，选择上面的接入方式。' });
+    } else if (!off) {
+      const ws = provider === 'enterprise_ws';
+      fields = h('div.model-row__fields', null,
+        inputFor(`${row.cfg}.${ws ? 'ws_url' : 'base_url'}`, {
+          label: ws ? 'WebSocket 地址' : 'URL',
+          placeholder: ws ? 'wss://gateway.example/llm' : 'https://api.example.com/v1',
+        }),
+        inputFor(`${row.cfg}.model`, { label: '模型 ID', placeholder: 'gpt-4o-mini' }),
+        inputFor(`${row.cfg}.api_key_ref`, { label: ws ? '接入服务名' : 'API Key', placeholder: 'sk-… 或 env:变量名' }));
+    }
+    const more = !off && !demo ? simpleMore(row, provider) : null;
+    return h('div.model-row', null,
+      h('div.model-row__head', null,
+        h('div', null, h('strong', { text: row.title }), h('span.muted.xsmall', { text: ` ${row.desc}` })),
+        h('span.model-row__spacer'),
+        row.target !== 'business' && ['openai_http', 'enterprise_ws'].includes(state.form.model_config?.provider)
+          ? h('button.link-button.model-row__copy', { type: 'button', onclick: () => copyFromBusiness(row) }, '与业务模型相同')
+          : null,
+        segments,
+        !off && !demo
+          ? button({ label: state.testLoading[row.target] ? '测试中…' : '测试', variant: 'ghost', size: 'sm', iconName: 'link',
+            className: `test-connection-button test-connection-button--${row.target}`,
+            disabled: state.testLoading[row.target], onClick: () => testConnection(row.target) })
+          : null),
+      row.target === 'optimizer' && off ? h('p.small.muted', { text: '不调用模型，按固定规则尝试修补 Skill；效果有限，建议接入模型。' }) : null,
+      row.target === 'judge' && off && needsSemanticJudge()
+        ? inlineError('参数比较选了「语义」，需要配置评分模型。') : null,
+      fields,
+      more,
+      testResultView(row.target));
   }
 
-  function acceptanceSection() {
-    const editable = EDITABLE();
-    const acceptance = state.form.acceptance_config || {};
-    const body = editable
-      ? h(
-          'div.stack',
-          null,
-          inputFor('acceptance_config.validation_repeats', {
-            label: '正式验收配对重复次数',
-            type: 'number',
-            hint: '默认 3 次；少于 3 次时验证被视为不完整，只能给出证据不足结论。',
-          }),
-          h('p.form-field__hint', {
-            text: 'R/A 不降、至少一项严格提高、J 不降；critical 案例不得回归；无基础设施或包完整性错误。规则版本 accept-v1，启动时冻结。',
-          })
-        )
-      : acceptanceFacts();
-    return sectionCard({
-      title: '接受条件',
-      description: `accept-v1 · ${acceptance.validation_repeats ?? 3} 次配对验收 · 正式验收启动时冻结`,
-      collapsible: false,
-      body,
-    });
+  /** Optimizer / judge often call the same service as the business model. */
+  function copyFromBusiness(row) {
+    const source = state.form.model_config || {};
+    const target = state.form[row.cfg] || (state.form[row.cfg] = {});
+    target.provider = source.provider;
+    for (const key of ['base_url', 'ws_url', 'model']) target[key] = source[key] || '';
+    const key = credentialForSubmit(source.api_key_ref);
+    target.api_key_ref = key || '';
+    if (source.provider === 'enterprise_ws') {
+      const from = groupPaths('business');
+      const to = groupPaths(row.target);
+      state.form[to.template] = state.form[from.template];
+      state.form[to.headers] = state.form[from.headers];
+    }
+    markDirty();
+    renderForm();
+    if (!key && source.api_key_ref) toast('地址和模型已填入；业务模型的密钥不会回显，请再填一次 API Key。', { type: 'warning' });
   }
 
-  function envSnapshot() {
-    const form = state.form;
-    const config = form.model_config || {};
-    const optimizer = form.optimizer_config || {};
-    const run = form.run_config || {};
-    const acceptance = form.acceptance_config || {};
-    const items = [
-      {
-        label: '业务模型',
-        value: providerLabel(config.provider),
-        hint: config.model || '未设置模型',
-      },
-      {
-        label: '优化器',
-        value: optimizerLabel(optimizer.provider || 'heuristic'),
-        hint: (optimizer.provider || 'heuristic') === 'heuristic'
-          ? '按固定规则生成候选'
-          : (optimizer.model || '未设置模型'),
-      },
-      {
-        label: '评分',
-        value: ({ semantic: '语义（大模型）', lenient: '宽松', keys: '只看字段', strict: '严格' })[form.scorer_compare?.mode] || '严格',
-        hint: form.scorer_compare?.mode === 'semantic'
-          ? (['openai_http', 'enterprise_ws'].includes(form.judge_config?.provider) ? (form.judge_config.model || '未设置模型') : '未配置评分模型')
-          : '规则判断',
-      },
-      {
-        label: '执行策略',
-        value: `并发 ${run.concurrency ?? 3}`,
-        hint: `单案例 ${secondsText(run.case_timeout_s ?? 120)} · 日常测试 ${run.base_repeats ?? 1} 次`,
-      },
-      {
-        label: '判定',
-        value: 'accept-v1',
-        hint: `正式验收阈值冻结 · ${acceptance.validation_repeats ?? 3} 次配对验证`,
-      },
-    ];
-    return h(
-      'div.env-snapshot',
-      null,
-      h('span.env-snapshot__label', { text: '当前环境摘要' }),
-      h('span.env-snapshot__value', { text: `${items[0].value} · 优化器 ${items[1].value}` }),
-      h('span.env-snapshot__hint', { text: '详细参数在下方配置区；启动运行时会再次展示冻结快照。' })
-    );
+  function simpleMore(row, provider) {
+    const { cfg, template, headers } = groupPaths(row.target);
+    const items = [];
+    if (provider === 'enterprise_ws') {
+      items.push(h('div.form-grid', null,
+        h('div.stack.stack--sm', null,
+          inputFor(template, { label: '请求体附加字段（JSON）', rows: 4, mono: true, hint: 'user、extra_body 等网关字段；model、messages、tools 由平台填写。' }),
+          fillExampleButton(template, WS_TEMPLATE_EXAMPLE)),
+        h('div.stack.stack--sm', null,
+          inputFor(headers, { label: '握手请求头（JSON）', rows: 4, mono: true, hint: '例如网关识别调用人的 sender。' }),
+          fillExampleButton(headers, WS_HEADERS_EXAMPLE))));
+      items.push(h('div.form-grid', null,
+        inputFor(`${cfg}.first_packet_timeout_s`, { label: '首包超时（秒）', type: 'number' }),
+        inputFor(`${cfg}.total_timeout_s`, { label: '总超时（秒）', type: 'number' })));
+    } else {
+      items.push(h('div.form-grid', null,
+        inputFor(`${cfg}.timeout_s`, { label: '超时（秒）', type: 'number' }),
+        h('div.form-field', null, h('span.form-field__label', { text: '流式返回' }), streamToggle(row.target))));
+    }
+    return collapsible({ summary: h('span.muted.small', { text: '更多' }), body: h('div.stack', null, ...items), className: 'model-row__more' });
   }
 
-  function configGroup(title, description, sections) {
-    return h(
-      'section.config-group',
-      null,
-      h(
-        'div.config-group__head',
-        null,
-        h('h2', { text: title }),
-        h('p', { text: description })
-      ),
-      h('div.config-group__body', null, ...sections)
-    );
+  function needsSemanticJudge() {
+    const compare = state.form.scorer_compare || {};
+    return compare.mode === 'semantic' || (compare.field_rules || []).some((rule) => rule.mode === 'semantic');
+  }
+
+  function renderSimple() {
+    const prompt = state.form.prompt || '';
+    const compare = state.form.scorer_compare || {};
+    const compareOptions = SIMPLE_COMPARE.some((item) => item.value === compare.mode)
+      ? SIMPLE_COMPARE
+      : [...SIMPLE_COMPARE, { value: compare.mode, label: (COMPARE_MODE_OPTIONS.find((item) => item.value === compare.mode) || {}).label || compare.mode }];
+    const promptCard = h('section.simple-card', null,
+      h('div.simple-card__head', null,
+        h('h2', { text: 'Prompt' }),
+        h('span.muted.xsmall', { text: `${prompt.length.toLocaleString()} 字 · 优化不会修改 Prompt` }),
+        h('span.model-row__spacer'),
+        button({ label: '恢复默认', variant: 'ghost', size: 'sm', onClick: async () => {
+          const ok = await confirmDialog({ title: '恢复默认 Prompt', message: '用内置模板替换当前内容。', confirmText: '恢复' });
+          if (!ok) return;
+          state.form.prompt = DEFAULT_PROMPT;
+          markDirty();
+          renderForm();
+        } })),
+      h('textarea.textarea.textarea--code', {
+        rows: 10, value: prompt, 'aria-label': '业务 Prompt',
+        oninput: (event) => { state.form.prompt = event.target.value; markDirty(); },
+      }),
+      state.fieldErrors.prompt ? inlineError(state.fieldErrors.prompt) : null);
+    const modelsCard = h('section.simple-card', null,
+      h('div.simple-card__head', null, h('h2', { text: '模型' }),
+        h('span.muted.xsmall', { text: '标准 API 兼容 OpenAI：填 URL、模型 ID、API Key 即可' })),
+      ...MODEL_ROWS.map(simpleModelRow));
+    const scoringCard = h('section.simple-card', null,
+      h('div.simple-card__head', null, h('h2', { text: '参数怎么算对' })),
+      inputFor('scorer_compare.mode', { label: '', options: compareOptions }),
+      collapsible({
+        summary: h('span.muted.small', { text: `按字段单独设置${(compare.field_rules || []).length ? `（${compare.field_rules.length} 条）` : ''}` }),
+        body: h('div.stack', null,
+          fieldRulesEditor(),
+          inputFor('scorer_compare.allow_extra_keys', { label: '多余字段', type: 'checkbox', hint: '允许模型多传预期里没有的字段' })),
+        open: Boolean((compare.field_rules || []).length),
+        className: 'model-row__more',
+      }));
+    mount(formHost, promptCard, modelsCard, scoringCard);
   }
 
   function renderForm() {
@@ -1727,57 +1088,7 @@ export default async function environmentView(container, ctx) {
       mount(formHost, errorState(state.error, { title: '无法加载执行环境', retry: () => load() }));
       return;
     }
-    const banner = ctx.workspace ? null : state.env?.status === 'published'
-      ? h(
-          'div.readonly-banner',
-          null,
-          icon('lock', { size: 15 }),
-          h('span', { text: '当前版本已发布，配置只读；修改会先生成草稿，发布后生效。' }),
-          h('span.readonly-banner__spacer'),
-          button({ label: '创建草稿', variant: 'secondary', size: 'sm', iconName: 'edit', onClick: createDraft, disabled: state.busy })
-        )
-      : state.env?.status === 'draft'
-      ? h(
-          'div.readonly-banner',
-          null,
-          icon('edit', { size: 15 }),
-          h('span', { text: '正在编辑草稿。环境版本不可变：保存生成新草稿，发布后设为当前。' }),
-          h('span.readonly-banner__spacer'),
-          h('span#env-save-status.xsmall.muted', { text: state.dirty ? '● 有未保存修改' : '已保存' })
-        )
-      : h(
-          'div.readonly-banner',
-          null,
-          icon('info', { size: 15 }),
-          h('span', { text: '尚未发布执行环境。填写基础配置后发布 v1，或先保存草稿。' }),
-          h('span.readonly-banner__spacer'),
-          h('span#env-save-status.xsmall.muted', { text: '未发布' })
-        );
-
-    const compare = state.form.scorer_compare || {};
-    const needsJudge = compare.mode === 'semantic' || (compare.field_rules || []).some((rule) => rule.mode === 'semantic');
-    const hasJudge = ['openai_http', 'enterprise_ws'].includes(state.form.judge_config?.provider);
-    const groups = [
-      ['执行与优化', 'Prompt 定义任务，执行模型运行 Skill，优化模型根据测试结果改进 Skill。', [promptSection(), businessModelSection(), optimizerSection()]],
-      ['评价', '默认使用已保存的评分方式；自由文本需要语义判断时再配置评分模型。', [scoringRulesSection(), ...(needsJudge || hasJudge ? [judgeSection()] : [])]],
-      ['高级设置', '加载方式、并发和验收规则通常无需调整。', [advancedSettings('高级运行设置', h('div.stack', null, loaderSection(), runParamsSection(), acceptanceSection()))]],
-    ];
-    const children = [
-      banner,
-      envSnapshot(),
-      ...groups.map(([title, description, sections]) => configGroup(title, description, sections)),
-    ];
-    if (!state.env && !ctx.workspace) {
-      children.push(
-        h(
-          'div.form-actions',
-          null,
-          button({ label: '保存草稿', variant: 'secondary', iconName: 'save', onClick: () => saveDraft('draft'), disabled: state.busy }),
-          button({ label: '保存并使用', variant: 'primary', iconName: 'check', onClick: () => saveDraft('published'), disabled: state.busy })
-        )
-      );
-    }
-    mount(formHost, ...children);
+    renderSimple();
   }
 
   async function saveDraft(status = 'draft') {
@@ -1791,13 +1102,9 @@ export default async function environmentView(container, ctx) {
     }
     state.busy = true;
     try {
-      const created = ctx.workspace
-        ? await api.saveWorkspaceEnvironment(project.id, payload)
-        : await api.createEnvironment(project.id, payload);
-      if (ctx.workspace) {
-        workspace.pending = true;
-        workspace.draftId = created.id;
-      }
+      const created = await api.saveWorkspaceEnvironment(project.id, payload);
+      workspace.pending = true;
+      workspace.draftId = created.id;
       state.env = created;
       state.credentialStatus = created?.credential_status || state.credentialStatus;
       state.versions = [created, ...state.versions.filter((version) => version.id !== created.id)];
@@ -1805,7 +1112,7 @@ export default async function environmentView(container, ctx) {
       state.dirty = false;
       ctx.setDirty(null);
       state.fieldErrors = {};
-      toast(ctx.workspace ? '已保存，下次运行时生效' : status === 'published' ? '执行环境已发布并设为当前' : '草稿已保存', { type: 'success' });
+      toast('已保存，下次运行时生效', { type: 'success' });
       if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
       renderVersionBar();
       renderForm();
@@ -1816,130 +1123,6 @@ export default async function environmentView(container, ctx) {
       renderForm();
       toast(`保存失败：${error.message}`, { type: 'error' });
       return null;
-    } finally {
-      state.busy = false;
-      renderVersionBar();
-      renderForm();
-    }
-  }
-
-  async function publishDraft() {
-    if (!state.env) return;
-    // Pre-filled or previously saved drafts still need validation before publish.
-    const { payload, errors } = serialize({ includeStatus: 'published' });
-    state.fieldErrors = { ...errors };
-    if (Object.keys(errors).length) {
-      renderForm();
-      toast('请先修正标红的字段', { type: 'warning' });
-      return;
-    }
-    const ok = await confirmDialog({
-      title: '发布执行环境',
-      message: '发布后将设为项目当前环境，并冻结本轮使用的 Prompt 与模型参数。已有运行保留原快照。',
-      confirmText: '发布并设为当前',
-    });
-    if (!ok) return;
-    let target = state.env;
-    // Persist the displayed default even when an older draft was not edited.
-    const streamChanged = payload.optimizer_config?.provider === 'openai_http'
-      && payload.optimizer_config.stream !== state.env.optimizer_config?.stream;
-    if (state.dirty || streamChanged) {
-      const saved = await saveDraft('draft');
-      if (!saved) return;
-      target = saved;
-    }
-    state.busy = true;
-    try {
-      const published = await api.publishEnvironment(target.id);
-      toast('执行环境已发布', { type: 'success' });
-      await load(published.id);
-      await ctx.refreshShell();
-    } catch (error) {
-      toast(`发布失败：${error.message}`, { type: 'error' });
-    } finally {
-      state.busy = false;
-      renderVersionBar();
-      renderForm();
-    }
-  }
-
-  async function publishExisting(env) {
-    const ok = await confirmDialog({
-      title: '设为当前环境',
-      message: '将把该项目当前执行环境指针切换到该已发布版本；已有运行保留原快照。',
-      confirmText: '设为当前',
-    });
-    if (!ok) return;
-    state.busy = true;
-    try {
-      await api.publishEnvironment(env.id);
-      toast('已设为当前环境', { type: 'success' });
-      await load(env.id);
-      await ctx.refreshShell();
-    } catch (error) {
-      toast(`操作失败：${error.message}`, { type: 'error' });
-    } finally {
-      state.busy = false;
-      renderVersionBar();
-      renderForm();
-    }
-  }
-
-  async function createDraftWithProvider(option, currentProvider) {
-    if (!state.env) return;
-    const ok = await confirmDialog({
-      title: `创建草稿并切换接入方式`,
-      message:
-        `当前执行环境版本已发布，内容只读，接入方式不能原地修改。` +
-        `将基于当前版本创建草稿，并把接入方式切换为「${option.label}」` +
-        `（当前为 ${providerLabel(currentProvider)}）；草稿保存并发布后才生效。`,
-      confirmText: '创建草稿并切换',
-    });
-    if (!ok) return;
-    state.busy = true;
-    try {
-      const { payload } = serialize({ includeStatus: 'draft' });
-      payload.parent_id = state.env.id;
-      payload.model_config = {
-        ...(payload.model_config || {}),
-        provider: option.value,
-      };
-      if (currentProvider === 'demo_scripted') payload.model_config.model = '';
-      const dropped = dropCredentialMasks(payload.model_config, 'model_config');
-      const draft = await api.createEnvironment(project.id, payload);
-      await load(draft.id);
-      toast(
-        dropped.length
-          ? `已创建草稿并切换为「${option.label}」。${CREDENTIAL_SWITCH_HINT}后保存草稿。`
-          : `已创建草稿并切换为「${option.label}」，保存草稿后生效`,
-        { type: dropped.length ? 'warning' : 'success' }
-      );
-    } catch (error) {
-      toast(`创建草稿失败：${error.message}`, { type: 'error' });
-    } finally {
-      state.busy = false;
-      renderVersionBar();
-      renderForm();
-    }
-  }
-
-  async function createDraft() {
-    if (!state.env) return;
-    const ok = await confirmDialog({
-      title: '创建环境草稿',
-      message: '将基于当前版本创建草稿副本，当前环境指针不变。草稿可编辑并发布。',
-      confirmText: '创建草稿',
-    });
-    if (!ok) return;
-    state.busy = true;
-    try {
-      const { payload } = serialize({ includeStatus: 'draft' });
-      payload.parent_id = state.env.id;
-      const draft = await api.createEnvironment(project.id, payload);
-      toast('草稿已创建', { type: 'success' });
-      await load(draft.id);
-    } catch (error) {
-      toast(`创建草稿失败：${error.message}`, { type: 'error' });
     } finally {
       state.busy = false;
       renderVersionBar();
@@ -2009,7 +1192,7 @@ export default async function environmentView(container, ctx) {
         };
         // Published versions resolve credentials server-side; draft edits may be sent
         // as a target-only overlay without persisting the new credential.
-        if (state.env?.status !== 'published') body.model_config = buildTestConfig(target);
+        if (ctx.workspace || state.env?.status !== 'published') body.model_config = buildTestConfig(target);
         else buildTestConfig(target);
         const result = await api.testConnection(body);
         if (requestSeq === state.testSeq[target]) state.testResult[target] = result;
@@ -2024,81 +1207,24 @@ export default async function environmentView(container, ctx) {
     }
   }
 
-  async function selectVersion(envId, { skipDirtyCheck = false } = {}) {
-    if (state.dirty && !skipDirtyCheck) {
-      const ok = await confirmDialog({
-        title: '切换环境版本会丢失未保存修改',
-        message: '当前表单有未保存的修改，是否放弃并切换版本？',
-        confirmText: '放弃并切换',
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    const env = state.versions.find((item) => item.id === envId);
-    if (!env) return;
-    ctx.setDirty(null);
-    state.env = env;
-    state.credentialStatus = env.credential_status || { model_config: {}, optimizer_config: {} };
-    state.dirty = false;
-    state.fieldErrors = {};
-    state.testResult = { business: null, optimizer: null };
-    state.testLoading = { business: false, optimizer: false };
-    state.testSeq.business += 1;
-    state.testSeq.optimizer += 1;
-    state.form = toForm(env);
-    renderVersionBar();
-    renderForm();
-  }
-
-  async function load(preferredId = null) {
+  async function load() {
     state.loading = true;
     state.error = null;
     renderVersionBar();
     renderForm();
-    if (ctx.workspace) {
-      try {
-        const summary = await api.getWorkspace(project.id);
-        const item = summary.items?.environment || {};
-        workspace.pending = Boolean(item.pending);
-        workspace.draftId = item.draft_id || null;
-        const targetId = item.draft_id || item.current_id;
-        const target = targetId ? await api.getEnvironment(targetId) : null;
-        state.versions = target ? [target] : [];
-        state.env = target;
-        state.credentialStatus = target?.credential_status || { model_config: {}, optimizer_config: {} };
-        state.form = toForm(target);
-        state.dirty = false;
-        state.fieldErrors = {};
-        ctx.setDirty(null);
-      } catch (error) {
-        state.error = error;
-      } finally {
-        state.loading = false;
-        renderVersionBar();
-        renderForm();
-      }
-      return;
-    }
     try {
-      const [envPayload, detail] = await Promise.all([
-        api.listEnvironments(project.id),
-        project.current_environment_id ? api.getEnvironment(project.current_environment_id).catch(() => null) : Promise.resolve(null),
-      ]);
-      state.versions = asItems(envPayload).sort((a, b) => (b.version_seq || 0) - (a.version_seq || 0));
-      let target = null;
-      if (preferredId) target = state.versions.find((version) => version.id === preferredId) || null;
-      if (!target) target = state.versions.find((version) => version.id === project.current_environment_id) || state.versions[0] || null;
-      if (target && !target.model_config) target = (await api.getEnvironment(target.id).catch(() => target)) || target;
-      if (!target && detail) target = detail;
+      const summary = await api.getWorkspace(project.id);
+      const item = summary.items?.environment || {};
+      workspace.pending = Boolean(item.pending);
+      workspace.draftId = item.draft_id || null;
+      const targetId = item.draft_id || item.current_id;
+      const target = targetId ? await api.getEnvironment(targetId) : null;
+      state.versions = target ? [target] : [];
       state.env = target;
       state.credentialStatus = target?.credential_status || { model_config: {}, optimizer_config: {} };
       state.form = toForm(target);
       state.dirty = false;
       state.fieldErrors = {};
-      state.testResult = { business: null, optimizer: null };
-      state.testLoading = { business: false, optimizer: false };
-      state.testSeq.business += 1;
-      state.testSeq.optimizer += 1;
       ctx.setDirty(null);
     } catch (error) {
       state.error = error;
@@ -2111,10 +1237,6 @@ export default async function environmentView(container, ctx) {
 
   mount(
     container,
-    ctx.workspace ? null : pageHeader({
-      title: '执行环境',
-      description: '业务 Prompt 与模型接入在启动时冻结；发布后只读，修改生成草稿。',
-    }),
     versionHost,
     formHost
   );
