@@ -889,14 +889,24 @@ def _validation_repeats(env: Mapping[str, Any]) -> int:
                or run_config.get("validation_repeats") or 3)
 
 
+def validation_environment_compatible(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Optimizer settings do not affect paired validation; all execution rules do."""
+    fields = ('prompt', 'model_config', 'loader_config', 'run_config',
+              'scorer_config', 'acceptance_config', 'adapter_hash')
+    return all(left.get(key) == right.get(key) for key in fields)
+
+
 def _validate_source(project: Mapping[str, Any], source_run_id: str, *, for_optimization: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     source = persistence.get_run(source_run_id)
     if (source.get("project_id") != project["id"] or source.get("mode") != "optimize"
             or source.get("status") != "completed" or source.get("decision") is not None):
         raise ConflictError("验收来源必须是本项目已完成测试集重跑的优化运行", code="invalid_source_run")
     root_id = (source.get("snapshot") or {}).get("root_skill_version_id") or source.get("baseline_skill_version_id")
-    if (project.get("current_skill_version_id") != root_id
-            or (not for_optimization and project.get("current_environment_id") != source.get("environment_id"))):
+    environment_ok = (for_optimization or project.get("current_environment_id") == source.get("environment_id")
+                      or (project.get("current_environment_id") and validation_environment_compatible(
+                          persistence.get_environment(project["current_environment_id"]),
+                          persistence.get_environment(source["environment_id"]))))
+    if project.get("current_skill_version_id") != root_id or not environment_ok:
         raise ConflictError("当前 Skill 或环境与优化运行不一致，请重新优化", code="version_conflict")
     candidate = persistence.get_candidate_for_run(source_run_id)
     version_id = source.get("candidate_skill_version_id")

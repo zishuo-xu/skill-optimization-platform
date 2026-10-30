@@ -3,13 +3,13 @@
 - `skill_package/`：主 `SKILL.md` + `references/` 下 21 个子技能 + `manifest.json`（稳定 skill_id → 路径映射）。
 - `system_prompt.md`：需求文档 §31 的固定业务系统 Prompt 模板。
 - `environment.json`：示例执行环境（模型=`demo_scripted`，优化器=`heuristic`，并发/接受规则等）。
-- `image_skill_package/`：主技能负责语流理解与路由，13 个子技能负责修图参数契约。
+- `image_skill_package/`：10 个子技能，9 个直接编辑，只有质感风格需要先查询版本。
   平台以 `select_skill(skill_id)` 选择子技能并返回正文，内部映射到 `path + skillName`；业务调用为 `functionName + skillName + arguments`，
   `arguments` 包含 `method / script / request(query,totalSteps,currentStep,source?) / args`。标准包字段完整，不再故意缺参数。
 - `image_system_prompt.md` / `image_environment.json`：图片编辑示例环境
   （provider=`demo_scripted`，model=`demo-image-v1`，domain=image）。
-- `image_dataset.jsonl`：覆盖 13 类操作、澄清、否定改口和有序复合任务。
-  共 117 条（52 优化 / 34 验证 / 31 最终测试）。使用完整 `tool.arguments`，同时比较 method、script、当前步骤 query、步骤编号和 args，防止参数正确但调错业务方法。
+- `image_dataset.jsonl`：覆盖 10 类操作、版本分支、澄清、否定改口和有序复合任务。
+  共 112 条（45 优化 / 32 验证 / 35 最终测试）。使用完整 `tool.arguments`，同时比较 method、script、当前步骤 query、步骤编号和 args，防止参数正确但调错业务方法。风格案例分别匹配查询和编辑方法，查询返回决定版本，不能只为最终编辑配置 fixture。
   运行 `python scripts/build_image_sample_assets.py` 可重新生成。
 - `dataset.jsonl`：45 条示例案例（33 优化集 / 8 验证集 / 4 最终测试集），含澄清、无操作、多路线与关键案例。
   该文件使用平台**简化写法**（`query + skill + tool + mock`），导入时自动展开为完整的
@@ -30,13 +30,14 @@
 
 ### 语流修图示例
 
-13 个子技能：一句话修图、换色、去背景、增强、裁剪、旋转/镜像、尺寸、色调、滤镜、人像精修、移除物体、替换背景、背景去色。
+10 个子技能：一句话修图、换色、背景去色、增强、裁剪、旋转/镜像、尺寸、色调、滤镜、质感风格。前九个直接调用；质感风格先 `query_style_version` 再 `apply_style`，明确指定风格也不能跳过查询。不支持时加载一句话修图并执行替代操作；未知版本或查询失败则停止。
 主 Skill 只决定路由、否定/改口与操作顺序；字段含义、范围、默认值、自然语言映射及澄清规则放在对应 reference。
 每个 reference 的“参数契约” JSON 与人类可读说明、完整工具调用示例保持一致。
 
 该示例的文案和标识为合成教学内容，参数中不包含图片定位符。
 工具、方法与脚本路径仅为合成协议标识，未对接真实图片服务；
 fixtures 用 `code: 0` 模拟成功，非零码及 `message` 模拟业务失败，不实际生成图片。主 Skill 与 references 可直接作为路由/参数契约参考。
+质感风格示例保留了版本 1～4 的能力差异、参数截断和返回偏好说明；查询与编辑共用一个用户操作编号。它是独立子技能的业务规则，不是平台为所有工具自动添加的步骤。
 标准包不再为制造优化提升而植入错误；优化集无失败案例时不生成虚假改进，结果为证据不足（无需优化）。
 需要演示失败修复时可使用任务管理示例或在隔离测试中显式构造缺陷变体。
 

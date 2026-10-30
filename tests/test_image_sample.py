@@ -67,9 +67,9 @@ def test_image_package_import_export_contains_all_references():
     with zipfile.ZipFile(io.BytesIO(archive)) as package:
         names = set(package.namelist())
         assert "SKILL.md" in names and "manifest.json" in names
-        assert len([name for name in names if name.startswith("references/")]) == 13
+        assert len([name for name in names if name.startswith("references/")]) == 10
         manifest = json.loads(package.read("manifest.json"))
-        assert len(manifest["subskills"]) == 13
+        assert len(manifest["subskills"]) == 10
         assert all(item["path"] in names for item in manifest["subskills"])
 
 
@@ -77,8 +77,8 @@ def test_image_dataset_coverage_and_protocol_shape():
     cases, manifest = _image_fixture_data()
     by_split = {split: sum(case["split"] == split for case in cases)
                 for split in ("optimize", "validation", "final_test")}
-    assert len(cases) == 117
-    assert by_split == {"optimize": 52, "validation": 34, "final_test": 31}
+    assert len(cases) == 112
+    assert by_split == {"optimize": 45, "validation": 32, "final_test": 35}
     skill_ids = [item["skill_id"] for item in manifest["subskills"]]
     for skill_id in skill_ids:
         assert sum(case["split"] == "optimize" and skill_id in case["expected"]["routes"][0]
@@ -87,7 +87,7 @@ def test_image_dataset_coverage_and_protocol_shape():
                    for case in cases if case["expected"]["routes"])
         assert any(case["split"] == "final_test" and skill_id in case["expected"]["routes"][0]
                    for case in cases if case["expected"]["routes"])
-    assert sum(case["expected"]["action"] == "clarify" for case in cases) == 18
+    assert sum(case["expected"]["action"] == "clarify" for case in cases) == 15
     assert sum(case["expected"]["action"] == "no_action" for case in cases) == 3
     assert any(case["expected"].get("route_ordered") and len(case["expected"]["routes"][0]) == 3
                for case in cases)
@@ -108,16 +108,18 @@ def test_reference_example_is_executable_and_matches_declared_parameters(referen
     content = reference.read_text()
     example = json.loads(re.search(r'## 参数示例.*?```json\s*(.*?)\s*```', content, re.S).group(1))
     skill = next(item['skill_id'] for item in manifest['subskills'] if item['path'].endswith(reference.name))
-    case = {'case_id': reference.stem, 'query': example['arguments']['request']['query'],
-            'fixtures': [{'name': 'editImage', 'match': {}, 'response': {'code': 0}}]}
+    examples = example if isinstance(example, list) else [example]
+    case = {'case_id': reference.stem, 'query': examples[0]['arguments']['request']['query'],
+            'fixtures': [{'name': 'editImage', 'match': {'method': e['arguments']['method']},
+                          'response': {'code': 0, 'version': 2} if e['arguments']['method'] == 'query_style_version' else {'code': 0}} for e in examples]}
     actual = execution.run_case(_case_request(case, manifest, _samples() / 'image_skill_package'),
                                 build_adapter({'provider': 'demo_scripted', 'domain': 'image'}))
     assert actual['error'] is None
     assert actual['selected_skills'] == [skill]
-    assert actual['tool_calls'] == [{'name': example['functionName'], 'arguments': example['arguments']}]
+    assert actual['tool_calls'] == [{'name': e['functionName'], 'arguments': e['arguments']} for e in examples]
 
 
-@pytest.mark.parametrize("case_index", range(117))
+@pytest.mark.parametrize("case_index", range(112))
 def test_each_image_case_executes_and_scores_full_protocol(case_index: int):
     cases, manifest = _image_fixture_data()
     case = cases[case_index]
@@ -135,7 +137,7 @@ def test_each_image_case_executes_and_scores_full_protocol(case_index: int):
         failures = [response for response in responses if response.get("code") != 0]
         if failures:
             assert actual["raw_output"] == failures[0]["message"]
-        elif len(actual["tool_calls"]) == 1:
+        elif len(actual["tool_calls"]) == 1 and actual["tool_calls"][0]["arguments"]["method"] != "query_style_version":
             sid = case["expected"]["routes"][0][0]
             path = next(item["path"] for item in manifest["subskills"] if item["skill_id"] == sid)
             contract = parse_contract((root / path).read_text())

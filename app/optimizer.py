@@ -129,9 +129,15 @@ _SYSTEM_PROMPT = (
     "3. 不得写入任何测试 case_id、标准答案/答案表，也不得针对单条 query 写硬编码分支；"
     "优先解决共性错误、优先局部修改。\n"
     "4. 每个 edit 使用 op=replace；search 必须是目标文件中恰好出现一次的原文片段，"
-    "replace 是替换后的完整片段；不要改动无关内容。\n"
+    "replace 是替换后的完整片段；不要改动无关内容。search 必须从提供的目标文件逐字复制，"
+    "保留空格、缩进、标点和换行，不得重新组织或补写原文。edits 按数组顺序应用；"
+    "同一文件的重叠修改应合并，后续 search 必须能在前序修改后的文件中唯一命中。\n"
     "5. 如果证据不足以支持修改，patch.edits 返回空数组，并在 diagnosis 中说明原因。\n"
-    "6. 疑似数据标注问题时 attribution 使用 dataset_issue，只提出反馈，不要修改 expected。\n"
+    "6. 疑似数据标注问题时 attribution 使用 dataset_issue，只提出反馈，不要修改 expected。"
+    "fixture_miss 本身不证明工具调用错误：先对照 Skill 的必需调用顺序、前置查询和版本能力约束。"
+    "若实际调用遵循 Skill，而 fixture/expected 缺少该必需步骤，应报告 dataset_issue；"
+    "不得仅为匹配 fixture 删除必需步骤、禁止版本查询或假定设备能力。"
+    "版本未知时，不得把某版本才支持的枚举推广到所有版本。只有独立业务规则证据支持时才能修改这些约束。\n"
     "7. 只输出一个 JSON 对象，不要输出 JSON 之外的说明文字（可以用 ```json 代码块包裹）。\n"
     "\n"
     "必须返回的 JSON 契约（字段名不可更改）：\n"
@@ -1648,6 +1654,19 @@ def generate_candidate(context: Mapping[str, Any],
 
     redacted_output = _redact(raw_text)
     if not normalized["patch"]["edits"]:
+        if normalized["diagnosis"]["attribution"] == "dataset_issue":
+            _emit(emit, event_types.OPTIMIZER_NO_CHANGE, {
+                **_issue_payload(
+                    "dataset_issue",
+                    "优化模型判断测试数据与业务规则存在冲突，未修改 Skill。",
+                    title="测试数据需核对",
+                    impact="本轮保留诊断，不生成候选，也不触发规则回退。",
+                    next_action="在文件差异查看诊断，核对预期调用与模拟返回；修正测试数据并发布新版本后重新测试。",
+                    technical_detail={"diagnosis": normalized["diagnosis"]},
+                ),
+            }, level="warning", call_id=call_id)
+            return _make_result(status="no_patch", error_code="dataset_issue",
+                                raw_output=redacted_output, **normalized)
         event = _emit(emit, event_types.OPTIMIZER_NO_CHANGE, {
             **_issue_payload(
                 "optimizer_no_change",

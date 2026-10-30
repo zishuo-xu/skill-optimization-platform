@@ -50,9 +50,9 @@ def _run(project, mode, **kwargs):
 def test_full_sample_baseline_and_no_failure_optimization():
     project, ds = _project()
     cases = persistence.all_cases(ds['id'])
-    assert len(cases) == 117
+    assert len(cases) == 112
     optimize_ids = {c['case_id'] for c in cases if c['split'] == 'optimize'}
-    assert len(optimize_ids) == 52
+    assert len(optimize_ids) == 45
     baseline = _run(project, 'baseline')
     assert baseline['status'] == 'completed', baseline
     assert baseline['metrics']['baseline']['joint']['value'] == 1.0

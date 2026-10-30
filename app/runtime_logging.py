@@ -137,7 +137,9 @@ def event_summary(event: Mapping):
     if isinstance(errors, list):
         summary['error_count'] = payload.get('error_count', len(errors))
         summary['errors'] = [{key: _scalar(item[key]) for key in
-                             ('code', 'path', 'line', 'reference_kind', 'resolved_path') if key in item}
+                             ('code', 'path', 'line', 'reference_kind', 'resolved_path', 'edit_index',
+                              'mismatch_reason', 'original_match_count', 'current_match_count',
+                              'normalized_newline_match_count') if key in item}
                             for item in errors[:5] if isinstance(item, Mapping)]
     return summary
 

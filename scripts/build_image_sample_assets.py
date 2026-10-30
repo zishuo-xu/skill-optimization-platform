@@ -85,6 +85,68 @@ def call(method: str, query: str, args: dict) -> dict:
 def make(case_id: str, split: str, group: str, skill: str, method: str, query: str, args: dict) -> dict:
     return {"id": case_id, "query": query, "group_id": group, "split": split, "tags": [skill], "skill": skill, "tool": call(method, query, args), "mock": {"code": 0}}
 
+
+def style_case(key, split, query, version, args=None, *, fallback=False, response=None, edit_response=None):
+    """Author the two expected calls independently of the demo's version logic."""
+    tools = [call('query_style_version', query, {})]
+    fixtures = [{'name': 'editImage', 'match': {'method': 'query_style_version', 'args': {}},
+                 'response': response if response is not None else {'code': 0, 'version': version}}]
+    skills = ['image_style']
+    if args is not None or fallback:
+        method = 'retouch_from_text' if fallback else 'apply_style'
+        params = {'instruction': query} if fallback else args
+        tools.append(call(method, query, params))
+        fixtures.append({'name': 'editImage', 'match': {'method': method, 'args': params},
+                         'response': edit_response if edit_response is not None else {'code': 0}})
+        if fallback:
+            skills.append('image_one_word_fix')
+    return {'id': 'style_' + key, 'query': query, 'group_id': 'style_' + key, 'split': split,
+            'skill': skills, 'route_ordered': True, 'tools': tools, 'fixtures': fixtures,
+            'tags': ['image_style', 'version_query']}
+
+
+def style_cases():
+    rows = [
+        style_case('black_v2', 'optimize', '给照片加黑白风格', 2, {'template': 7, 'intent': 1}),
+        style_case('film_v1', 'optimize', '使用胶片风格', 1, {'template': 2, 'intent': 1}),
+        style_case('warm_v2', 'optimize', '质感风格色温 200', 2, {'template': 1, 'temperature': 20, 'intent': 0}),
+        style_case('grain_v3', 'optimize', '自然风格颗粒 8', 3, {'template': 1, 'grain': 8, 'intent': 1}),
+        style_case('unsupported', 'optimize', '给照片添加电影风格', 0, fallback=True),
+        style_case('query_error', 'optimize', '想使用动漫风格', None, response={'code': 12, 'message': '版本查询暂时不可用'}),
+        style_case('apply_error', 'optimize', '应用明快风格', 2, {'template': 6, 'intent': 1}, edit_response={'code': 9, 'message': '风格编辑失败'}),
+        style_case('unknown', 'optimize', '给画面添加自然风格', 99),
+        style_case('warm_v3', 'validation', '将质感风格色温设为 200', 3, {'template': 1, 'temperature': 9, 'intent': 0}),
+        style_case('black_v1', 'validation', '照片改为黑白风格', 1, fallback=True),
+        style_case('soft_v3', 'validation', '质感风格柔光 5', 3, fallback=True),
+        style_case('default', 'validation', '加个质感风格', 4, {'template': 1, 'intent': 0}),
+        style_case('missing_version', 'validation', '为照片应用胶片风格', None, response={'code': 0}),
+        style_case('bool_version', 'validation', '改为电影风格', True),
+        style_case('soft_v4', 'final_test', '自然风格柔光设为 7', 4, {'template': 1, 'softLight': 7, 'intent': 1}),
+        style_case('lower_bound', 'final_test', '电影风格光影 -6', 4, {'template': 3, 'tone': 0, 'intent': 1}),
+        style_case('close', 'final_test', '关闭风格', 1, {'template': 0, 'intent': 1}),
+        style_case('grain_v2', 'final_test', '胶片风格颗粒 4', 2, fallback=True),
+        style_case('memory', 'final_test', '电影风格饱和度 3', 4, {'template': 3, 'saturation': 3, 'intent': 1}, edit_response={'code': 0, 'message': '风格处理完成', 'memoryValue': {'saturation': 3}}),
+        style_case('string_version', 'final_test', '给当前图加鲜艳风格', '2'),
+        style_case('unknown_preset', 'final_test', '添加水彩风格', 4, fallback=True),
+        style_case('default_parameter', 'final_test', '自然风格调一下饱和度', 2, {'template': 1, 'saturation': 6, 'intent': 0}),
+    ]
+    drag = style_case('drag', 'optimize', '拖入照片加鲜艳风格', 2, {'template': 5, 'intent': 1})
+    drag['context'] = {'source': 'drag'}
+    for tool in drag['tools']:
+        tool['arguments']['request']['source'] = 'drag'
+    rows.append(drag)
+    # A query is an internal call in operation 2, not a third editing operation.
+    query = '先裁成 1:1，再加胶片风格'
+    multi = style_case('after_crop', 'final_test', '加胶片风格', 1, {'template': 2, 'intent': 1})
+    multi['query'] = query
+    multi['skill'] = ['image_crop', 'image_style']
+    multi['tools'].insert(0, call('crop_frame', '先裁成 1:1', {'aspectRatio': '1:1', 'focus': 'subject'}))
+    multi['fixtures'].insert(0, {'name': 'editImage', 'match': {'method': 'crop_frame'}, 'response': {'code': 0}})
+    for i, tool in enumerate(multi['tools']):
+        tool['arguments']['request'].update(totalSteps=2, currentStep=1 if i == 0 else 2)
+    rows.append(multi)
+    return rows
+
 def main() -> None:
     rows: list[dict] = []
     for skill, method, query, args in CASES:
@@ -191,6 +253,12 @@ def main() -> None:
                  "split": "final_test", "skill": ["image_background_decolor", "image_filter"],
                  "route_ordered": True, "tools": operations[:1],
                  "mock": {"code": 9, "message": "示例输入不可处理"}})
+    # v4 has nine direct capabilities and one version-aware capability. Older
+    # imported packages/runs retain their own files and datasets unchanged.
+    removed = {'image_background_remove', 'image_portrait_retouch', 'image_object_remove', 'image_background_replace'}
+    rows = [row for row in rows if not removed.intersection(
+        [row['skill']] if isinstance(row.get('skill'), str) else row.get('skill') or [])]
+    rows.extend(style_cases())
     OUT.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     print(f"wrote {len(rows)} cases to {OUT}")
 

@@ -64,7 +64,7 @@ def test_continue_rejects_stale_and_foreign_sources(demo):
         services.create_run({'project_id': other['project']['id'], 'mode': 'optimize', 'source_run_id': source['id']})
     services.create_environment(demo['project']['id'], environment_payload(), status='published', set_current=True)
     assert services.run_view(source['id'])['can_continue_optimization']
-    assert not services.run_view(source['id'])['can_validate']
+    assert services.run_view(source['id'])['can_validate']  # Same execution and acceptance rules.
     continued = services.create_run({'project_id': demo['project']['id'], 'mode': 'optimize', 'source_run_id': source['id']})
     assert continued['baseline_cache_hit']
     # Changing the published root still rejects continuation.

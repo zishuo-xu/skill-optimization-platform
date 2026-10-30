@@ -87,6 +87,57 @@ def _short(text: str, limit: int = 120) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _newline_counts(text: str) -> dict[str, int]:
+    crlf = text.count('\r\n')
+    return {'crlf': crlf, 'lf': text.count('\n') - crlf,
+            'cr': text.count('\r') - crlf}
+
+
+def _match_diagnosis(original: str, current: str, search: str,
+                     prior_edits: list[int]) -> dict[str, Any]:
+    """Explain differences for display only; never relax replacement matching."""
+    normalize = lambda text: text.replace('\r\n', '\n').replace('\r', '\n')
+    normalized_search = normalize(search)
+    original_count = original.count(search)
+    current_count = current.count(search)
+    normalized_count = normalize(current).count(normalized_search)
+    if current_count > 1:
+        reason = 'multiple_matches'
+        explanation = f'search 命中 {current_count} 次，必须补充原文上下文使其唯一'
+    elif prior_edits and normalize(original).count(normalized_search) and not normalized_count:
+        reason = 'prior_edit_conflict'
+        explanation = 'search 存在于原始文件，但前序修改后不再匹配；请合并重叠修改或按顺序更新 search'
+    elif normalized_count:
+        reason = 'line_ending_mismatch'
+        explanation = '仅统一换行符后可命中；请按目标文件原始换行复制 search（未自动替换）'
+    else:
+        compact = re.sub(r'\s+', '', search)
+        if compact and compact in re.sub(r'\s+', '', current):
+            reason = 'whitespace_mismatch'
+            explanation = '忽略空白后可找到片段，但空格、缩进或换行不一致；请逐字复制原文（未自动替换）'
+        else:
+            reason = 'text_mismatch'
+            explanation = 'search 与目标文件原文不一致；请核对正文、标点及所用 Skill 版本'
+    diagnosis = {
+        'mismatch_reason': reason, 'explanation': explanation,
+        'original_match_count': original_count, 'current_match_count': current_count,
+        'normalized_newline_match_count': normalized_count,
+        'prior_edit_indices': list(prior_edits), 'search_chars': len(search),
+        'file_newlines': _newline_counts(current), 'search_newlines': _newline_counts(search),
+    }
+    # Offer a bounded reference excerpt only when the first nonempty search line
+    # occurs exactly once. This is evidence, not a fuzzy application location.
+    anchor = next((line for line in search.splitlines() if line.strip()), '')
+    if anchor and current.count(anchor) == 1:
+        offset = current.index(anchor)
+        reference = current[offset:offset + len(search) + 120]
+        excerpt = reference[:1200]
+        diagnosis.update(reference_line=normalize(current[:offset]).count('\n') + 1,
+                         reference_excerpt=excerpt,
+                         reference_excerpt_truncated=len(reference) > 1200)
+    return diagnosis
+
+
 def _normalize_allowed(allowed_paths: Iterable[str] | None) -> set[str] | None:
     if allowed_paths is None:
         return None
@@ -136,6 +187,7 @@ def apply_edits(files: Mapping[str, bytes], edits: Sequence[Mapping[str, Any]] |
 
     texts: dict[str, str] = {}
     changed: set[str] = set()
+    prior_edits: dict[str, list[int]] = {}
 
     for index, edit in enumerate(edits):
         if not isinstance(edit, Mapping):
@@ -197,17 +249,18 @@ def apply_edits(files: Mapping[str, bytes], edits: Sequence[Mapping[str, Any]] |
                 continue
             texts[path] = text
         count = text.count(search)
-        if count == 0:
-            issues.append(_issue("edit_not_found", path,
-                                 f"search 未命中（片段：{_short(search)}）", edit_index=index))
-            continue
-        if count > 1:
-            issues.append(_issue("edit_not_unique", path,
-                                 f"search 命中 {count} 次，必须唯一（片段：{_short(search)}）",
-                                 edit_index=index))
+        if count != 1:
+            diagnosis = _match_diagnosis(_decode(base_norm[path]) or '', text, search,
+                                         prior_edits.get(path, []))
+            issue = _issue('edit_not_found' if count == 0 else 'edit_not_unique', path,
+                           diagnosis.pop('explanation'), edit_index=index)
+            issue.update(diagnosis)
+            issue['search_preview'] = _short(search)
+            issues.append(issue)
             continue
         texts[path] = text.replace(search, replace, 1)
         changed.add(path)
+        prior_edits.setdefault(path, []).append(index)
 
     if issues:
         return dict(base), issues

@@ -27,6 +27,7 @@ from .demo_scripted import (
     _user_query,
 )
 from .image_params import contract_params, parse_contract
+from .image_style import style_arguments
 
 SCRIPT_PATH = "handlers/photo_ops.py"
 BUSINESS_TOOL = "editImage"
@@ -364,28 +365,10 @@ class DemoImageScriptedAdapter(ModelAdapter):
             if path not in read_files:
                 return finish("clarify", "参数契约不可用", ["contract"])
 
-        planned = []
-        missing = []
-        contracts = []
-        for index, item in enumerate(chosen, 1):
-            contract = parse_contract(read_files[self._skill_path(manifest, item["skill_id"])])
-            if contract is None:
-                return finish("clarify", "参数契约不可用", ["contract"])
-            clause = item["_clause"]
-            args, absent = contract_params(contract, clause)
-            missing.extend(absent)
-            request = {"query": clause, "totalSteps": len(chosen), "currentStep": index}
-            if source == "drag":
-                request["source"] = "drag"
-            planned.append({"method": contract["method"], "script": SCRIPT_PATH,
-                            "request": request, "args": args})
-            contracts.append(contract)
-        if missing:
-            return finish("clarify", "请补充或修正所需参数", list(dict.fromkeys(missing)))
-
         results = [message for message in messages
                    if message.get("role") == "tool"
                    and message.get("name") in {BUSINESS_TOOL, "call_tool"}]
+        payloads = []
         for result in results:
             try:
                 payload = json.loads(result.get("content") or "{}")
@@ -396,8 +379,55 @@ class DemoImageScriptedAdapter(ModelAdapter):
             code = payload.get("code")
             if isinstance(code, bool) or not isinstance(code, (int, float)) or code != 0:
                 return finish("tool_call", str(payload.get("message") or "操作未确认完成，请检查服务返回"))
+            payloads.append(payload)
+
+        planned = []
+        missing = []
+        contracts = []
+        for index, item in enumerate(chosen, 1):
+            contract = parse_contract(read_files[self._skill_path(manifest, item["skill_id"])])
+            if contract is None:
+                return finish("clarify", "参数契约不可用", ["contract"])
+            clause = item["_clause"]
+            request = {"query": clause, "totalSteps": len(chosen), "currentStep": index}
+            if source == "drag":
+                request["source"] = "drag"
+            version_query = contract.get('version_query')
+            if version_query:
+                planned.append({'method': version_query['method'], 'script': SCRIPT_PATH,
+                                'request': request, 'args': dict(version_query.get('args') or {})})
+                if len(payloads) < len(planned):
+                    break  # Wait for this query's response before planning an edit.
+                status, args = style_arguments(contract, clause,
+                    payloads[len(planned) - 1].get(version_query['response_field']))
+                if status == 'unknown':
+                    return finish('tool_call', '版本无法确认，未执行风格编辑')
+                if status == 'unsupported':
+                    fallback_id = contract['fallback_skill']
+                    if not any(entry['skill_id'] == fallback_id for entry in selected):
+                        return self._response(tool_calls=[_tool_call('select_skill', {'skill_id': fallback_id}, 0)], usage=usage)
+                    contract = parse_contract(read_files.get(self._skill_path(manifest, fallback_id), ''))
+                    if contract is None:
+                        return finish('tool_call', '替代编辑契约不可用，已停止')
+                    args, absent = contract_params(contract, clause)
+                    missing.extend(absent)
+            else:
+                args, absent = contract_params(contract, clause)
+                missing.extend(absent)
+            planned.append({"method": contract["method"], "script": SCRIPT_PATH,
+                            "request": request, "args": args})
+            contracts.append(contract)
+        if missing:
+            return finish("clarify", "请补充或修正所需参数", list(dict.fromkeys(missing)))
+
         if len(results) >= len(planned):
-            summary = contracts[0]["success_message"] if len(planned) == 1 else "所选编辑步骤已完成"
+            summary = contracts[0]["success_message"] if len(chosen) == 1 else "所选编辑步骤已完成"
+            if len(chosen) == 1 and any(c.get('version_query') for c in contracts):
+                summary = str(payloads[-1].get('message') or summary)
+                memory = payloads[-1].get('memoryValue')
+                if isinstance(memory, dict) and memory:
+                    labels = contracts[0].get('parameter_labels') or {}
+                    summary += '；偏好：' + '、'.join(f'{labels[k]}={v}' for k, v in memory.items() if k in labels)
             return finish("tool_call", summary)
         return self._response(tool_calls=[_tool_call("call_tool", {
             "name": BUSINESS_TOOL, "arguments": planned[len(results)],
@@ -434,6 +464,7 @@ class DemoImageScriptedAdapter(ModelAdapter):
         """
         rows = {row["skill_id"]: row for row in _parse_dispatch(main_skill)}
         patterns = (
+            ("image_style", r"风格|风格化"),
             ("image_background_decolor", r"背景(?:变为|变成|变)?(?:黑白|灰度)|背景去色|背景失去颜色|主体突出"),
             ("image_background_remove", r"抠图|去背景|去掉.*背景|去除.*(?:背景|底色)|透明底|透明背景"),
             ("image_background_replace", r"换背景|替换背景|背景.*(?:换成|替换为)|(?:换成|改成|替换为).*背景"),
@@ -473,6 +504,11 @@ class DemoImageScriptedAdapter(ModelAdapter):
                 if chosen:
                     chosen[-1]["_clause"] += "，" + chunk
                 continue
+            # Modifiers after a style clause belong to the same style operation;
+            # a separately requested filter remains a separate operation.
+            if (skill_id == 'image_tone_adjust' and chosen
+                    and chosen[-1]['skill_id'] == 'image_style'):
+                skill_id = 'image_style'
             existing = next((item for item in chosen if item["skill_id"] == skill_id), None)
             if existing:
                 existing["_clause"] += "，" + chunk

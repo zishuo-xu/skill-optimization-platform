@@ -24,17 +24,14 @@
 | --- | --- | --- |
 | image_one_word_fix | retouch_from_text | instruction: string，保留独立的一句话修图诉求 |
 | image_color_transfer | recolor_region | targetColor: string 必填；region: entire/sky/subject/background/clothing 默认 entire；preserveTexture: boolean 默认 true |
-| image_background_remove | cutout_subject | keepSubject: boolean 固定 true；outputBackground: string 固定 transparent |
 | image_enhance | enhance_detail | enhanceType: lighting/clarity/denoise/auto；strength: number 0..1 默认 0.8 |
 | image_crop | crop_frame | aspectRatio: 1:1/4:3/3:4/16:9/9:16 必填；focus: center/subject 默认 subject |
 | image_transform | transform_frame | angle: -180/-90/0/90/180 默认 0（顺时针为正）；flip: none/horizontal/vertical 默认 none，必须有有效变换 |
 | image_resize | resize_frame | width/height: integer 1..8192，至少一个；keepAspectRatio: boolean，单边尺寸为 true，显式双边尺寸为 false |
 | image_tone_adjust | adjust_tone | brightness/contrast/saturation: integer -100..100；exposure: number -5..5；只传用户明确指定的字段和值 |
 | image_filter | apply_preset | filterName: film/black_white/vintage/warm/cool 必填；strength: number 0..1 默认 0.5 |
-| image_portrait_retouch | retouch_portrait | smoothSkin/whiten/slimFace: number 0..1；只包含请求的操作，未指定强度时分别默认 0.3/0.2/0.2；自然美颜默认磨皮+美白 |
-| image_object_remove | erase_object | target: string 必填（用户明确描述）；preserveBackground: boolean 固定 true |
 | image_background_decolor | desaturate_backdrop | 无可调业务参数，args={}；只让背景灰度化，主体颜色保留 |
-| image_background_replace | replace_backdrop | background: string 必填（用户明确描述）；keepSubject: boolean 固定 true |
+| image_style | query_style_version → apply_style | 查询 args={}；应用的 template/intent 及调节字段按返回版本选取，不支持则转一句话修图 |
 
 每个 reference 在 `## 参数契约` 下提供 JSON 对象：`method`、`fields`（JSON Schema properties）、`required`、`defaults`、`mappings`（按字段组织的短语→协议值）。
 此块与参数表/示例应一致，供模型阅读并让离线模拟器读取；不包含案例 ID 或答案表。
@@ -43,14 +40,14 @@
 
 - 使用语义而非机械关键词做路由；停顿词不构成新操作。
 - “不要 X，只做 Y”“不是 X，改成 Y”以最后确认的有效意图为准；只将该步骤相关原话写入 request.query。
-- 专用技能优先于一句话兜底；换背景不等于去背景，改变颜色不等于滤镜，尺寸不等于裁剪。
+- 专用技能优先于一句话兜底；风格不等于滤镜，改变颜色不等于滤镜，尺寸不等于裁剪。
 - 多操作最多 3 项，按用户顺序；同一技能的兼容字段合并，完整核对必填项后再执行任何业务调用。
 - 缺颜色/目标物/尺寸等必要信息时澄清，不以默认值替代缺失的用户意图；仅允许使用 reference 明确声明的默认值。
 - 未指向修图的普通问答为 no_action；范围外的图像能力不编造 method。
 
 ## 实施与验收
 
-1. 扩展并保持 manifest、13 个 references、工具 schema、业务 Prompt 一致。
+1. 保持 manifest、10 个 references、业务 Prompt 和内嵌参数契约一致。
 2. 更新离线模拟器，让其读取子技能契约，支持代表性的语流/复合任务；保持 demo 标识。
 3. 扩展数据集，使每个功能在 optimize/validation/final_test 都有独立案例，并覆盖缺参、否定/改口、多操作。
 4. 完整版技能不再故意缺参数；优化练习如需故障应显式使用独立变体，不能污染可直接参考的标准技能。
@@ -59,7 +56,15 @@
 
 验收时区分离线模拟器结果、真实模型抽查与真实图片处理服务；当前版本的真实模型抽查和图片处理服务尚待验证。
 
-## 公开合成版（2026-10-27）
+## 当前版本：九个直接编辑与一个版本分支（2026-10-29）
+
+现有示例调整为 10 个子技能，manifest.version=4。只在质感风格的 reference 内声明查询及版本表；其余九个 reference 不执行版本查询。明确风格仍先查版本：例如黑白只受版本 2～4 支持，柔光只受版本 4 支持。参数越界截到该版本边界，不支持的参数/预设改走一句话修图；未知版本、查询失败停止，不能假设设备能力。
+
+本版包含 112 条案例（45 日常 / 32 独立验收 / 35 最终测试）。风格案例分别提供 query_style_version、apply_style 或替代编辑的 fixture，预期包括完整有序调用。版本信息只通过查询返回提供；查询不增加用户操作计数，不与编辑在同一批调用发出。模拟器读取 reference 的版本表与实际返回，测试另外覆盖同一请求换版本后选参变化和缺查询 fixture 时保留真实失败。
+
+版本化子技能借鉴了生产流程形态，但文案和接口重新编写，不包含生产原文或图片标识。现有本地项目通过 `python -m app.seed --refresh-image` 发布新版本，保留模型配置和旧运行。旧版示例的其他子技能仍可在历史包里回放；不修改它们的历史评分。
+
+## 历史公开合成版（2026-10-27）
 
 13 个子技能均已改写：使用边界、机器可读参数契约、执行约束、完整调用样例、易混意图。工具名为 `editImage`，技能名为 `sample-photo-editor`，脚本标识为 `handlers/photo_ops.py`；这些是虚构教学协议，没有附带生产接口映射。
 

@@ -1617,6 +1617,8 @@ export default async function runDetailsView(container, ctx) {
       state.diff.expectedEffect = payload?.expected_effect || state.run.candidate?.expected_effect || '';
       state.diff.riskCases = payload?.risk_cases || state.run.candidate?.risk_cases || [];
       state.diff.relatedCases = payload?.related_cases || payload?.diagnosis?.related_cases || [];
+      state.diff.patch = payload?.patch || {};
+      state.diff.checks = payload?.checks || {};
       state.diff.selected = 0;
       state.diff.loaded = true;
     } catch (error) {
@@ -1641,6 +1643,9 @@ export default async function runDetailsView(container, ctx) {
     const riskCases = state.diff.riskCases || [];
     const relatedCases = state.diff.relatedCases || [];
     const headerSections = [
+      !hypotheses.length && state.diff.diagnosis?.summary
+        ? sectionCard({ title: '优化诊断', body: h('p.small', { text: state.diff.diagnosis.summary }) })
+        : null,
       hypotheses.length
         ? sectionCard({
             title: '修改假设',
@@ -1710,13 +1715,25 @@ export default async function runDetailsView(container, ctx) {
     ].filter(Boolean);
 
     if (!changes.length) {
+      const edits = state.diff.patch?.edits || [];
+      const rejectedPatch = edits.length ? sectionCard({
+        title: '未应用的候选补丁',
+        description: '以下是优化器提出的修改，尚未生成可用候选版本。展开可查看完整原文与替换内容，或复制检查详情定位原因。',
+        body: h('div.stack', null,
+          jsonViewer(state.diff.checks || {}, { label: '检查详情', maxHeight: '280px' }),
+          ...edits.map((edit, index) => h('details', null,
+            h('summary', { text: `第 ${index + 1} 条修改 · ${edit.path || '未知文件'}` }),
+            jsonViewer(edit, { label: `修改 ${index + 1}（search 为匹配原文，replace 为替换内容）`, open: true, maxHeight: '420px' })
+          ))
+        ),
+      }) : null;
       mount(
         diffHost,
         h(
           'div.stack',
           null,
           ...headerSections,
-          emptyState({
+          rejectedPatch || emptyState({
             iconName: 'versions',
             title: state.run.mode === 'evaluate' ? '普通评测没有文件差异' : state.run.mode === 'baseline' ? '基线运行没有文件差异' : '本轮没有候选补丁',
             description:

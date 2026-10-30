@@ -316,9 +316,9 @@ class ModelAdapter:                     # app/adapters/base.py
 - 只允许修改已存在的 `.md` 文件；不得新增/删除文件、不得改 manifest、脚本与资源。
 - 候选从本轮 baseline Skill 创建隔离副本：首次为项目当前版本，继续优化时为来源运行的候选。
   Skill 的 parent_id 指向本轮 baseline，运行快照保留 source_run_id 与 root 锚点；不改变项目当前版本。正式验收通过 `source_run_id` 绑定来源，校验 root、
-  候选 content hash、来源项目/环境与静态检查结果，任一变化即冲突或验收预检失败。
+  候选 content hash、来源项目与静态检查结果。来源环境与当前环境允许仅优化模型配置不同；Prompt、业务模型、加载、执行、评分、验收配置及 adapter_hash 必须一致。验收冻结当前环境并重新执行完整配对评测，排队期间当前环境再次变更仍冲突，历史来源环境不改写。
 - `patch.apply_edits(files, edits, allowed_paths) -> (patched, issues)`：编辑必须唯一
-  命中，否则报 `edit_not_found` / `edit_not_unique`。
+  命中，否则报 `edit_not_found` / `edit_not_unique`。edits 按数组顺序应用，search 必须逐字复制目标文本（包括空格和换行）；重叠修改应合并或引用前序修改后的文本。失败时整批回滚，不做模糊替换。诊断包含原始/当前命中数、统一换行后的命中数、同文件前序修改索引、换行计数，以及 `mismatch_reason`（`line_ending_mismatch` / `whitespace_mismatch` / `prior_edit_conflict` / `text_mismatch` / `multiple_matches`）。归一化只用于解释，不参与应用；首个非空 search 行唯一命中时提供最多 1200 字符的参考片段及行号，不猜测其他位置。运行摘要显示候选来源、具体文件和从 1 开始的修改序号，详情的 `edit_index` 仍从 0 开始。终端只同步原因和计数，不记录原文片段。
 - `patch.static_check(base_files, patched_files, manifest, case_ids) -> {"ok", "checks":
   [{"name","ok","message"}], "errors": []}`：路径白名单、引用完整性、结构、
   “不得写入测试 case_id / 标准答案硬编码”扫描。
@@ -327,6 +327,8 @@ class ModelAdapter:                     # app/adapters/base.py
   失败时区分 `optimizer_empty_response` / `optimizer_parse_failed`；
   `optimizer.heuristic_candidate(context) -> dict | None`（无模型/解析失败回退，
   但仍记录 `fallback_started`；无修改记 `fallback_no_change`）。
+- 模型顶层 `diagnosis.attribution=dataset_issue` 且补丁为空时，保留诊断并返回 `no_patch` / `dataset_issue`，不触发启发式回退、不生成 Skill 版本或复测。归因仍由模型提出，不意味着平台已独立证明测试数据错误；混合归因或有补丁的输出仍须审查。
+- 文件差异接口保留未应用补丁和失败检查；页面明确标注“未应用”，可展开完整编辑并复制，不将保存的补丁视为有效候选。
 - `optimizer.generate_candidate(context, adapter, emit) -> dict`：
   返回 `{"status": "ok"|"no_patch"|"failed", "diagnosis":..., "hypotheses":[],
   "changed_files":[], "patch":{"summary","edits":[]}, "expected_effect":"",

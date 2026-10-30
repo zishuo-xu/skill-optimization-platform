@@ -6,8 +6,8 @@
 
 request.query 只保留当前步骤相关原话；totalSteps 和 currentStep 每次必传，单操作均为 1。从上下文读取 source；用户消息 JSON 显式包含 source 时以该值覆盖。source 为 drag 时附带 source="drag"，其他情况省略。
 
-执行前检查所有步骤必填字段、类型、枚举及范围。缺参或值不合法时 clarify；无对应功能时 no_action。按顺序逐步调用，每步返回 code 必须为数字 0 才继续；否则根据 message 报告问题并停止，不输出成功，不自动重试。成功步骤不重复执行。
+仅质感风格子技能必须先查版本，再按返回的版本校验可用参数；其余九个子技能不查版本。参数范围未知时不得提前猜测，明确不支持时按 reference 的替代流程处理。执行前检查已知步骤必填字段、类型、枚举及范围。缺参或值不合法时 clarify；无对应功能时 no_action。按顺序逐步调用，每步返回 code 必须为数字 0 才继续；否则根据 message 报告问题并停止，不输出成功，不自动重试。成功步骤不重复执行。
 
-背景局部黑白且主体彩色是背景去色；全图灰调滤镜是滤镜；背景虚化不属于已收录的功能。单操作成功仅使用该 reference 的 success_message。
+背景局部黑白且主体彩色是背景去色；全图灰调滤镜是滤镜；背景虚化不属于已收录的功能。普通单操作成功使用该 reference 的 success_message，质感风格按其规程处理工具返回的 message 和 memoryValue。
 
 平台通过 select_skill 记录路由并返回子技能正文；仅在需要其他引用文件时使用 read_skill，不重复读取已返回的正文。通过 finish 结束；finish.selected_skills 必须与实际选择一致，summary 是面向用户的简短结果。

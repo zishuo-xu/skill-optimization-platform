@@ -346,9 +346,13 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     if cancel.cancelled():
         raise RunCancelled()
     if outcome.get("status") != "ok":
+        if (outcome.get("diagnosis") or {}).get("summary"):
+            _record_candidate(run_id, None, outcome, {"ok": False, "checks": []})
         _finish_inconclusive(
             run, emitter,
-            f"候选未生成：{outcome.get('error_code') or 'no_patch'}",
+            ("测试数据需核对：优化模型未修改 Skill，请查看文件差异中的诊断。"
+             if outcome.get("error_code") == "dataset_issue"
+             else f"候选未生成：{outcome.get('error_code') or 'no_patch'}"),
             error_code=outcome.get("error_code") or "no_patch",
             metrics={"baseline": baseline_metrics, "candidate": None,
                      "delta": None, "validation": None, "final": None})
@@ -359,16 +363,25 @@ def _run_optimize(run: Mapping[str, Any], env: Mapping[str, Any],
     patch_started = time.monotonic()
     edits = (outcome.get("patch") or {}).get("edits") or []
     patched_files, issues = patch.apply_edits(files, edits, context["allowed_paths"])
+    issues = redact_output(issues, credentials)
     candidate_row = None
     if issues:
+        source = '规则候选' if outcome.get('used_fallback') else '模型候选'
+        details = [f"第 {item['edit_index'] + 1} 条修改 · {item.get('path') or '未知文件'}：{item['message']}"
+                   if isinstance(item.get('edit_index'), int) else str(item.get('message') or item.get('code'))
+                   for item in issues[:3]]
         emitter.issue(event_types.STATIC_CHECK_FAILED,
                       error_code="static_check_failed",
                       title="补丁应用失败",
-                      message="补丁无法唯一命中目标文件或包含非法操作。",
+                      message=f"{source}补丁未应用：" + '；'.join(details)[:1000],
                       impact="本轮不生成候选版本，不进入复测。",
-                      next_action="检查候补丁与 Skill 文件版本后新建运行。",
+                      next_action="在文件差异的「未应用的候选补丁」查看完整 search 和检查详情，或到运行记录的「优化器返回内容」查看原始输出；按具体原因修正后新建运行。",
                       level="error", stage="static_check",
-                      extra={"issues": issues})
+                      extra={"issues": issues,
+                             "candidate_source": "heuristic" if outcome.get("used_fallback") else "model",
+                             "baseline_skill_version_id": skill_version["id"],
+                             "edit_count": len(edits),
+                             "patch_apply_ms": round((time.monotonic() - patch_started) * 1000)})
         static_result = {"ok": False, "checks": [], "errors": issues}
         _finish_inconclusive(
             run, emitter, "补丁应用失败，未进入复测",
@@ -488,11 +501,13 @@ def _run_validate(run: Mapping[str, Any], env: Mapping[str, Any],
     baseline_integrity = persistence.skill_version_integrity(run["baseline_skill_version_id"])
     frozen = (run.get("snapshot") or {}).get("candidate_skill_version") or {}
     consistent = (source.get("project_id") == run["project_id"]
+                  and persistence.get_project(run["project_id"])["current_environment_id"] == run["environment_id"]
                   and source.get("mode") == "optimize" and source.get("status") == "completed"
                   and source.get("decision") is None
                   and ((source.get("snapshot") or {}).get("root_skill_version_id")
                        or source.get("baseline_skill_version_id")) == run["baseline_skill_version_id"]
-                  and source.get("environment_id") == run["environment_id"]
+                  and services.validation_environment_compatible(
+                      persistence.get_environment(source["environment_id"]), env)
                   and source.get("candidate_skill_version_id") == candidate_version["id"]
                   and candidate_version.get("source_run_id") == source["id"]
                   and candidate_version.get("project_id") == run["project_id"]

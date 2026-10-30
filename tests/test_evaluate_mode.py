@@ -110,7 +110,7 @@ def test_validate_rejects_changed_environment_and_foreign_source(demo):
     other = create_demo_project()
     with pytest.raises(ConflictError, match='本项目'):
         services.create_run({'project_id': other['project']['id'], 'mode': 'validate', 'source_run_id': source['id']})
-    services.create_environment(demo['project']['id'], environment_payload(), status='published', set_current=True)
+    services.create_environment(demo['project']['id'], environment_payload(prompt='Changed business instructions'), status='published', set_current=True)
     assert not services.run_view(source['id'])['can_validate']
     with pytest.raises(ConflictError, match='环境'):
         services.create_run({'project_id': demo['project']['id'], 'mode': 'validate', 'source_run_id': source['id']})
