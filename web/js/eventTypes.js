@@ -7,12 +7,12 @@
 
 export const STAGES = [
   { id: 'preflight', label: '预检', description: '检查文件、环境和数据' },
-  { id: 'baseline_eval', label: '基线评测', description: '在测试集上执行基线 Skill' },
+  { id: 'baseline_eval', label: '执行测试集', description: '在测试集上执行基线 Skill' },
   { id: 'results_preparation', label: '准备测试结果', description: '复用已有结果，补测缺失或失效部分' },
   { id: 'error_analysis', label: '错误分析', description: '聚合失败证据与归因' },
   { id: 'candidate_generation', label: '生成候选', description: '请求优化器生成本地补丁' },
   { id: 'static_check', label: '静态检查', description: '检查路径、引用与禁止修改项' },
-  { id: 'retest', label: '复测验证', description: '重跑候选或对基线和候选进行配对验收' },
+  { id: 'retest', label: '候选重跑', description: '重跑候选或对基线和候选进行配对验收' },
   { id: 'decision', label: '评估结论', description: '按冻结规则判定是否达标' },
   { id: 'final_test', label: '最终测试', description: '在最终测试集上验收' },
 ];
@@ -175,10 +175,10 @@ export function decisionKey(run) {
 }
 
 export const MODE_META = {
-  evaluate: { label: '普通评测', icon: 'play' },
-  baseline: { label: '基线评测', icon: 'play' },
-  optimize: { label: '优化 Skill', icon: 'spark' },
-  validate: { label: '正式验收', icon: 'shield' },
+  evaluate: { label: '测试', icon: 'play' },
+  baseline: { label: '测试', icon: 'play' },
+  optimize: { label: '优化', icon: 'spark' },
+  validate: { label: '独立验收', icon: 'shield' },
   final_test: { label: '最终测试', icon: 'shield' },
 };
 

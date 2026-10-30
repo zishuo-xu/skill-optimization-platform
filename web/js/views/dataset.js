@@ -122,7 +122,44 @@ export default async function datasetView(container, ctx) {
     );
   }
 
+  const workspace = { pending: false };
+
+  function renderWorkspaceBar() {
+    if (state.loading && !state.datasets.length) {
+      mount(versionHost, loadingState('正在加载测试集…', { compact: true }));
+      return;
+    }
+    const status = !state.dataset
+      ? h('span.save-state', null, '尚未导入测试集')
+      : workspace.pending
+      ? h('span.save-state.save-state--pending', null, icon('clock', { size: 13 }), '案例修改已保存，下次运行时生效')
+      : h('span.save-state', null, icon('check', { size: 13 }), '正在使用');
+    mount(versionHost, h('div.save-bar', null,
+      status,
+      h('span.muted.xsmall', { text: '点开案例即可查看和修改' }),
+      h('span.save-bar__spacer'),
+      workspace.pending
+        ? button({ label: '放弃修改', variant: 'ghost', size: 'sm', onClick: discardWorkspace })
+        : null,
+      state.dataset ? button({ label: '试跑一句话', variant: 'ghost', size: 'sm', iconName: 'play', onClick: openQueryTrial }) : null,
+      button({ label: '导入测试集', variant: state.dataset ? 'secondary' : 'primary', size: 'sm', iconName: 'upload', onClick: openImportModal })));
+  }
+
+  async function discardWorkspace() {
+    const ok = await confirmDialog({ title: '放弃未生效的修改', message: '将恢复为当前正在使用的测试集。', confirmText: '放弃修改', danger: true });
+    if (!ok) return;
+    try {
+      await api.discardWorkspace(project.id, 'dataset');
+      toast('已放弃修改', { type: 'success' });
+      await load();
+      if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
+    } catch (error) {
+      toast(`操作失败：${error.message}`, { type: 'error' });
+    }
+  }
+
   function renderVersionBar() {
+    if (ctx.workspace) return renderWorkspaceBar();
     if (state.loading && !state.datasets.length) {
       mount(versionHost, loadingState('正在加载数据集…', { compact: true }));
       return;
@@ -499,8 +536,8 @@ export default async function datasetView(container, ctx) {
     const formView = h('div');
     const jsonView = h('div');
     const errorHost = h('div');
-    const editable = state.dataset?.status === 'draft';
-    mode = editable ? 'json' : 'form';
+    const editable = Boolean(ctx.workspace) || state.dataset?.status === 'draft';
+    mode = editable && !ctx.workspace ? 'json' : 'form';
 
     function renderFormView() {
       const expected = detail.expected || {};
@@ -633,7 +670,7 @@ export default async function datasetView(container, ctx) {
           h(
             'p.muted.xsmall',
             { style: { marginTop: '16px' } },
-            editable ? '当前数据集为草稿，可在 JSON 视图中编辑后保存。' : '已发布数据不可原地修改；如需修正标签，请导入新版本。'
+            ctx.workspace ? '切换到 JSON 视图可修改案例；保存后在下次运行时生效。' : editable ? '当前数据集为草稿，可在 JSON 视图中编辑后保存。' : '已发布数据不可原地修改；如需修正标签，请导入新版本。'
           )
         )
       );
@@ -728,6 +765,12 @@ export default async function datasetView(container, ctx) {
               return;
             }
             try {
+              if (ctx.workspace && state.dataset.status !== 'draft') {
+                // First edit: copy the dataset into the working copy.
+                const draft = await api.ensureWorkspaceDraft(project.id, 'dataset');
+                state.dataset = { ...state.dataset, ...draft };
+                state.datasets = [state.dataset];
+              }
               const result = await api.updateDatasetCase(state.dataset.id, detail.case_id, {
                 case: parsed,
                 expectedHash: state.dataset.hash,
@@ -752,7 +795,12 @@ export default async function datasetView(container, ctx) {
               setDrawerDirty(false);
               renderFormView();
               renderJsonView();
-              toast('案例已保存', { type: 'success' });
+              toast(ctx.workspace ? '案例已保存，下次运行时生效' : '案例已保存', { type: 'success' });
+              if (ctx.workspace) {
+                workspace.pending = true;
+                renderVersionBar();
+                if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
+              }
               loadCases();
             } catch (error) {
               const detailErrors = Array.isArray(error.details)
@@ -1014,10 +1062,11 @@ export default async function datasetView(container, ctx) {
         publishButton.textContent = invalid ? `剔除 ${invalid} 条无效记录并发布` : '发布数据集';
       }
       modal.close();
-      toast('数据集版本已发布', { type: 'success' });
+      toast(ctx.workspace ? '测试集已导入并开始使用' : '数据集版本已发布', { type: 'success' });
       try {
         await load();
         await ctx.refreshShell();
+        if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
       } catch (error) {
         toast(`发布已完成，但刷新失败：${error.message}`, { type: 'warning' });
       }
@@ -1326,10 +1375,20 @@ export default async function datasetView(container, ctx) {
     try {
       const freshProject = await api.getProject(project.id);
       project.current_dataset_id = freshProject.current_dataset_id;
+      let target = null;
+      if (ctx.workspace) {
+        const summary = await api.getWorkspace(project.id);
+        const item = summary.items?.dataset || {};
+        workspace.pending = Boolean(item.pending);
+        const id = item.draft_id || item.current_id;
+        target = id ? await api.getDataset(id) : null;
+        state.datasets = target ? [target] : [];
+      } else {
       const payload = await api.listDatasets(project.id);
       state.datasets = asItems(payload).sort((a, b) => (b.version_seq || 0) - (a.version_seq || 0));
-      let target = preferredId ? state.datasets.find((item) => item.id === preferredId) : null;
+      target = preferredId ? state.datasets.find((item) => item.id === preferredId) : null;
       if (!target) target = state.datasets.find((item) => item.id === project.current_dataset_id) || state.datasets[0] || null;
+      }
       state.dataset = target;
       renderVersionBar();
       renderSummary();
@@ -1350,7 +1409,7 @@ export default async function datasetView(container, ctx) {
 
   mount(
     container,
-    pageHeader({
+    ctx.workspace ? null : pageHeader({
       title: '数据集',
       description: '导入、校验并发布案例集合；已发布数据不可原地修改。',
     }),

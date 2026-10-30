@@ -49,7 +49,12 @@ export default async function skillView(container, ctx) {
   const versionBarHost = h('div');
   const fileInput = h('input', { type: 'file', accept: '.zip,application/zip', style: { display: 'none' } });
 
+  const workspace = { pending: false };
+
   function isDraft() {
+    // In the settings workspace the current version is edited through an
+    // automatically created working copy.
+    if (ctx.workspace) return Boolean(state.version);
     return state.version?.status === 'draft';
   }
 
@@ -78,6 +83,16 @@ export default async function skillView(container, ctx) {
     renderTree();
     renderEditor();
     try {
+      if (ctx.workspace) {
+        const summary = await api.getWorkspace(project.id);
+        const item = summary.items?.skill || {};
+        workspace.pending = Boolean(item.pending);
+        const id = item.draft_id || item.current_id;
+        state.versions = id ? [{ id }] : [];
+        if (id) await selectVersion(id, { skipDirtyCheck: true });
+        else { state.version = null; state.files = []; state.activePath = null; }
+        return;
+      }
       const payload = await api.listSkillVersions(project.id);
       state.versions = asItems(payload).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
       const targetId = preferredId || state.version?.id || pickInitialVersion();
@@ -181,7 +196,55 @@ export default async function skillView(container, ctx) {
     }));
   }
 
+  function renderWorkspaceBar() {
+    if (state.versionError) {
+      mount(versionBarHost, errorState(state.versionError, { title: '无法加载 Skill', retry: () => loadVersions() }));
+      return;
+    }
+    const dirty = isDirty();
+    const status = !state.version
+      ? h('span.save-state', null, '尚未导入 Skill 包')
+      : dirty
+      ? h('span.save-state.save-state--dirty', null, icon('edit', { size: 13 }), '有未保存的修改')
+      : workspace.pending
+      ? h('span.save-state.save-state--pending', null, icon('clock', { size: 13 }), '已保存，下次运行时生效')
+      : h('span.save-state', null, icon('check', { size: 13 }), '已保存，正在使用');
+    mount(versionBarHost, h('div.save-bar', null,
+      status,
+      h('span.save-bar__spacer'),
+      workspace.pending && !dirty
+        ? button({ label: '放弃修改', variant: 'ghost', size: 'sm', onClick: discardWorkspace, disabled: state.busy })
+        : null,
+      button({ label: '导入 ZIP', variant: 'ghost', size: 'sm', iconName: 'upload', onClick: () => fileInput.click(), disabled: state.busy }),
+      state.version
+        ? button({ label: '导出 ZIP', variant: 'ghost', size: 'sm', iconName: 'download',
+          onClick: () => download(api.exportSkillVersionUrl(state.version.id), `${state.version.id}.zip`) })
+        : null,
+      state.version
+        ? button({ label: state.busy ? '正在保存…' : '保存', variant: 'primary', size: 'sm', iconName: 'save', onClick: saveDraft, disabled: state.busy || !dirty })
+        : null));
+  }
+
+  async function discardWorkspace() {
+    const ok = await confirmDialog({ title: '放弃未生效的修改', message: '将恢复为当前正在使用的 Skill。', confirmText: '放弃修改', danger: true });
+    if (!ok) return;
+    state.busy = true;
+    try {
+      await api.discardWorkspace(project.id, 'skill');
+      toast('已放弃修改', { type: 'success' });
+      state.activePath = null;
+      await loadVersions();
+      if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
+    } catch (error) {
+      toast(`操作失败：${error.message}`, { type: 'error' });
+    } finally {
+      state.busy = false;
+      renderVersionBar();
+    }
+  }
+
   function renderVersionBar() {
+    if (ctx.workspace) return renderWorkspaceBar();
     if (state.versionsLoading && !state.version) {
       mount(versionBarHost, loadingState('正在加载版本…', { compact: true }));
       return;
@@ -327,7 +390,7 @@ export default async function skillView(container, ctx) {
         emptyState({
           iconName: 'skill',
           title: '还没有导入 Skill 包',
-          description: '上传包含 SKILL.md 与 manifest.json 的 ZIP。导入后可以查看文件树、编辑草稿并发布不可变版本。',
+          description: '上传包含 SKILL.md 与 manifest.json 的 ZIP。主 Skill 负责分发，子技能写清业务工具和参数。',
           actions: [{ label: '导入 Skill 包', variant: 'primary', iconName: 'upload', onClick: () => fileInput.click() }],
         })
       );
@@ -360,9 +423,11 @@ export default async function skillView(container, ctx) {
       value: state.editorValue,
       'aria-label': `${state.activePath} 文件内容`,
       oninput: (event) => {
+        const wasDirty = isDirty();
         state.editorValue = event.target.value;
         syncDirty();
         updateFooter();
+        if (ctx.workspace && wasDirty !== isDirty()) renderVersionBar();
       },
       onkeydown: (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
@@ -393,13 +458,13 @@ export default async function skillView(container, ctx) {
       null,
       icon(state.activePath === 'SKILL.md' ? 'skill' : 'file', { size: 15 }),
       h('span.editor-toolbar__path', { text: state.activePath }),
-      editable ? chip('草稿可编辑', 'warning', { iconName: 'edit' }) : chip('已发布 · 只读', 'neutral', { iconName: 'lock' }),
+      ctx.workspace ? null : editable ? chip('草稿可编辑', 'warning', { iconName: 'edit' }) : chip('已发布 · 只读', 'neutral', { iconName: 'lock' }),
       h('span.spacer'),
       h('span.editor-toolbar__spacer'),
-      editable
+      ctx.workspace ? null : editable
         ? button({ label: '保存草稿', variant: 'secondary', size: 'sm', iconName: 'save', disabled: !dirty || state.busy, onClick: saveDraft })
         : null,
-      editable
+      ctx.workspace ? null : editable
         ? button({ label: '发布版本', variant: 'primary', size: 'sm', iconName: 'check', disabled: state.busy, onClick: publishVersion })
         : button({ label: '创建草稿', variant: 'secondary', size: 'sm', iconName: 'edit', disabled: state.busy, onClick: createDraft })
     );
@@ -408,7 +473,7 @@ export default async function skillView(container, ctx) {
       const lines = state.editorValue.split('\n').length;
       footerStatus.textContent = isDirty() ? '● 有未保存修改' : '已保存';
       footerStatus.className = `xsmall ${isDirty() ? 'text-warning' : 'muted'}`;
-      footerMeta.textContent = `${state.editorValue.length} 字符 · ${lines} 行 · UTF-8${isDraft() ? ' · Ctrl+S 保存草稿' : ''}`;
+      footerMeta.textContent = `${state.editorValue.length} 字符 · ${lines} 行 · UTF-8${isDraft() ? (ctx.workspace ? ' · Ctrl+S 保存' : ' · Ctrl+S 保存草稿') : ''}`;
     }
     updateFooter();
 
@@ -425,15 +490,24 @@ export default async function skillView(container, ctx) {
   }
 
   async function saveDraft() {
-    if (!state.version || state.version.status !== 'draft' || !state.activePath) return false;
+    if (!state.version || !state.activePath) return false;
+    if (!ctx.workspace && state.version.status !== 'draft') return false;
     if (!isDirty()) return true;
     state.busy = true;
     renderVersionBar();
     try {
+      if (ctx.workspace && state.version.status !== 'draft') {
+        // First edit: copy the current version into the working copy.
+        state.version = await api.ensureWorkspaceDraft(project.id, 'skill');
+      }
       await api.saveSkillFile(state.version.id, state.activePath, state.editorValue);
       state.savedValue = state.editorValue;
       syncDirty();
-      toast('草稿已保存', { type: 'success' });
+      if (ctx.workspace) {
+        workspace.pending = true;
+        if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
+      }
+      toast(ctx.workspace ? '已保存，下次运行时生效' : '草稿已保存', { type: 'success' });
       return true;
     } catch (error) {
       toast(`保存失败：${error.message}`, { type: 'error' });
@@ -522,6 +596,7 @@ export default async function skillView(container, ctx) {
       toast('Skill 包已导入并设为当前版本', { type: 'success' });
       await loadVersions(version?.id || null);
       await ctx.refreshShell();
+      if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
     } catch (error) {
       openImportError(error);
     } finally {
@@ -615,7 +690,7 @@ export default async function skillView(container, ctx) {
       footer: h(
         'div.btn-row.btn-row--between',
         null,
-        button({ label: '在版本记录中比较', variant: 'ghost', onClick: () => ctx.navigate(`#/projects/${encodeURIComponent(project.id)}/versions`) }),
+        button({ label: '在版本记录中比较', variant: 'ghost', onClick: () => ctx.navigate(`#/projects/${encodeURIComponent(project.id)}/settings/history`) }),
         button({ label: '关闭', variant: 'secondary', onClick: () => drawer.close() })
       ),
     });
@@ -625,7 +700,7 @@ export default async function skillView(container, ctx) {
 
   mount(
     container,
-    pageHeader({
+    ctx.workspace ? null : pageHeader({
       title: 'Skill 包',
       description: '编辑主 Skill 与子技能参考文件；保存草稿不会改变当前版本，发布后生成不可变版本。',
       actions: [

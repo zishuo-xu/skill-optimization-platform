@@ -75,7 +75,7 @@ export function createRunAnalysis(run) {
     const reportActions = report ? h('div.actions', null,
       copyButton(report.markdown, { label: '复制完整报告' }),
       button({ label: '下载报告', onClick: () => downloadText(report.markdown, 'analysis') })) : null;
-    mount(element, sectionCard({ title: 'AI 分析', description, actions,
+    mount(element, sectionCard({ title: 'AI 排障分析', description: report ? description : '运行出问题时，让模型读取运行证据给出排查建议，或复制诊断材料发给别人。', actions: terminal ? actions : [], collapsible: true, open: Boolean(report) || busy || Boolean(error),
       body: h('div.stack.stack--sm', null,
         input,
         !terminal ? h('p.muted', { text: '运行结束后可生成分析；当前可导出已有诊断材料。' }) : null,

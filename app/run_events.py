@@ -25,6 +25,7 @@ class EventEmitter:
             "stage": stage or "preflight", "completed": 0, "total": 0,
             "current_case_ids": [], "message": "", "started_at": persistence.now_iso(),
             "last_activity_at": persistence.now_iso(),
+            "outcomes": _empty_outcomes(), "recent_failures": [], "reused": 0,
         }
 
     # -- stage/progress ---------------------------------------------------
@@ -36,6 +37,7 @@ class EventEmitter:
                 "stage": stage, "message": message, "total": total,
                 "completed": completed, "current_case_ids": [],
                 "started_at": persistence.now_iso(),
+                "outcomes": _empty_outcomes(), "recent_failures": [], "reused": 0,
                 "last_activity_at": persistence.now_iso(),
             })
             progress = dict(self._progress)
@@ -66,8 +68,31 @@ class EventEmitter:
             progress = dict(self._progress)
         persistence.update_run(self.run_id, stage_progress=progress)
 
-    def case_finished(self, case_id: str) -> None:
+    def record_reused(self, statuses: list[str]) -> None:
+        """Count results reused from earlier evidence in the live tally."""
         with self._lock:
+            outcomes = dict(self._progress.get("outcomes") or _empty_outcomes())
+            for status in statuses:
+                key = _outcome_key(status)
+                outcomes[key] = outcomes.get(key, 0) + 1
+            self._progress["outcomes"] = outcomes
+            self._progress["reused"] = int(self._progress.get("reused") or 0) + len(statuses)
+            progress = dict(self._progress)
+        persistence.update_run(self.run_id, stage_progress=progress)
+
+    def case_finished(self, case_id: str, status: str | None = None,
+                      reason: str | None = None) -> None:
+        with self._lock:
+            if status is not None:
+                outcomes = dict(self._progress.get("outcomes") or _empty_outcomes())
+                key = _outcome_key(status)
+                outcomes[key] = outcomes.get(key, 0) + 1
+                self._progress["outcomes"] = outcomes
+                if key != "passed":
+                    recent = list(self._progress.get("recent_failures") or [])
+                    recent.append({"case_id": case_id, "kind": key,
+                                   "reason": str(reason or "")[:160]})
+                    self._progress["recent_failures"] = recent[-5:]
             ids = [item for item in
                    (self._progress.get("current_case_ids") or []) if item != case_id]
             self._progress["current_case_ids"] = ids
@@ -132,6 +157,18 @@ class EventEmitter:
                          case_id=case_id, split=split, variant=variant,
                          repeat_index=repeat_index, attempt=attempt,
                          call_id=call_id)
+
+
+def _empty_outcomes() -> dict[str, int]:
+    return {"passed": 0, "failed": 0, "infra": 0}
+
+
+def _outcome_key(status: str | None) -> str:
+    if status == "pass":
+        return "passed"
+    if status == "infra":
+        return "infra"
+    return "failed"
 
 
 class NullEmitter:

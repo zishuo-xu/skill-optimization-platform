@@ -280,6 +280,32 @@ export const api = {
   getOverview(projectId) {
     return request('GET', `/projects/${encodeURIComponent(projectId)}/overview`);
   },
+  getPipeline(projectId) {
+    return request('GET', `/projects/${encodeURIComponent(projectId)}/pipeline`);
+  },
+
+  /* working copy: edit-and-save, frozen when a run starts ------------ */
+  getWorkspace(projectId) {
+    return request('GET', `/projects/${encodeURIComponent(projectId)}/workspace`);
+  },
+  ensureWorkspaceDraft(projectId, kind) {
+    return request('POST', `/projects/${encodeURIComponent(projectId)}/workspace/${encodeURIComponent(kind)}/draft`, { body: {} });
+  },
+  saveWorkspaceEnvironment(projectId, payload) {
+    return request('POST', `/projects/${encodeURIComponent(projectId)}/workspace/environment`, { body: payload });
+  },
+  discardWorkspace(projectId, kind) {
+    return request('POST', `/projects/${encodeURIComponent(projectId)}/workspace/${encodeURIComponent(kind)}/discard`, { body: {} });
+  },
+  /** Start a run; pending edits are frozen first when the mode uses them. */
+  startRun(projectId, { mode, sourceRunId, skillVersionId } = {}, { idempotencyKey } = {}) {
+    const body = { mode };
+    if (sourceRunId) body.source_run_id = sourceRunId;
+    if (skillVersionId) body.skill_version_id = skillVersionId;
+    return request('POST', `/projects/${encodeURIComponent(projectId)}/start`, {
+      body, headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey('run') },
+    });
+  },
 
   /* skill versions -------------------------------------------------- */
   listSkillVersions(projectId) {

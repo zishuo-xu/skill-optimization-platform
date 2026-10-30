@@ -52,6 +52,7 @@ import {
   decisionKey,
 } from '../eventTypes.js';
 import { createRunLog } from './runLog.js';
+import { startRunFlow, liveProgress } from '../runActions.js';
 import {
   actualColumn,
   expectedColumn,
@@ -62,11 +63,11 @@ import {
   verdictRows,
 } from './caseView.js';
 
+// 结果页先给结论和案例；改动与原始过程日志放在二级标签。
 const TABS = [
-  { id: 'result', label: '结果概览' },
-  { id: 'cases', label: '案例对比' },
-  { id: 'diff', label: '文件差异' },
-  { id: 'log', label: '运行记录' },
+  { id: 'result', label: '结果' },
+  { id: 'diff', label: '改动' },
+  { id: 'log', label: '过程日志' },
 ];
 
 function asItems(payload) {
@@ -124,13 +125,13 @@ export default async function runDetailsView(container, ctx) {
   const headerHost = h('div');
   const tabsHost = h('div');
   const resultHost = h('div.run-tab-body');
-  const casesHost = h('div.run-tab-body', { hidden: true });
+  const casesHost = h('div.run-cases');
   const diffHost = h('div.run-tab-body', { hidden: true });
   const logHost = h('div.run-tab-body', { hidden: true });
   let liveRefs = {};
   let casesRenderState = { drawer: null };
 
-  const tabBodies = { result: resultHost, cases: casesHost, diff: diffHost, log: logHost };
+  const tabBodies = { result: resultHost, diff: diffHost, log: logHost };
 
   function active() {
     return ACTIVE_STATUSES.has(state.run.status);
@@ -201,7 +202,7 @@ export default async function runDetailsView(container, ctx) {
             null,
             icon('skill', { size: 13 }),
             h('span', { text: '父版本 ' }),
-            skillVersion ? h('a.mono', { href: `#/projects/${encodeURIComponent(projectId)}/skill` }, skillVersion.label || skillVersion.id || shortenId(baselineVersionId(), 14)) : h('span.mono', { text: shortenId(baselineVersionId(), 14) })
+            skillVersion ? h('a.mono', { href: `#/projects/${encodeURIComponent(projectId)}/settings/skill` }, skillVersion.label || skillVersion.id || shortenId(baselineVersionId(), 14)) : h('span.mono', { text: shortenId(baselineVersionId(), 14) })
           ),
           run.parent_run_id
             ? h('span.meta-item', null, icon('versions', { size: 13 }), h('a', { href: `#/runs/${encodeURIComponent(run.parent_run_id)}` }, `父运行 ${shortenId(run.parent_run_id, 14)}`))
@@ -254,7 +255,7 @@ export default async function runDetailsView(container, ctx) {
               // One status chip: the conclusion once there is one, otherwise the run state.
               run.decision ? statusBadge(decisionKey(run), 'decision') : statusBadge(run.status, 'run'),
               chip(modeMeta.label, 'neutral'),
-              isTerminalStatus(run.status) ? null : chip('运行中不可修改配置', 'warning')
+              null
             )
           ),
           h(
@@ -269,50 +270,7 @@ export default async function runDetailsView(container, ctx) {
             technicalDetails
           )
         ),
-        active()
-          ? h(
-          'div.stage-progress',
-          null,
-          h(
-            'div.stage-progress__head',
-            null,
-            h(
-              'div.stage-progress__stage',
-              null,
-              icon(statusMeta.icon, { size: 15 }),
-              h('span', { text: progress.label }),
-              run.status === 'cancel_requested' ? chip('取消中', 'warning') : null,
-              active() ? h('span.spinner.spinner--sm') : null
-            ),
-            h(
-              'div.stage-progress__stats',
-              null,
-              h('span', { text: progress.detail }),
-              h('span.sep', { 'aria-hidden': 'true' }, '·'),
-              h('span', null, '活动案例 ', h('strong', { text: String(activeCases) })),
-              active()
-                ? h(
-                    'span',
-                    null,
-                    h('span.sep', { 'aria-hidden': 'true' }, '· '),
-                    h('span', { text: '已等待 ' }),
-                    elapsedSpan
-                  )
-                : null,
-              active()
-                ? h('span', null, h('span.sep', { 'aria-hidden': 'true' }, '· '), h('span', { text: '最近活动 ' }), activitySpan)
-                : null,
-              run.finished_at ? h('span', null, h('span.sep', { 'aria-hidden': 'true' }, '· '), h('span', { text: `完成于 ${formatDateTime(run.finished_at)}` })) : null
-            )
-          ),
-          h('div', null, progressBar({ value: progress.completed, max: progress.total || 0, tone: run.status === 'failed' ? 'danger' : isTerminalStatus(run.status) ? 'success' : 'accent' })),
-          h(
-            'p.xsmall.muted',
-            { style: { marginTop: '6px' } },
-            run.stage_progress?.message || (active() ? '进度按当前阶段统计，不混合其它阶段的案例总数。后台运行不依赖页面保持打开。' : '运行已结束，结果与过程记录可随时回看。')
-          )
-          )
-          : null
+        active() ? h('div.run-live', null, liveProgress(run, { onCase: (caseId) => openCaseDrawer(caseId) })) : null
       )
     );
   }
@@ -338,13 +296,10 @@ export default async function runDetailsView(container, ctx) {
     mount(
       tabsHost,
       tabsBar({
-        tabs: TABS.map((tab) => ({
+        tabs: TABS.filter((tab) => tab.id !== 'diff' || candidateVersionId() || state.run.mode === 'optimize').map((tab) => ({
           id: tab.id,
           label: tab.label,
-          count:
-            tab.id === 'cases' && state.cases.loaded
-              ? state.cases.items.filter((item) => ['regressed', 'fixed'].includes(item.changeType)).length || undefined
-              : undefined,
+          count: undefined,
         })),
         active: state.activeTab,
         onSelect: (id) => switchTab(id),
@@ -366,7 +321,6 @@ export default async function runDetailsView(container, ctx) {
     renderTabs();
     if (tabId === 'log') ensureLog();
     if (tabId === 'result') loadResult();
-    if (tabId === 'cases') loadCases();
     if (tabId === 'diff') loadDiff();
   }
 
@@ -687,11 +641,10 @@ export default async function runDetailsView(container, ctx) {
       : null;
     if (run.mode === 'optimize' && run.status === 'completed' && candVersion) {
       return [
-        button({ label: state.optimizeBusy ? '正在启动…' : '基于此候选继续优化', variant: 'primary', iconName: 'spark', disabled: state.optimizeBusy || !run.can_continue_optimization, onClick: () => startOptimization(true) }),
-        button({ label: state.validateBusy ? '正在启动验收…' : '独立验收', variant: 'secondary', iconName: 'shield', disabled: state.validateBusy || run.can_validate === false, onClick: startValidation }),
+        button({ label: state.validateBusy ? '正在启动验收…' : '独立验收', variant: 'primary', iconName: 'shield', disabled: state.validateBusy || run.can_validate === false, onClick: startValidation }),
+        button({ label: state.optimizeBusy ? '正在启动…' : '继续优化', variant: 'secondary', iconName: 'spark', disabled: state.optimizeBusy || !run.can_continue_optimization, onClick: () => startOptimization(true) }),
         button({ label: '看改了什么', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') }),
-        button({ label: '查看案例对比', variant: 'secondary', iconName: 'run', onClick: () => switchTab('cases') }),
-        run.can_validate === false ? h('span.small.muted', { text: run.can_continue_optimization ? '环境已更新，可继续优化；新运行会判断是否需要补测，再进行独立验收。' : '当前 Skill 或候选已变化，请返回工作台重新评测。' }) : null,
+        run.can_validate === false ? h('span.small.muted', { text: run.can_continue_optimization ? '环境已更新，可继续优化；新运行会判断是否需要补测，再进行独立验收。' : '当前 Skill 或候选已变化，请回首页重新测试。' }) : null,
       ];
     }
     if (run.mode !== 'evaluate' && run.decision === 'accept') {
@@ -711,7 +664,7 @@ export default async function runDetailsView(container, ctx) {
         || run.decision_record?.rationale?.error_code === 'no_failures') {
       return [
         run.source_run_id ? button({ label: '返回来源候选，继续或验收', variant: 'primary', iconName: 'arrowLeft', href: `#/runs/${encodeURIComponent(run.source_run_id)}/result` }) : null,
-        button({ label: '补充测试案例', variant: 'secondary', iconName: 'plus', href: `#/projects/${encodeURIComponent(run.project_id)}/dataset` }),
+        button({ label: '补充测试案例', variant: 'secondary', iconName: 'plus', href: `#/projects/${encodeURIComponent(run.project_id)}/settings/dataset` }),
       ];
     }
     if (run.mode !== 'evaluate' && (run.decision === 'reject' || run.decision === 'inconclusive')) {
@@ -722,7 +675,7 @@ export default async function runDetailsView(container, ctx) {
         counts.regressed
           ? button({ label: `看变差的 ${counts.regressed} 个案例`, variant: 'primary', iconName: 'alert', onClick: () => openCases('regressed') })
           : button({ label: '看失败案例', variant: 'primary', iconName: 'alert', onClick: () => openCases('failed') }),
-        run.decision === 'inconclusive' ? button({ label: '回工作台重新验证', variant: 'secondary', iconName: 'play', onClick: createVerificationRun }) : null,
+        run.decision === 'inconclusive' ? button({ label: '回首页重新验证', variant: 'secondary', iconName: 'play', onClick: createVerificationRun }) : null,
         candVersion ? button({ label: '看改了什么', variant: 'ghost', iconName: 'versions', onClick: () => switchTab('diff') }) : null,
       ];
     }
@@ -730,12 +683,12 @@ export default async function runDetailsView(container, ctx) {
       return [
         baselineCounts().failed ? button({ label: state.optimizeBusy ? '正在启动…' : '根据测试结果优化', variant: 'primary', iconName: 'spark', disabled: state.optimizeBusy, onClick: () => startOptimization(false) }) : null,
         baselineCounts().failed ? button({ label: '看失败案例', variant: 'secondary', iconName: 'alert', onClick: () => openCases('failed') }) : null,
-        button({ label: '回工作台', variant: baselineCounts().failed ? 'secondary' : 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+        button({ label: '回首页', variant: baselineCounts().failed ? 'secondary' : 'primary', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}` }),
       ];
     }
     return [
       button({ label: '查看运行记录', variant: 'primary', iconName: 'run', onClick: () => switchTab('log') }),
-      button({ label: '回工作台', variant: 'ghost', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}/overview` }),
+      button({ label: '回首页', variant: 'ghost', iconName: 'arrowLeft', href: `#/projects/${encodeURIComponent(run.project_id)}` }),
     ];
   }
 
@@ -754,36 +707,9 @@ export default async function runDetailsView(container, ctx) {
 
   function openCases(filter) {
     state.cases.filter = filter;
-    switchTab('cases');
-  }
-
-  /** Clickable case-change tiles; every tile opens the case list filtered. */
-  function caseChangeCard() {
-    const hasCaseData = state.cases.loaded && state.cases.items.length > 0;
-    let body;
-    if (!hasCaseData) {
-      body = h('p.muted.small', { text: state.cases.loading ? '正在统计案例结果…' : '暂时没有可统计的案例结果。' });
-    } else {
-      const tiles = caseFilterOptions().filter((option) => option.id !== 'all');
-      body = h(
-        'div.change-tiles',
-        null,
-        ...tiles.map((option) =>
-          h(
-            `button.change-tile.change-tile--${option.tone}${option.count ? '' : ' is-empty'}`,
-            { type: 'button', onclick: () => openCases(option.id), disabled: !option.count },
-            h('span.change-tile__value', { text: String(option.count) }),
-            h('span.change-tile__label', { text: option.label }),
-            h('span.change-tile__hint', { text: option.hint })
-          )
-        )
-      );
-    }
-    return sectionCard({
-      title: '案例结果',
-      description: isBaselineRun() ? '点击数字查看对应案例和失败原因。' : state.run.mode === 'validate' ? '基线 → 候选，每个案例只算一次（独立验收集取第一次）。点击数字查看。' : '测试集基线 → 候选。点击数字查看对应案例。',
-      body: h('div.stack', null, body, hasCaseData ? failureBreakdown() : null),
-    });
+    if (state.activeTab !== 'result') switchTab('result');
+    renderCases();
+    casesHost.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   /** Top failure reasons among the cases that still fail. */
@@ -820,7 +746,7 @@ export default async function runDetailsView(container, ctx) {
     if (!why && !files.length) return null;
     return sectionCard({
       title: '改了什么',
-      actions: [button({ label: '查看文件差异', variant: 'ghost', size: 'sm', iconName: 'versions', onClick: () => switchTab('diff') })],
+      actions: [button({ label: '查看改动', variant: 'ghost', size: 'sm', iconName: 'versions', onClick: () => switchTab('diff') })],
       body: h(
         'div.stack.stack--sm',
         null,
@@ -867,7 +793,7 @@ export default async function runDetailsView(container, ctx) {
       'span.coverage-hint',
       null,
       '「未评估」表示数据集里没有对应的有效案例，不会按满分计。',
-      h('a', { href: `#/projects/${encodeURIComponent(state.run.project_id)}/dataset` }, '检查数据集覆盖')
+      h('a', { href: `#/projects/${encodeURIComponent(state.run.project_id)}/settings/dataset` }, '检查数据集覆盖')
     );
   }
 
@@ -903,10 +829,22 @@ export default async function runDetailsView(container, ctx) {
             : null
         ),
         run.mode !== 'validate' ? null : sectionCard({ title: '判定规则', description: '规则在运行前冻结，不会为当前候选临时调整。', body: ruleList() }),
+        evaluationReuseCard(),
         sectionCard({ title: '执行与成本', body: executionStats() })
       )
     );
-    mount(resultHost, h('div.stack', null, verdictCard(), evaluationReuseCard(), changeSummaryCard(), caseChangeCard(), metricDetails));
+    const hasCaseData = state.cases.loaded && state.cases.items.length > 0;
+    const casesCard = sectionCard({
+      title: '案例',
+      description: isBaselineRun()
+        ? '每个案例是否通过，以及没通过的原因。点开看完整过程。'
+        : run.mode === 'validate'
+          ? '原版 → 候选，独立验收集每个案例取第一次重复。点开看完整过程。'
+          : '原版 → 候选，在测试集上的变化。点开看完整过程。',
+      body: h('div.stack', null, hasCaseData ? failureBreakdown() : null, casesHost),
+    });
+    mount(resultHost, h('div.stack', null, verdictCard(), changeSummaryCard(), casesCard, metricDetails));
+    renderCases();
   }
 
   function evaluationReuseCard() {
@@ -915,7 +853,7 @@ export default async function runDetailsView(container, ctx) {
     const reused = Number(plan.reused_count || 0);
     const executed = Number(plan.execute_count || 0);
     return sectionCard({
-      title: '准备测试结果',
+      title: '测试结果复用',
       description: executed === 0 ? '直接分析已有失败案例，本阶段未调用模型。' : plan.reason,
       body: h('div.stack', null,
         h('p.small', { text: `复用 ${reused} 条 · 需执行 ${executed} 条（按案例 × 重复次数统计）` }),
@@ -932,27 +870,12 @@ export default async function runDetailsView(container, ctx) {
     state.optimizeBusy = true;
     renderResult();
     try {
-      const project = await api.getProject(state.run.project_id);
-      const payload = optimizationRequest(state.run, project, fromCandidate);
-      const confirmed = await confirmDialog({
-        title: fromCandidate ? '基于此候选继续优化' : '根据测试结果优化',
-        message: fromCandidate
-          ? '以此候选为起点，优先复用上一轮复测结果，分析失败并修改 Skill，再重跑完整日常测试集。执行条件变化或结果不完整时先补测；不会自动发布候选。'
-          : '固定使用本次测试记录作为来源，分析失败并修改 Skill，再重跑完整日常测试集。若当前业务执行配置或日常测试数据已变化，会先重新测试；只改优化模型配置可复用已有结果。',
-        confirmText: '开始优化',
+      const workspace = await api.getWorkspace(state.run.project_id).catch(() => ({ pending: [] }));
+      await startRunFlow(ctx, { id: state.run.project_id }, fromCandidate ? 'continue' : 'optimize', {
+        sourceRunId: fromCandidate ? state.run.id : null,
+        pending: workspace.pending || [],
+        offline: state.run.snapshot?.environment?.provider === 'demo_scripted',
       });
-      if (!confirmed) return;
-      const signature = JSON.stringify(payload);
-      if (state.optimizationRequest?.signature !== signature) {
-        state.optimizationRequest = { signature, key: `optimize-${crypto.randomUUID()}` };
-      }
-      const result = await api.createRun(payload, { idempotencyKey: state.optimizationRequest.key });
-      const id = result?.run_id || result?.id;
-      if (!id) throw new Error('服务未返回优化运行 ID');
-      toast('优化已启动', { type: 'success' });
-      ctx.navigate(`#/runs/${encodeURIComponent(id)}`);
-    } catch (error) {
-      toast(`启动优化失败：${error.message}`, { type: 'error' });
     } finally {
       state.optimizeBusy = false;
       renderResult();
@@ -964,35 +887,12 @@ export default async function runDetailsView(container, ctx) {
     state.validateBusy = true;
     renderResult();
     try {
-      const project = await api.getProject(state.run.project_id);
-      const dataset = project.current_dataset_id ? await api.getDataset(project.current_dataset_id) : null;
-      const confirmed = await confirmDialog({
-        title: '正式验收候选',
-        message: `将使用当前数据集${dataset ? ` v${dataset.version_seq}` : '（尚未配置）'}中的独立验收案例，配对评测原版本与此候选。不会修改 Skill 或自动应用。`,
-        confirmText: '开始正式验收',
+      const workspace = await api.getWorkspace(state.run.project_id).catch(() => ({ pending: [] }));
+      await startRunFlow(ctx, { id: state.run.project_id }, 'validate', {
+        sourceRunId: state.run.id,
+        pending: workspace.pending || [],
+        offline: state.run.snapshot?.environment?.provider === 'demo_scripted',
       });
-      if (!confirmed) return;
-      const signature = JSON.stringify([state.run.id, project.current_skill_version_id, project.current_environment_id, project.current_dataset_id]);
-      if (state.validationRequest?.signature !== signature) state.validationRequest = { signature, key: `validate-${crypto.randomUUID()}` };
-      const result = await api.createRun({ project_id: state.run.project_id, mode: 'validate', source_run_id: state.run.id,
-        expected_skill_version_id: project.current_skill_version_id,
-        expected_environment_id: project.current_environment_id,
-        expected_dataset_id: project.current_dataset_id,
-      }, { idempotencyKey: state.validationRequest.key });
-      const id = result?.run_id || result?.id;
-      if (!id) throw new Error('服务未返回验收运行 ID');
-      toast('正式验收已启动', { type: 'success' });
-      ctx.navigate(`#/runs/${encodeURIComponent(id)}`);
-    } catch (error) {
-      if (error.code === 'dataset_incomplete') {
-        const modal = openModal({
-          title: '需要独立验收集', size: 'md',
-          body: h('p', { text: error.message || '请补充独立验收集后，再启动正式验收。' }),
-          footer: h('div.btn-row', null,
-            button({ label: '关闭', variant: 'ghost', onClick: () => modal.close() }),
-            button({ label: '去补充数据', variant: 'primary', href: `#/projects/${encodeURIComponent(state.run.project_id)}/dataset`, onClick: () => modal.close() })),
-        });
-      } else toast(`启动验收失败：${error.message}`, { type: 'error' });
     } finally {
       state.validateBusy = false;
       renderResult();
@@ -1095,8 +995,8 @@ export default async function runDetailsView(container, ctx) {
   }
 
   function continueNextRound() {
-    ctx.navigate(`#/projects/${encodeURIComponent(state.run.project_id)}/overview`);
-    toast('已返回工作台，请确认配置后再启动下一轮；不会自动发起模型调用。', { type: 'info' });
+    ctx.navigate(`#/projects/${encodeURIComponent(state.run.project_id)}`);
+    toast('已回到首页，确认后再启动下一轮。', { type: 'info' });
   }
 
   async function restoreAppliedVersion() {
@@ -1489,7 +1389,6 @@ export default async function runDetailsView(container, ctx) {
       state.cases.error = error;
     } finally {
       state.cases.loading = false;
-      if (state.activeTab === 'cases') renderCases();
       if (state.activeTab === 'result' && state.resultLoaded) renderResult();
       renderTabs();
     }
@@ -1866,13 +1765,14 @@ export default async function runDetailsView(container, ctx) {
       if (becameTerminal) {
         stopPolling();
         state.resultLoaded = false;
+        state.cases.loaded = false;
+        state.diff.loaded = false;
+        toast(run.status === 'completed' ? '运行已完成' : run.status === 'failed' ? '运行失败' : '运行已结束', { type: run.status === 'completed' ? 'success' : 'warning', duration: 2500 });
         if (state.activeTab === 'result') loadResult();
-        else if (state.activeTab === 'cases') loadCases({ force: true });
         else if (state.activeTab === 'diff') loadDiff({ force: true });
         renderTabs();
       } else if (forceTab) {
-        if (state.activeTab === 'result') loadResult();
-        else if (state.activeTab === 'cases') loadCases({ force: true });
+        if (state.activeTab === 'result') loadCases({ force: true, silent: true });
         else if (state.activeTab === 'diff') loadDiff({ force: true });
       }
       if (active()) startPolling();
@@ -1890,8 +1790,10 @@ export default async function runDetailsView(container, ctx) {
         stopPolling();
         return;
       }
-      refreshRun();
-    }, 5000);
+      state.pollCount = (state.pollCount || 0) + 1;
+      // Case rows change as cases finish; refresh them every other tick.
+      refreshRun({ forceTab: state.activeTab === 'result' && state.pollCount % 2 === 0 });
+    }, 2500);
   }
 
   function stopPolling() {
@@ -1914,7 +1816,6 @@ export default async function runDetailsView(container, ctx) {
     headerHost,
     h('div.run-tabs-wrap', null, tabsHost),
     resultHost,
-    casesHost,
     diffHost,
     logHost
   );

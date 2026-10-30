@@ -168,6 +168,55 @@ async def project_overview(request: Request) -> Response:
     return ok(services.overview(request.path_params["project_id"]))
 
 
+async def project_pipeline(request: Request) -> Response:
+    from . import pipeline
+    return ok(pipeline.pipeline(request.path_params["project_id"]))
+
+
+async def project_workspace(request: Request) -> Response:
+    from . import workspace
+    return ok(workspace.summary(request.path_params["project_id"]))
+
+
+async def workspace_draft(request: Request) -> Response:
+    from . import workspace
+    project_id = request.path_params["project_id"]
+    kind = request.path_params["kind"]
+    draft = workspace.ensure_draft(project_id, kind)
+    if kind == "skill":
+        return ok(services.skill_version_detail(draft["id"]))
+    return ok(services.dataset_detail(draft["id"]))
+
+
+async def workspace_save_environment(request: Request) -> Response:
+    from . import workspace
+    body = await json_body(request)
+    env = workspace.save_environment(request.path_params["project_id"], body)
+    return ok(services.public_environment(env))
+
+
+async def workspace_discard(request: Request) -> Response:
+    from . import workspace
+    return ok(workspace.discard(request.path_params["project_id"],
+                                request.path_params["kind"]))
+
+
+async def project_start(request: Request) -> Response:
+    from . import workspace
+    body = await json_body(request)
+    key = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
+    if key:
+        body["idempotency_key"] = key
+    result = workspace.start(request.path_params["project_id"], body)
+    try:
+        from .worker import get_worker
+        get_worker()
+    except Exception:
+        pass
+    return ok({"run": services.run_view(result["run"]["id"]), "frozen": result["frozen"]},
+              status_code=202)
+
+
 async def project_versions(request: Request) -> Response:
     project_id = request.path_params["project_id"]
     persistence.get_project(project_id)
@@ -779,6 +828,15 @@ def build_routes() -> list[Route]:
         Route(f"{p}/projects/{{project_id}}", patch_project, methods=["PATCH", "PUT"]),
         Route(f"{p}/projects/{{project_id}}/overview", project_overview, methods=["GET"]),
         Route(f"{p}/projects/{{project_id}}/versions", project_versions, methods=["GET"]),
+        Route(f"{p}/projects/{{project_id}}/pipeline", project_pipeline, methods=["GET"]),
+        Route(f"{p}/projects/{{project_id}}/workspace", project_workspace, methods=["GET"]),
+        Route(f"{p}/projects/{{project_id}}/workspace/environment",
+              workspace_save_environment, methods=["POST"]),
+        Route(f"{p}/projects/{{project_id}}/workspace/{{kind}}/draft",
+              workspace_draft, methods=["POST"]),
+        Route(f"{p}/projects/{{project_id}}/workspace/{{kind}}/discard",
+              workspace_discard, methods=["POST"]),
+        Route(f"{p}/projects/{{project_id}}/start", project_start, methods=["POST"]),
         Route(f"{p}/projects/{{project_id}}/export-summary", project_export_summary,
               methods=["GET"]),
         Route(f"{p}/projects/{{project_id}}/skill-versions", list_skill_versions,

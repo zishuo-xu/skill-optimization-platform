@@ -3,8 +3,10 @@
  *
  * Routes
  *   #/projects
- *   #/projects/:pid/overview|skill|environment|dataset|versions
- *   #/runs/:rid[/result|cases|diff|log]
+ *   #/projects/:pid                      项目首页（流程）
+ *   #/projects/:pid/settings[/:tab]      设置：skill | model | dataset | history
+ *   #/runs/:rid[/result|diff|log]
+ *   旧路径 overview/skill/environment/dataset/versions 会跳转到新位置。
  */
 
 import { api, isMockMode } from './api_v3.js';
@@ -14,12 +16,9 @@ import { relativeTime, shortenId, modeLabel } from './format.js';
 import { RUN_STATUS_META, MODE_META } from './eventTypes.js';
 
 import projectsView from './views/projects.js';
-import overviewView from './views/overview.js';
-import skillView from './views/skill.js';
-import environmentView from './views/environment.js';
-import datasetView from './views/dataset.js';
+import homeView from './views/home.js';
+import settingsView from './views/settings.js';
 import runDetailsView from './views/runDetails.js';
-import versionsView from './views/versions.js';
 
 const APP_TITLE = 'Skill 优化平台';
 const viewRoot = () => document.getElementById('view');
@@ -170,11 +169,8 @@ function buildSidebarNav() {
       'div.nav-group',
       null,
       h('div.nav-group__title', { text: '项目' }),
-      navLink({ href: `${base}/overview`, iconName: 'overview', label: '工作台', active: activeFor('overview') || (route.name === 'run' && state.run) }),
-      navLink({ href: `${base}/skill`, iconName: 'skill', label: 'Skill 包', active: activeFor('skill') }),
-      navLink({ href: `${base}/environment`, iconName: 'environment', label: 'Prompt 与模型', active: activeFor('environment') }),
-      navLink({ href: `${base}/dataset`, iconName: 'dataset', label: '数据集', active: activeFor('dataset') }),
-      navLink({ href: `${base}/versions`, iconName: 'versions', label: '版本记录', active: activeFor('versions') })
+      navLink({ href: base, iconName: 'overview', label: '首页', active: activeFor('home') || (route.name === 'run' && state.run) }),
+      navLink({ href: `${base}/settings`, iconName: 'environment', label: '设置', active: activeFor('settings') })
     );
     fragment.appendChild(group);
 
@@ -249,7 +245,7 @@ function renderTopbar() {
     crumbs.push(h('a', { href: '#/projects', text: '全部项目' }));
     crumbs.push(h('span.breadcrumb__sep', { 'aria-hidden': 'true' }, '/'));
     if (state.project) {
-      crumbs.push(h('a', { href: `#/projects/${encodeURIComponent(state.project.id)}/overview`, text: state.project.name }));
+      crumbs.push(h('a', { href: `#/projects/${encodeURIComponent(state.project.id)}`, text: state.project.name }));
       crumbs.push(h('span.breadcrumb__sep', { 'aria-hidden': 'true' }, '/'));
     }
     crumbs.push(h('span.breadcrumb__current', { text: `运行 ${shortenId(state.run.id, 14)}` }));
@@ -264,16 +260,6 @@ function renderTopbar() {
   mount(left, h('nav.breadcrumb', { 'aria-label': '面包屑' }, ...crumbs));
 
   const rightItems = [];
-  if (state.project && state.project.current_skill_version && route.name !== 'run') {
-    const version = state.project.current_skill_version;
-    rightItems.push(
-      h(
-        'span.topbar__version',
-        { title: '当前 Skill 版本' },
-        `${shortenId(version.id || '', 12)} · ${version.status === 'draft' ? '草稿' : '已发布'}`
-      )
-    );
-  }
   if (state.project && route.name !== 'run') {
     // Only surface a run here while it is still in progress; finished runs are
     // already summarised on the page itself.
@@ -305,8 +291,9 @@ export function parseHash(hash) {
     }
   });
   if (!segments.length || segments[0] === 'projects') {
-    if (segments.length >= 3 && segments[0] === 'projects') {
-      return { name: 'project', pid: segments[1], view: segments[2] || 'overview' };
+    if (segments.length >= 2 && segments[0] === 'projects') {
+      const view = LEGACY_VIEWS[segments[2]] || { view: segments[2] || 'home' };
+      return { name: 'project', pid: segments[1], view: view.view, sub: view.sub || segments[3] || null, legacy: Boolean(LEGACY_VIEWS[segments[2]]) };
     }
     return { name: 'projects' };
   }
@@ -316,12 +303,18 @@ export function parseHash(hash) {
   return { name: 'notFound', path: raw };
 }
 
+/** Old bookmarks keep working: they open the matching place in the new layout. */
+const LEGACY_VIEWS = {
+  overview: { view: 'home' },
+  skill: { view: 'settings', sub: 'skill' },
+  environment: { view: 'settings', sub: 'model' },
+  dataset: { view: 'settings', sub: 'dataset' },
+  versions: { view: 'settings', sub: 'history' },
+};
+
 const PROJECT_VIEWS = {
-  overview: { label: '工作台', component: overviewView },
-  skill: { label: 'Skill 包', component: skillView },
-  environment: { label: 'Prompt 与模型', component: environmentView },
-  dataset: { label: '数据集', component: datasetView },
-  versions: { label: '版本记录', component: versionsView },
+  home: { label: '首页', component: homeView },
+  settings: { label: '设置', component: settingsView },
 };
 
 function viewTitle(route) {
@@ -365,11 +358,10 @@ async function loadContext(route) {
   }
 }
 
-function resolveRunTab(route, run) {
-  if (route.tab) return route.tab;
-  const terminal = ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status);
-  if (terminal) return 'result';
-  return 'log';
+function resolveRunTab(route) {
+  // The result tab shows live progress while running and the conclusion after.
+  if (route.tab === 'cases') return 'result';
+  return route.tab || 'result';
 }
 
 function buildCtx(route) {
@@ -407,7 +399,7 @@ function buildCtx(route) {
     isMock: isMockMode(),
   };
   if (route.name === 'run') {
-    ctx.activeTab = resolveRunTab(route, state.run);
+    ctx.activeTab = resolveRunTab(route);
   }
   return ctx;
 }
@@ -417,6 +409,11 @@ async function renderRoute() {
   const hash = location.hash || '#/projects';
   state.lastHash = hash;
   const route = parseHash(hash);
+  if (route.legacy) {
+    const next = `#/projects/${encodeURIComponent(route.pid)}${route.view === 'home' ? '' : `/settings/${route.sub}`}`;
+    history.replaceState(null, '', next);
+    state.lastHash = next;
+  }
   setDocumentTitle(route);
 
   // Drawers and dialogs belong to the page that opened them.

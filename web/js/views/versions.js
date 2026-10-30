@@ -240,9 +240,9 @@ export default async function versionsView(container, ctx) {
           title: state.typeFilter === 'all' ? '还没有版本记录' : '该类型还没有版本',
           description: '导入 Skill 包、发布执行环境或数据集后，这里会记录每个不可变版本及来源运行。',
           actions: [
-            { label: '去 Skill 包', variant: 'secondary', href: `#/projects/${encodeURIComponent(project.id)}/skill` },
-            { label: '去执行环境', variant: 'secondary', href: `#/projects/${encodeURIComponent(project.id)}/environment` },
-            { label: '去数据集', variant: 'secondary', href: `#/projects/${encodeURIComponent(project.id)}/dataset` },
+            { label: '去 Skill 包', variant: 'secondary', href: `#/projects/${encodeURIComponent(project.id)}/settings/skill` },
+            { label: '去执行环境', variant: 'secondary', href: `#/projects/${encodeURIComponent(project.id)}/settings/model` },
+            { label: '去数据集', variant: 'secondary', href: `#/projects/${encodeURIComponent(project.id)}/settings/dataset` },
           ],
         })
       );
@@ -487,9 +487,17 @@ export default async function versionsView(container, ctx) {
     }
   }
 
+  const compareAction = () => {
+    const target = filtered()[0] || state.versions[0];
+    if (target) openCompare(target);
+    else toast('还没有可比较的版本', { type: 'warning' });
+  };
   mount(
     container,
-    pageHeader({
+    ctx.workspace ? h('div.save-bar', null,
+      h('span.save-state', null, '每次运行都会记下当时使用的版本；可在这里比较、下载或切回旧版本。'),
+      h('span.save-bar__spacer'),
+      button({ label: '比较版本', variant: 'secondary', size: 'sm', iconName: 'versions', onClick: compareAction })) : pageHeader({
       title: '版本记录',
       description: '所有 Skill、环境与数据集版本均不可变；设为当前只切换项目指针，历史运行保留原快照。',
       actions: [

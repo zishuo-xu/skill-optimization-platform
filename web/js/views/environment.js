@@ -361,7 +361,10 @@ export default async function environmentView(container, ctx) {
   const versionHost = h('div');
   const formHost = h('div');
 
-  const EDITABLE = () => !state.env || state.env.status === 'draft';
+  // In the settings workspace every field is editable: saving writes the
+  // working copy, which is frozen automatically when the next run starts.
+  const EDITABLE = () => Boolean(ctx.workspace) || !state.env || state.env.status === 'draft';
+  const workspace = { pending: false, draftId: null };
 
   function markDirty() {
     state.dirty = true;
@@ -377,6 +380,10 @@ export default async function environmentView(container, ctx) {
   }
 
   function updateFooter() {
+    if (ctx.workspace) {
+      renderWorkspaceBar();
+      return;
+    }
     const status = document.getElementById('env-save-status');
     if (status) {
       status.textContent = state.dirty ? '● 有未保存修改' : state.env ? '已保存' : '未发布';
@@ -733,7 +740,49 @@ export default async function environmentView(container, ctx) {
     });
   }
 
+  function renderWorkspaceBar() {
+    if (state.loading && !state.env) {
+      mount(versionHost, loadingState('正在加载 Prompt 与模型…', { compact: true }));
+      return;
+    }
+    if (state.error) {
+      mount(versionHost, errorState(state.error, { title: '无法加载 Prompt 与模型', retry: () => load() }));
+      return;
+    }
+    const status = state.dirty
+      ? h('span.save-state.save-state--dirty', null, icon('edit', { size: 13 }), '有未保存的修改')
+      : workspace.pending
+      ? h('span.save-state.save-state--pending', null, icon('clock', { size: 13 }), '已保存，下次运行时生效')
+      : h('span.save-state', null, icon('check', { size: 13 }), state.env ? '已保存，正在使用' : '尚未配置');
+    mount(versionHost, h('div.save-bar', null,
+      status,
+      h('span.save-bar__spacer'),
+      workspace.pending && !state.dirty
+        ? button({ label: '放弃修改', variant: 'ghost', size: 'sm', onClick: discardWorkspace, disabled: state.busy })
+        : null,
+      button({ label: state.busy ? '正在保存…' : '保存', variant: 'primary', size: 'sm', iconName: 'save',
+        className: 'env-save-draft', onClick: () => saveDraft(), disabled: state.busy || (!state.dirty && Boolean(state.env)) })));
+  }
+
+  async function discardWorkspace() {
+    const ok = await confirmDialog({ title: '放弃未生效的修改', message: '将恢复为当前正在使用的 Prompt 与模型配置。', confirmText: '放弃修改', danger: true });
+    if (!ok) return;
+    state.busy = true;
+    try {
+      await api.discardWorkspace(project.id, 'environment');
+      toast('已放弃修改', { type: 'success' });
+      await load();
+      if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
+    } catch (error) {
+      toast(`操作失败：${error.message}`, { type: 'error' });
+    } finally {
+      state.busy = false;
+      renderVersionBar();
+    }
+  }
+
   function renderVersionBar() {
+    if (ctx.workspace) return renderWorkspaceBar();
     if (state.loading && !state.env && !state.versions.length) {
       mount(versionHost, loadingState('正在加载执行环境…', { compact: true }));
       return;
@@ -1253,7 +1302,7 @@ export default async function environmentView(container, ctx) {
     details.addEventListener('toggle', () => { state.promptOpen = details.open; });
     return sectionCard({
       title: '业务系统 Prompt',
-      description: `${prompt.length.toLocaleString()} 字符 · 发布后只读，优化器没有修改权限`,
+      description: `${prompt.length.toLocaleString()} 字符 · 优化器不会修改 Prompt`,
       actions: editable
         ? [button({
             label: '恢复内置模板', variant: 'ghost', size: 'sm', iconName: 'refresh',
@@ -1726,7 +1775,7 @@ export default async function environmentView(container, ctx) {
       mount(formHost, errorState(state.error, { title: '无法加载执行环境', retry: () => load() }));
       return;
     }
-    const banner = state.env?.status === 'published'
+    const banner = ctx.workspace ? null : state.env?.status === 'published'
       ? h(
           'div.readonly-banner',
           null,
@@ -1766,7 +1815,7 @@ export default async function environmentView(container, ctx) {
       envSnapshot(),
       ...groups.map(([title, description, sections]) => configGroup(title, description, sections)),
     ];
-    if (!state.env) {
+    if (!state.env && !ctx.workspace) {
       children.push(
         h(
           'div.form-actions',
@@ -1790,7 +1839,13 @@ export default async function environmentView(container, ctx) {
     }
     state.busy = true;
     try {
-      const created = await api.createEnvironment(project.id, payload);
+      const created = ctx.workspace
+        ? await api.saveWorkspaceEnvironment(project.id, payload)
+        : await api.createEnvironment(project.id, payload);
+      if (ctx.workspace) {
+        workspace.pending = true;
+        workspace.draftId = created.id;
+      }
       state.env = created;
       state.credentialStatus = created?.credential_status || state.credentialStatus;
       state.versions = [created, ...state.versions.filter((version) => version.id !== created.id)];
@@ -1798,7 +1853,8 @@ export default async function environmentView(container, ctx) {
       state.dirty = false;
       ctx.setDirty(null);
       state.fieldErrors = {};
-      toast(status === 'published' ? '执行环境已发布并设为当前' : '草稿已保存', { type: 'success' });
+      toast(ctx.workspace ? '已保存，下次运行时生效' : status === 'published' ? '执行环境已发布并设为当前' : '草稿已保存', { type: 'success' });
+      if (ctx.onWorkspaceChange) ctx.onWorkspaceChange();
       renderVersionBar();
       renderForm();
       await ctx.refreshShell();
@@ -2040,6 +2096,30 @@ export default async function environmentView(container, ctx) {
     state.error = null;
     renderVersionBar();
     renderForm();
+    if (ctx.workspace) {
+      try {
+        const summary = await api.getWorkspace(project.id);
+        const item = summary.items?.environment || {};
+        workspace.pending = Boolean(item.pending);
+        workspace.draftId = item.draft_id || null;
+        const targetId = item.draft_id || item.current_id;
+        const target = targetId ? await api.getEnvironment(targetId) : null;
+        state.versions = target ? [target] : [];
+        state.env = target;
+        state.credentialStatus = target?.credential_status || { model_config: {}, optimizer_config: {} };
+        state.form = toForm(target);
+        state.dirty = false;
+        state.fieldErrors = {};
+        ctx.setDirty(null);
+      } catch (error) {
+        state.error = error;
+      } finally {
+        state.loading = false;
+        renderVersionBar();
+        renderForm();
+      }
+      return;
+    }
     try {
       const [envPayload, detail] = await Promise.all([
         api.listEnvironments(project.id),
@@ -2072,7 +2152,7 @@ export default async function environmentView(container, ctx) {
 
   mount(
     container,
-    pageHeader({
+    ctx.workspace ? null : pageHeader({
       title: '执行环境',
       description: '业务 Prompt 与模型接入在启动时冻结；发布后只读，修改生成草稿。',
     }),

@@ -305,7 +305,7 @@ try:
     with urllib.request.urlopen(sys.argv[1] + "/api/v3/projects", timeout=2) as resp:
         items = json.load(resp).get("items") or []
     for item in items:
-        print(item.get("name", "示例项目") + "|" + sys.argv[1] + "/#/projects/" + item["id"] + "/overview")
+        print(item.get("name", "示例项目") + "|" + sys.argv[1] + "/#/projects/" + item["id"] + "")
 except Exception:
     pass
 PY

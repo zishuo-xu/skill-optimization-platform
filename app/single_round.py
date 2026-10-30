@@ -821,6 +821,8 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
                              'actual': row.get('actual') or {}})
         completed = len(rows)
         emitter.progress(completed=completed, total=total)
+        if rows and hasattr(emitter, "record_reused"):
+            emitter.record_reused([str((row["score"] or {}).get("status") or "") for row in rows])
     compare_rules = (env.get("scorer_config") or {}).get("compare")
     value_judge = judge_mod.ValueJudge.from_env(env)
 
@@ -905,7 +907,8 @@ def _evaluate_split(run: Mapping[str, Any], env: Mapping[str, Any],
             emitter.emit(event_types.CASE_COMPLETED, case_emitter_payload,
                          case_id=case["case_id"], split=case.get("split"),
                          repeat_index=repeat)
-        emitter.case_finished(case["case_id"])
+        emitter.case_finished(case["case_id"], score.get("status"),
+                              None if score.get("status") == "pass" else _score_reason(score))
         return {"case": case, "score": score, "actual": actual, "judge_usage": judge_usage}
 
     executor = ThreadPoolExecutor(max_workers=concurrency,

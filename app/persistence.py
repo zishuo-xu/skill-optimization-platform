@@ -252,7 +252,7 @@ def get_skill_version(skill_version_id: str) -> dict[str, Any]:
 
 def list_skill_versions(project_id: str) -> list[dict[str, Any]]:
     return _fetchall(
-        "SELECT * FROM skill_versions WHERE project_id = ? ORDER BY created_at DESC",
+        "SELECT * FROM skill_versions WHERE project_id = ? AND status != 'discarded' ORDER BY created_at DESC",
         (project_id,),
     )
 
@@ -397,7 +397,7 @@ def get_environment(environment_id: str) -> dict[str, Any]:
 
 def list_environments(project_id: str) -> list[dict[str, Any]]:
     return _fetchall(
-        "SELECT * FROM environments WHERE project_id = ? ORDER BY version_seq DESC",
+        "SELECT * FROM environments WHERE project_id = ? AND status != 'discarded' ORDER BY version_seq DESC",
         (project_id,),
     )
 
@@ -473,7 +473,7 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
 
 def list_datasets(project_id: str) -> list[dict[str, Any]]:
     rows = _fetchall(
-        "SELECT * FROM datasets WHERE project_id = ? ORDER BY version_seq DESC",
+        "SELECT * FROM datasets WHERE project_id = ? AND status != 'discarded' ORDER BY version_seq DESC",
         (project_id,),
     )
     for row in rows:

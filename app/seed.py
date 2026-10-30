@@ -151,7 +151,7 @@ def seed(with_optimize: bool) -> dict:
         project = item["project"]
         print(f"项目 ID: {project['id']}（{project['name']}）")
         print("启动服务后打开: "
-              + f"http://{config.HOST}:{config.PORT}/#/projects/{project['id']}/overview")
+              + f"http://{config.HOST}:{config.PORT}/#/projects/{project['id']}")
     return {"projects": results}
 
 

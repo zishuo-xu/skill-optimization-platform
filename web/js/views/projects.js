@@ -120,7 +120,7 @@ export default async function projectsView(container, ctx) {
         const project = await api.createProject({ name, description: descInput.value.trim() });
         toast('项目已创建，下一步导入 Skill 包', { type: 'success' });
         handle.close();
-        ctx.navigate(`#/projects/${encodeURIComponent(project.id)}/skill`);
+        ctx.navigate(`#/projects/${encodeURIComponent(project.id)}/settings/skill`);
       } catch (error) {
         submitting = false;
         submitButton.disabled = false;
@@ -176,7 +176,7 @@ export default async function projectsView(container, ctx) {
         h(
           'div',
           { style: { minWidth: '0' } },
-          h('a.project-card__name', { href: `#/projects/${encodeURIComponent(project.id)}/overview` }, project.name),
+          h('a.project-card__name', { href: `#/projects/${encodeURIComponent(project.id)}` }, project.name),
           h('p.project-card__desc', { text: project.description || '暂无项目描述' })
         ),
         archived ? chip('已归档', 'neutral', { iconName: 'archive' }) : null
@@ -185,7 +185,7 @@ export default async function projectsView(container, ctx) {
         'div.project-card__meta',
         null,
         guide ? chip('入门引导', 'accent') : null,
-        version ? chip(`Skill ${shortenId(version.id, 10)}`, 'accent', { iconName: 'skill' }) : chip('未导入 Skill 包', 'warning', { iconName: 'alert' }),
+        version ? null : chip('未导入 Skill 包', 'warning', { iconName: 'alert' }),
         latest ? statusBadge(latest.status, 'run') : chip('尚无运行', 'neutral', { iconName: 'clock' }),
         h('span', { text: `${project.run_count || 0} 次运行` })
       ),
@@ -208,7 +208,7 @@ export default async function projectsView(container, ctx) {
             variant: archived ? 'secondary' : 'primary',
             size: 'sm',
             iconName: 'arrowRight',
-            href: `#/projects/${encodeURIComponent(project.id)}/overview`,
+            href: `#/projects/${encodeURIComponent(project.id)}`,
           })
         )
       )
