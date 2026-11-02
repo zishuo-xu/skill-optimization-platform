@@ -138,7 +138,8 @@ class ObsToolRuntime:
                  emit: Callable[..., Any] | None = None,
                  protocol_mode: str = "native",
                  aliases: Mapping[str, str] | None = None,
-                 max_read_chars: int = 400_000):
+                 max_read_chars: int = 400_000,
+                 strict_finish: bool = False):
         if protocol_mode not in ("native", "text"):
             raise ValueError(f"未知的协议模式: {protocol_mode}")
         self.root = Path(skill_snapshot_path).resolve()
@@ -151,6 +152,14 @@ class ObsToolRuntime:
         self.route_events: list[dict[str, Any]] = []
         self.read_files: list[str] = []
         self.finished: dict[str, Any] | None = None
+        # strict_finish: a finish whose skill summary disagrees with the
+        # selection events is a protocol failure.  Otherwise the events are the
+        # truth and the disagreement is only recorded (``finish_mismatch``).
+        self.strict_finish = bool(strict_finish)
+        self.finish_mismatch: dict[str, list[str]] | None = None
+        # Model turn in which a selection happened (set by the executor);
+        # selections sharing a number were made in one batch.
+        self.batch = 0
         self.events: list[dict[str, Any]] = []
         self._known_ids: list[str] = []
         self._skill_paths: dict[str, str] = {}
@@ -312,6 +321,7 @@ class ObsToolRuntime:
             "skill_path": self._skill_paths.get(skill_id),
             "source": source,
             "protocol_mode": self.protocol_mode,
+            "batch": self.batch,
         }
         if isinstance(basis, str) and basis:
             payload["basis"] = basis[:500]
@@ -322,6 +332,7 @@ class ObsToolRuntime:
             "skill_id": skill_id,
             "seq": event.get("seq"),
             "call_id": call_id,
+            "batch": self.batch,
         })
 
     # -- read_skill -------------------------------------------------------- #
@@ -418,12 +429,14 @@ class ObsToolRuntime:
         observed = set(self.selected_skills)
         declared = set(selected)
         if observed != declared:
-            missing = sorted(observed - declared)
-            extra = sorted(declared - observed)
-            raise ObsToolError(
-                "finish 的选择摘要与运行事件不一致（协议错误）",
-                details={"missing_in_finish": missing,
-                         "not_selected_by_event": extra})
+            mismatch = {"missing_in_finish": sorted(observed - declared),
+                        "not_selected_by_event": sorted(declared - observed)}
+            if self.strict_finish:
+                raise ObsToolError("finish 的选择摘要与运行事件不一致（协议错误）",
+                                   details=mismatch)
+            # The selection events are what actually happened; keep them.
+            self.finish_mismatch = mismatch
+            selected = list(self.selected_skills)
         raw_missing = arguments.get("missing_fields")
         if raw_missing is None:
             raw_missing = []
@@ -452,5 +465,6 @@ class ObsToolRuntime:
             "action": self.finished["action"] if self.finished else "no_action",
             "missing_fields": list(self.finished["missing_fields"]) if self.finished else [],
             "finished": self.finished is not None,
+            "finish_mismatch": dict(self.finish_mismatch) if self.finish_mismatch else None,
             "summary": self.finished["summary"] if self.finished else "",
         }

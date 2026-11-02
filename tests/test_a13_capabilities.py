@@ -344,14 +344,31 @@ def test_native_missing_finish_can_be_strictly_rejected(package):
     assert result["error"]["code"] == "protocol_error"
 
 
-def test_finish_summary_must_match_observed_selection_events(package):
+def test_finish_summary_mismatch_is_recorded_and_events_win(package):
     root, manifest = package
-    adapter = ScriptedAdapter([
+    script = [
         select_response("task_query"),
         # claims task_create although only task_query was selected
         finish_response(selected=["task_create"]),
+    ]
+    result = run_case(make_request(root, manifest),
+                      ScriptedAdapter(list(script), capabilities=NATIVE_CAPS))
+    assert result["error"] is None
+    assert result["finish_protocol"] == "mismatch"
+    assert result["selected_skills"] == ["task_query"]
+    assert result["finish_mismatch"] == {"missing_in_finish": ["task_query"],
+                                         "not_selected_by_event": ["task_create"]}
+
+
+def test_finish_summary_mismatch_fails_under_strict_finish(package):
+    root, manifest = package
+    adapter = ScriptedAdapter([
+        select_response("task_query"),
+        finish_response(selected=["task_create"]),
     ], capabilities=NATIVE_CAPS)
-    result = run_case(make_request(root, manifest), adapter)
+    result = run_case(make_request(root, manifest,
+                                   loader_config={"mode": "on_demand", "strict_finish": True}),
+                      adapter)
     assert result["error"]["code"] == "protocol_error"
     assert result["error_kind"] == "capability"
 
@@ -427,11 +444,18 @@ def test_native_generic_call_tool_result_uses_protocol_name_for_next_model_turn(
     assert result["error"] is None, result["error"]
 
 
-def test_native_model_stopping_without_finish_is_undetermined_in_relaxed_mode(package):
+def test_native_model_stopping_without_finish_infers_action_in_relaxed_mode(package):
     root, manifest = package
-    adapter = ScriptedAdapter([{"content": "我已经回答完了", "finish_reason": "stop"}],
+    # A normal reply without finish is a no-action business decision.
+    adapter = ScriptedAdapter([{"content": "请先上传图片", "finish_reason": "stop"}],
                               capabilities=NATIVE_CAPS)
     result = run_case(make_request(root, manifest), adapter)
+    assert result["error"] is None
+    assert result["action"] == "no_action"
+    assert result["finish_protocol"] == "missing"
+    # An empty reply proves nothing: it stays undetermined.
+    empty = ScriptedAdapter([{"content": "  ", "finish_reason": "stop"}], capabilities=NATIVE_CAPS)
+    result = run_case(make_request(root, manifest), empty)
     assert result["error"] is None
     assert result["action"] == "undetermined"
     assert result["finish_protocol"] == "missing_undetermined"
@@ -484,7 +508,13 @@ def test_obs_tools_reject_path_traversal_and_unmapped_files(package):
 
 def test_obs_tools_finish_consistency_and_single_finish(package):
     root, manifest = package
-    runtime = ObsToolRuntime(skill_snapshot_path=root, manifest=manifest)
+    relaxed = ObsToolRuntime(skill_snapshot_path=root, manifest=manifest)
+    relaxed.select_skill({"skill_id": "task_query"})
+    relaxed.finish({"action": "tool_call", "selected_skills": ["task_create"]})
+    assert relaxed.result()["selected_skills"] == ["task_query"]
+    assert relaxed.result()["finish_mismatch"]["not_selected_by_event"] == ["task_create"]
+
+    runtime = ObsToolRuntime(skill_snapshot_path=root, manifest=manifest, strict_finish=True)
     runtime.select_skill({"skill_id": "task_query"})
     with pytest.raises(ObsToolError) as excinfo:
         runtime.finish({"action": "tool_call", "selected_skills": ["task_create"]})

@@ -200,6 +200,8 @@ def _side(actual: Mapping[str, Any], score: Mapping[str, Any] | None) -> dict[st
         "passed": scores.get("passed") if score else None,
         "status": scores.get("status") if score else None,
         "finish_protocol": scores.get("finish_protocol") or actual.get("finish_protocol"),
+        "finish_mismatch": actual.get("finish_mismatch"),
+        "route_batches": evaluation.route_batches(actual),
         "error_code": (actual.get("error") or {}).get("code") or scores.get("error_code"),
         "reason": (joint or {}).get("reason") if isinstance(joint, dict) else scores.get("reason"),
         "error_message": (actual.get("error") or {}).get("message"),

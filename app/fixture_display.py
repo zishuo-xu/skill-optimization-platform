@@ -67,6 +67,7 @@ def project_event(event: Mapping, case: Mapping | None, credentials: Mapping) ->
         "empty_fixtures": "案例未配置模拟返回",
         "tool_name_mismatch": "调用的工具没有对应模拟返回",
         "fixtures_consumed": "本次调用的模拟返回次数已用尽",
+        "awaiting_capture": "依赖的前序调用没有发生",
     }.get(reason, "工具调用未匹配模拟返回")
     issue["impact"] = "当前案例未取得本次工具返回并按能力失败计分；不代表整轮运行异常。未访问真实业务服务，无法判断真实业务结果。"
     issue["diagnostic_kind"] = reason or "unknown"
@@ -101,6 +102,10 @@ def project_event(event: Mapping, case: Mapping | None, credentials: Mapping) ->
             "对照来自本次运行绑定的数据集（最多展示 8 项）。业务预期列展示案例声明；模拟匹配条件不是评分标准答案。最终按评分规则及完整调用序列判断，不应直接把模拟条件当作正确调用。"
             if issue["comparison_rows"] else
             "当前记录无法可靠恢复两边的值；请在案例对比中查看实际参数，并核对本次运行数据集中的 fixture.match。")
+    elif reason == "awaiting_capture":
+        names = ", ".join(map(str, diagnosis.get("unbound_vars") or []))
+        issue["message"] = f"工具 {tool} 的模拟返回要用前序调用取得的值（{names}），但本次执行中还没有取到；尚未取得业务返回。"
+        issue["next_action"] = "先看模型是否跳过了写入步骤或调用顺序不对；顺序正确时，再核对 fixture.capture 的参数路径。"
     elif reason == "tool_name_mismatch":
         issue["next_action"] = "先对照业务预期与 Skill 规则确认工具名；模型选错工具时修正 Skill，调用正确但数据未覆盖时补充对应模拟返回。"
     elif reason == "fixtures_consumed":

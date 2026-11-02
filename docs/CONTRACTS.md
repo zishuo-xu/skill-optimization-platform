@@ -92,7 +92,12 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - `variants`: `[{"routes": ..., "tool_calls": ..., "call_match": ..., "route_ordered": ...}]`
   可选，用于多种有效调用序列，逐个完整匹配。
 - `fixtures[].consume` ∈ `always`（默认）/ `once`（按调用次序消费）。
-- 执行中的 `fixture_miss` 区分 `empty_fixtures`、`tool_name_mismatch`、`fixtures_consumed` 和 `arguments_mismatch`。
+- `fixtures[].capture` 可选：`[{"var": "note", "from": "arguments", "path": "args.content"}]`，
+  命中该 fixture 时从这次调用的参数取值存入本次案例执行的状态；之后的 `match` / `response`
+  中恰好等于 `"${var}"` 的字符串整体替换为该值（不支持拼接、条件、循环）。`match` 或
+  `response` 引用尚未取得的变量时该 fixture 不命中（诊断为 `awaiting_capture`，含
+  `unbound_vars`）。状态按单次案例执行隔离，重复执行之间重置；不带这两种写法的 fixture 行为不变。
+- 执行中的 `fixture_miss` 区分 `empty_fixtures`、`tool_name_mismatch`、`fixtures_consumed`、`arguments_mismatch` 和 `awaiting_capture`。
   未命中时仍保留实际尝试的工具名与参数及 `fixture_misses` 记录，不伪造成功返回。
   日志直接原因展示分类，技术细节包含可用工具名、候选下标和不匹配字段路径，不包含模拟返回正文或匹配条件的期望值。
   诊断不消费 fixture，也不改变匹配、评分或失败处理。
@@ -114,7 +119,7 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 ```json
 {
   "selected_skills": ["task_query"],
-  "route_events": [{"skill_id": "task_query", "seq": 3}],
+  "route_events": [{"skill_id": "task_query", "seq": 3, "batch": 1}],
   "action": "tool_call",
   "tool_calls": [{"name": "list_tasks", "arguments": {"project_id": "P123"}}],
   "missing_fields": [],
@@ -171,9 +176,13 @@ ZIP 根目录必须包含主 Skill 文件 `SKILL.md`（兼容 `skill.md`，导�
 - capability 失败（format_error/refused/steps_exhausted/context_overflow/truncated/
   protocol_error/fixture_miss/parse_failed）计入分母并判 fail。
 - 缺少 `finish` 默认只记录执行结果中的 `finish_protocol=missing`，不再自动生成
-  `protocol_error`；若业务工具调用和参数正确，R/A/J 仍按业务结果评分。执行环境
-  `loader_config.strict_finish=true` 时恢复严格协议失败口径。没有业务调用且无法
-  从结构化结果确定 action 时使用 `action=undetermined`，不自动通过。
+  `protocol_error`；若业务工具调用和参数正确，R/A/J 仍按业务结果评分。没有业务调用时，
+  正常结束且回复非空推断为 `action=no_action`，回复为空记 `action=undetermined`
+  （`finish_protocol=missing_undetermined`），不自动通过。`finish` 声明的技能与选择事件
+  不一致时以事件为准，记 `finish_protocol=mismatch` 与 `finish_mismatch`。执行环境
+  `loader_config.strict_finish=true` 时，缺少 `finish` 或摘要不一致均为 `protocol_error`。
+- `finish_protocol` ∈ `ok` / `missing` / `missing_undetermined` / `mismatch` / `error`；
+  汇总指标 `metrics.protocol = {value, ok, evaluated, counts}` 只统计，不参与 accept-v1。
 - R 分母：`expected.action=="tool_call"` 且 `routes` 非空的案例；分母为 0 时
   `{"value": null, "status": "not_evaluated"}`。
 - A 分母：`expected.action=="tool_call"` 且 `expected.tool_calls` 非空的案例；
@@ -261,7 +270,8 @@ class ModelAdapter:                     # app/adapters/base.py
   结束标记、中断与分片工具参数）。
 - `app/obs_tools.py`：内部工具协议 `select_skill(skill_id)` / `read_skill(path)` /
   `finish(action, selected_skills, missing_fields, summary)`；记录路线事件与读取
-  事件；finish 摘要与事件不一致→`protocol_error`；纯文本协议由 `app/adapters/text_parse.py`
+  事件（`batch` = 第几轮模型调用）；finish 摘要与事件不一致时默认以事件为准并记录，
+  `strict_finish` 下→`protocol_error`；纯文本协议由 `app/adapters/text_parse.py`
   固定解析（未知名称/缺行/多义/截断→parse_failed，不调用模型猜测）。
 - Native 模型通过平台通用入口 `call_tool(name, arguments)` 调用 Skill 中定义的业务工具；内部工具仍独立注册。
   工具名、用途与参数规则由已加载 Prompt + Skill 推导，环境不再要求额外 `tool_schema` 配置。

@@ -272,10 +272,14 @@ def _fixture_miss_message(name: str, diagnosis: Mapping[str, Any]) -> str:
         return f"工具 {name} 的匹配 fixture 已被 consume=once 用尽"
     if reason == "no_miss":
         return f"工具 {name} 的 fixture 在诊断时仍可匹配；请检查并发或重复执行状态"
+    unbound = diagnosis.get("unbound_vars") or []
+    waiting = f"（依赖尚未取得的值：{', '.join(map(str, unbound))}，前序写入调用没有发生或参数路径不符）" if unbound else ""
+    if reason == "awaiting_capture":
+        return f"工具 {name} 的模拟返回依赖前序调用取得的值{waiting}"
     if reason == "arguments_mismatch":
         paths = sorted({path for values in (diagnosis.get("mismatch_paths") or {}).values()
                         for path in values})
-        return f"工具 {name} 有对应 fixture，但参数不匹配{('（字段：' + ', '.join(paths[:8]) + '）') if paths else ''}"
+        return f"工具 {name} 有对应 fixture，但参数不匹配{('（字段：' + ', '.join(paths[:8]) + '）') if paths else ''}{waiting}"
     return f"工具 {name} 的调用没有匹配 fixture"
 
 
@@ -285,6 +289,7 @@ def _fixture_miss_next_action(diagnosis: Mapping[str, Any]) -> str:
         "tool_name_mismatch": "核对 Skill 声明、预期工具名与 fixture 名称，修正不一致的一方。",
         "fixtures_consumed": "若预期允许重复调用，补足模拟返回次数；否则检查模型是否重复调用。",
         "arguments_mismatch": "检查 fixture.match 的字段层级、值和数据类型。",
+        "awaiting_capture": "检查模型是否先完成了写入调用，以及 fixture.capture 的参数路径是否正确。",
         "no_miss": "检查重复调用或并发执行状态后重试。",
     }.get(diagnosis.get("reason"), "检查工具调用与案例 fixture 配置。")
 
@@ -479,6 +484,7 @@ class _CaseRunner:
             emit=self._adapter_emit,
             protocol_mode="native" if self.tool_protocol == "native" else "text",
             aliases=self.aliases,
+            strict_finish=self._strict_finish(),
         )
         self.messages: list[dict[str, Any]] = []
         self.model_calls = 0
@@ -693,6 +699,8 @@ class _CaseRunner:
     def _model_turn(self) -> dict[str, Any] | None:
         self._check_context_limit()
         self.model_calls += 1
+        # Skills selected in the same model turn share a batch number.
+        self.obs.batch = self.model_calls
         call_id = f"call_{uuid.uuid4().hex[:12]}"
         self._current_call_id = call_id
         self._call_seen = set()
@@ -742,7 +750,7 @@ class _CaseRunner:
             self._dispatch_native_batch(tool_calls, content, call_id)
             if self.obs.is_finished():
                 self._raise_for_finish_reason()
-                self.finish_protocol = "ok"
+                self._mark_finished()
                 return self._success()
             self._raise_for_finish_reason()
             return None
@@ -750,11 +758,20 @@ class _CaseRunner:
         # No structured tool calls: follow the frozen protocol for this adapter.
         if self.tool_protocol == "native" and self.capabilities.get("native_tools"):
             self._raise_for_finish_reason()
-            if bool((self.request.get("loader_config") or {}).get("strict_finish")):
+            if self._strict_finish():
                 raise _Failure("protocol_error", "模型未通过 finish 工具结束案例")
-            # A normal terminal response is still useful evidence.  Infer the
-            # action only when business calls were observed; otherwise leave it
-            # indeterminate instead of silently passing a no-action case.
+            # finish is a protocol signal, the action is a business decision:
+            # infer it from what was observed.  Business calls -> tool_call; a
+            # normally ended turn with a non-empty reply (e.g. asking the user to
+            # upload an image) -> no_action.  An empty reply proves nothing and
+            # stays undetermined, so silent failures still fail no-action cases.
+            if not self.tool_calls and content.strip():
+                self.finish_protocol = "missing"
+                return self._build_result(
+                    action="no_action",
+                    selected_skills=self.obs.result()["selected_skills"],
+                    tool_calls=[], missing_fields=[], raw_output=self.last_content,
+                )
             if self.tool_calls:
                 action = "tool_call"
                 self.finish_protocol = "missing"
@@ -812,6 +829,13 @@ class _CaseRunner:
             calls.append({"id": str(raw.get("id") or f"call_{index}"),
                           "name": name, "arguments": arguments})
         return calls
+
+    def _strict_finish(self) -> bool:
+        return bool((self.request.get("loader_config") or {}).get("strict_finish"))
+
+    def _mark_finished(self) -> None:
+        """finish was called; note when its skill summary disagreed with events."""
+        self.finish_protocol = "mismatch" if self.obs.finish_mismatch else "ok"
 
     def _raise_for_finish_reason(self) -> None:
         reason = (self.finish_reason or "").lower()
@@ -963,7 +987,9 @@ class _CaseRunner:
                    payload={"tool": name, "arguments": safe_arguments,
                             "response": payload_response,
                             "fixture_index": hit.get("fixture_index"),
-                            "consume": hit.get("consume")})
+                            "consume": hit.get("consume"),
+                            **({"captured": redact_output(hit["captured"], self.model_config)}
+                               if hit.get("captured") else {})})
         self.tool_results.append(redact_output({"name": name, "arguments": dict(arguments),
                                                 "response": response}, self.model_config))
         self.messages.append({
@@ -1016,8 +1042,15 @@ class _CaseRunner:
         if finish is not None:
             declared = finish.get("selected_skills")
             if declared is not None and set(declared) != set(self.obs.selected_skills):
-                raise _Failure("protocol_error",
-                               "文本协议 finish 的选择摘要与运行时事件不一致")
+                mismatch = {
+                    "missing_in_finish": sorted(set(self.obs.selected_skills) - set(declared)),
+                    "not_selected_by_event": sorted(set(declared) - set(self.obs.selected_skills)),
+                }
+                if self._strict_finish():
+                    raise _Failure("protocol_error",
+                                   "文本协议 finish 的选择摘要与运行时事件不一致",
+                                   details=mismatch)
+                self.obs.finish_mismatch = mismatch
             action = finish["action"]
             if business_calls and action != "tool_call":
                 raise _Failure("protocol_error",
@@ -1031,14 +1064,15 @@ class _CaseRunner:
                 }, call_id=call_id)
             except ObsToolError as exc:
                 raise _Failure(exc.code, exc.message, details=exc.details) from exc
-            self.finish_protocol = "ok"
+            self._mark_finished()
         elif not business_calls:
-            if bool((self.request.get("loader_config") or {}).get("strict_finish")):
+            if self._strict_finish():
                 raise _Failure("protocol_error", "模型未通过 finish 协议结束案例")
             self.finish_protocol = "missing"
-            # Routing-only / plain text result: action inferred from observation.
+            # Routing-only / plain text result: action inferred from observation
+            # (same rule as the native path: an empty reply stays undetermined).
             action = "tool_call" if self.tool_calls else "no_action"
-            if not self.tool_calls:
+            if not self.tool_calls and not content.strip():
                 self.inferred_action = "undetermined"
                 self.finish_protocol = "missing_undetermined"
             try:
@@ -1109,7 +1143,9 @@ class _CaseRunner:
                    payload={"tool": name, "arguments": safe_arguments,
                             "response": response,
                             "fixture_index": hit.get("fixture_index"),
-                            "consume": hit.get("consume")})
+                            "consume": hit.get("consume"),
+                            **({"captured": redact_output(hit["captured"], self.model_config)}
+                               if hit.get("captured") else {})})
         self.tool_results.append(redact_output({"name": name, "arguments": dict(arguments),
                                                 "response": response}, self.model_config))
         results.append({"index": index, "tool": name, "arguments": dict(arguments),
@@ -1129,6 +1165,7 @@ class _CaseRunner:
             route_events.append({
                 "skill_id": str(skill_id),
                 "seq": seq if isinstance(seq, int) else index,
+                **({"batch": payload["batch"]} if isinstance(payload.get("batch"), int) else {}),
             })
         if route_events:
             return route_events
@@ -1139,6 +1176,7 @@ class _CaseRunner:
             route_events.append({
                 "skill_id": str(entry["skill_id"]),
                 "seq": seq if isinstance(seq, int) else index,
+                **({"batch": entry["batch"]} if isinstance(entry.get("batch"), int) else {}),
             })
         return route_events
 
@@ -1196,6 +1234,7 @@ class _CaseRunner:
             "error_kind": error_kind,
             "finish_reason": self.finish_reason,
             "finish_protocol": self.finish_protocol,
+            "finish_mismatch": self.obs.result().get("finish_mismatch"),
             "usage": sum_usage(self.usage_parts),
             "duration_ms": duration_ms,
             "result_source": self.result_source,
@@ -1203,7 +1242,8 @@ class _CaseRunner:
             "events": list(self.events),
             "fixture_misses": list(self.fixture_misses),
             "raw_output": raw_output or "",
-            "final_response": redact_output((self.obs.result().get("summary") if self.finish_protocol == "ok" else "")
+            "final_response": redact_output((self.obs.result().get("summary")
+                                             if self.finish_protocol in ("ok", "mismatch") else "")
                                              or raw_output or "",
                                              self.model_config),
             "tool_results": list(self.tool_results),

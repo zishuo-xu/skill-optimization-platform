@@ -151,6 +151,18 @@ expected 描述“应该怎样调用”，fixture 描述“调用后返回什么
 
 只有需要模拟业务分支时才收紧 match；多步骤要保证返回中的 ID 能支持后续调用，consume=once 还要考虑调用次数。准备失败返回时同步定义 Skill 的中止行为和测试预期。
 
+链路中的 ID 用不会被猜中的值（如 `mem_7f3a`，不要用 `1`），并在后续调用的 fixture.match 里要求它，就能验证模型确实使用了上一步的返回。“写进去的内容能读回来”则用 `capture`：
+
+```json
+[{"name": "memory", "match": {"method": "add"},
+  "capture": [{"var": "note", "path": "args.content"}],
+  "response": {"code": 0, "memoryId": "mem_7f3a"}},
+ {"name": "memory", "match": {"method": "search"},
+  "response": {"code": 0, "memoryList": [{"memoryId": "mem_7f3a", "content": "${note}"}]}}]
+```
+
+写入调用的参数 `args.content` 被记下，查询返回里的 `"${note}"` 替换为它；模型没写就查，查询 fixture 不命中（fixture_miss，原因「依赖的前序调用没有发生」）。需要模拟“还没写入时查不到”，在它后面再放一条不含变量的 fixture。只支持从参数取值和整值替换；expected 仍写常量，链路关键值应由 fixture 返回。
+
 fixture_miss 不代表从未调用：平台保留工具名及实际参数，标记未取得返回。它仍是能力失败，不会访问真实服务或猜测返回。若预期调用自身没有 fixture 覆盖，正式运行或案例试跑会在预检阻止，先修正数据再发布。
 
 可导入的完整样例见[真实模型教程](REAL_MODEL_WALKTHROUGH.md)。

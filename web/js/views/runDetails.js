@@ -345,6 +345,7 @@ export default async function runDetailsView(container, ctx) {
       ['routing', '选对技能 R', '分发准确率：选中了允许的子技能'],
       ['tool_args', '参数正确 A', '工具入参准确率：业务工具与参数都对'],
       ['joint', '整体通过 J', '联合通过率：技能、动作、工具、参数全部正确'],
+      ['protocol', '按协议结束', '调用 finish 且摘要与实际一致的比例；只统计，不参与验收'],
     ];
     const body = rows.map(([key, label, hint]) => {
       const base = metrics?.baseline?.[key];

@@ -114,7 +114,8 @@ def test_unaccepted_finish_summary_never_overrides_raw_output(package):
         {'content': 'previous answer', 'tool_calls': [ScriptedAdapter.tool('finish', {
             'action': 'no_action', 'selected_skills': [], 'summary': 'unaccepted summary'}, 'end')]},
     ], capabilities=NATIVE_CAPS)
-    actual = execution.run_case(make_request(root, manifest), adapter)
+    strict = make_request(root, manifest, loader_config={'mode': 'on_demand', 'strict_finish': True})
+    actual = execution.run_case(strict, adapter)
     assert actual['finish_protocol'] == 'error'
     assert actual['final_response'] == 'previous answer'
     event = {'type': 'model_call_finished', 'payload': {'response': {'tool_calls': [

@@ -149,6 +149,9 @@ export function actualColumn(side, label) {
     calls: calls.map((call, index) => callBlock(call, { result: matched[index] })),
     missing: side.action === 'clarify' ? side.missing_fields : null,
     footer: h('div.stack.stack--sm', null,
+      Array.isArray(side.route_batches) && side.route_batches.length > 1
+        ? h('div.xsmall.muted', { text: `分 ${side.route_batches.length} 批选择技能：${side.route_batches.map((batch) => batch.join('、')).join(' → ')}（仅供观察，评分不区分批次）` })
+        : null,
       unmatched.length ? h('div', null,
         h('span.xsmall.muted', { text: '未关联的工具返回记录' }),
         ...unmatched.map((result) => h('div.actual-call', null,
@@ -196,10 +199,13 @@ export function verdictRows(sides) {
       else if (explained && !explained.passed) detail = reasonList(explained.reasons);
       else detail = h('span.small.muted', { text: '与预期一致' });
       const protocol = side?.finish_protocol;
-      if (protocol === 'missing' || protocol === 'missing_undetermined') {
+      if (['missing', 'missing_undetermined', 'mismatch'].includes(protocol)) {
+        const mismatch = side.finish_mismatch || {};
         const message = protocol === 'missing_undetermined'
-          ? '结束协议：未调用 finish，缺少明确动作证据，无法判定是否完成'
-          : '结束协议：未调用 finish；业务结果单独评分';
+          ? '结束协议：未调用 finish，且模型回复为空，无法推断动作，按未完成计'
+          : protocol === 'mismatch'
+            ? `结束协议：finish 声明的技能与实际选择不一致${(mismatch.not_selected_by_event || []).length ? `（多报 ${mismatch.not_selected_by_event.join('、')}）` : ''}${(mismatch.missing_in_finish || []).length ? `（漏报 ${mismatch.missing_in_finish.join('、')}）` : ''}；已按实际选择评分`
+            : `结束协议：未调用 finish；动作按实际行为推断为「${actionLabel(side.action)}」，业务结果单独评分`;
         detail = h('div', null, detail, h('details.case-more', null,
           h('summary', { text: '结束协议详情' }),
           h('span.case-verdict__basis', { text: message })));

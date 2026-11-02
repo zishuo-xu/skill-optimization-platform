@@ -16,6 +16,20 @@ Matching semantics (frozen for this release):
 * ``consume="once"`` fixtures are consumed in call order: the first
   still-unconsumed matching fixture wins; ``consume="always"`` may hit again.
 
+Write-then-read chains (optional, per case execution):
+
+* ``capture: [{"var": "mem_text", "path": "args.content"}]`` stores values from
+  the *arguments* of the call that hit this fixture;
+* a string that is exactly ``"${var}"`` inside a later ``match`` or
+  ``response`` is replaced by the captured value (whole value only: no
+  concatenation, conditions or loops). A fixture whose ``match`` or
+  ``response`` uses a variable that is not captured yet does not match, so a
+  model that reads before writing (or never writes) gets a ``fixture_miss``;
+  put a variable-free fixture after it to model "not found yet" instead;
+* captured state lives for one case execution and is cleared by ``reset``.
+
+Fixtures without ``capture`` and ``${...}`` behave exactly as before.
+
 A call that matches no fixture MUST be recorded as ``fixture_miss`` by the
 executor (``FixtureRuntime.resolve`` returns ``None`` and appends to
 ``misses``); the executor must never fall back to a real service.
@@ -26,11 +40,112 @@ The module is pure and in-memory: no database, network or global state.
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 CONSUME_ALWAYS = "always"
 CONSUME_ONCE = "once"
 CONSUME_MODES = (CONSUME_ALWAYS, CONSUME_ONCE)
+
+VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_VAR_REF = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+_PATH_TOKEN = re.compile(r"([^.\[\]]+)|\[(\d+)\]")
+
+
+class _Unbound:
+    """Placeholder for a ``${var}`` that has not been captured yet."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def parse_path(path: str) -> list[str | int] | None:
+    """``"args.items[0].id"`` (optionally ``$.``-prefixed) -> keys / indices."""
+    text = str(path or "").strip()
+    if text.startswith("$"):
+        text = text[1:].lstrip(".")
+    if not text:
+        return None
+    tokens: list[str | int] = []
+    position = 0
+    for found in _PATH_TOKEN.finditer(text):
+        gap = text[position:found.start()]
+        if gap not in ("", "."):
+            return None
+        tokens.append(int(found.group(2)) if found.group(2) is not None else found.group(1))
+        position = found.end()
+    if text[position:] not in ("",):
+        return None
+    return tokens or None
+
+
+def lookup_path(value: Any, tokens: Sequence[str | int]) -> tuple[bool, Any]:
+    current = value
+    for token in tokens:
+        if isinstance(token, int):
+            if not isinstance(current, (list, tuple)) or token >= len(current):
+                return False, None
+            current = current[token]
+        else:
+            if not isinstance(current, Mapping) or token not in current:
+                return False, None
+            current = current[token]
+    return True, current
+
+
+def substitute(value: Any, state: Mapping[str, Any]) -> Any:
+    """Replace whole-string ``"${var}"`` values; unknown vars become ``_Unbound``."""
+    if isinstance(value, str):
+        found = _VAR_REF.match(value)
+        if not found:
+            return value
+        name = found.group(1)
+        return copy.deepcopy(state[name]) if name in state else _Unbound(name)
+    if isinstance(value, Mapping):
+        return {key: substitute(item, state) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [substitute(item, state) for item in value]
+    return value
+
+
+def unbound_vars(value: Any) -> list[str]:
+    if isinstance(value, _Unbound):
+        return [value.name]
+    if isinstance(value, Mapping):
+        return [name for item in value.values() for name in unbound_vars(item)]
+    if isinstance(value, (list, tuple)):
+        return [name for item in value for name in unbound_vars(item)]
+    return []
+
+
+def _restore_unbound(value: Any) -> Any:
+    """Responses keep an uncaptured ``${var}`` literally (visible authoring error)."""
+    if isinstance(value, _Unbound):
+        return "${" + value.name + "}"
+    if isinstance(value, Mapping):
+        return {key: _restore_unbound(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_restore_unbound(item) for item in value]
+    return value
+
+
+def capture_error(capture: Any) -> str | None:
+    """Validation message for a fixture ``capture`` list, or ``None``."""
+    if capture is None:
+        return None
+    if not isinstance(capture, (list, tuple)):
+        return "capture 必须是数组"
+    for index, item in enumerate(capture):
+        if not isinstance(item, Mapping):
+            return f"capture[{index}] 必须是对象"
+        if not isinstance(item.get("var"), str) or not VAR_NAME.match(item["var"]):
+            return f"capture[{index}].var 必须是字母、数字或下划线组成的变量名"
+        source = item.get("from", "arguments")
+        if source != "arguments":
+            return f"capture[{index}].from 只支持 arguments（从这次调用的参数取值）"
+        if not isinstance(item.get("path"), str) or parse_path(item["path"]) is None:
+            return f"capture[{index}].path 必须是参数路径，如 args.content 或 items[0].id"
+    return None
 
 
 def json_deep_equal(left: Any, right: Any) -> bool:
@@ -127,12 +242,17 @@ def _fixture_entry(raw: Mapping[str, Any], index: int) -> dict[str, Any]:
     consume = raw.get("consume") or CONSUME_ALWAYS
     if consume not in CONSUME_MODES:
         raise ValueError(f"fixture[{index}].consume 非法: {consume!r}")
+    error = capture_error(raw.get("capture"))
+    if error:
+        raise ValueError(f"fixture[{index}].{error}")
     return {
         "index": index,
         "name": name,
         "match": dict(match),
         "response": copy.deepcopy(raw.get("response")),
         "consume": consume,
+        "capture": [{"var": item["var"], "tokens": parse_path(item["path"])}
+                    for item in raw.get("capture") or []],
     }
 
 
@@ -149,12 +269,24 @@ class FixtureMatcher:
             _fixture_entry(raw, index) for index, raw in enumerate(fixtures or [])
         ]
         self._consumed: set[int] = set()
+        # Values captured from earlier calls of this case execution.
+        self.state: dict[str, Any] = {}
 
     # -- public API -------------------------------------------------------- #
     def reset(self) -> None:
-        """Forget ``once`` consumption (useful when repeating a case)."""
+        """Forget ``once`` consumption and captured values (repeating a case)."""
 
         self._consumed.clear()
+        self.state.clear()
+
+    def _condition(self, entry: Mapping[str, Any]) -> Any:
+        return substitute(entry["match"], self.state)
+
+    def _response_unbound(self, entry: Mapping[str, Any]) -> list[str]:
+        """Variables the response needs that neither state nor this hit provides."""
+        own = {item["var"] for item in entry.get("capture") or ()}
+        return [name for name in unbound_vars(substitute(entry["response"], self.state))
+                if name not in own]
 
     @property
     def consumed_indices(self) -> list[int]:
@@ -177,9 +309,10 @@ class FixtureMatcher:
         active = [entry for entry in candidates if entry["index"] not in self._consumed]
         matching_consumed = [entry for entry in candidates
                              if entry["index"] in self._consumed
-                             and arguments_match(entry["match"], args)]
+                             and arguments_match(self._condition(entry), args)]
         matching_active = [entry for entry in active
-                           if arguments_match(entry["match"], args)]
+                           if arguments_match(self._condition(entry), args)
+                           and not self._response_unbound(entry)]
         if matching_active:
             return {"reason": "no_miss", "fixture_count": len(self._entries),
                     "available_tools": available,
@@ -189,12 +322,22 @@ class FixtureMatcher:
                     "available_tools": available,
                     "candidate_indices": [entry["index"] for entry in matching_consumed],
                     "consumed_matching_indices": [entry["index"] for entry in matching_consumed]}
-        mismatches = {str(entry["index"]): _mismatch_paths(entry["match"], args)
+        mismatches = {str(entry["index"]): _mismatch_paths(self._condition(entry), args)
                       for entry in active}
-        return {"reason": "arguments_mismatch", "fixture_count": len(self._entries),
-                "available_tools": available,
-                "candidate_indices": [entry["index"] for entry in active],
-                "mismatch_paths": mismatches}
+        unbound = sorted({name for entry in active
+                          for name in unbound_vars(self._condition(entry))
+                          + self._response_unbound(entry)})
+        awaiting = bool(unbound) and any(not paths for paths in mismatches.values())
+        diagnosis = {"reason": "awaiting_capture" if awaiting else "arguments_mismatch",
+                     "fixture_count": len(self._entries),
+                     "available_tools": available,
+                     "candidate_indices": [entry["index"] for entry in active],
+                     "mismatch_paths": mismatches}
+        if unbound:
+            # The fixture expects a value captured by an earlier call (e.g. a
+            # write before this read) that never happened in this execution.
+            diagnosis["unbound_vars"] = unbound
+        return diagnosis
 
     def match(self, name: str,
               arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -204,15 +347,25 @@ class FixtureMatcher:
                 continue
             if entry["index"] in self._consumed:
                 continue
-            if not arguments_match(entry["match"], args):
+            if not arguments_match(self._condition(entry), args):
                 continue
+            if self._response_unbound(entry):
+                continue  # its response depends on a value not captured yet
             if entry["consume"] == CONSUME_ONCE:
                 self._consumed.add(entry["index"])
+            captured: dict[str, Any] = {}
+            for item in entry.get("capture") or ():
+                found, value = lookup_path(args, item["tokens"])
+                if found:
+                    captured[item["var"]] = copy.deepcopy(value)
+            self.state.update(captured)
+            response = _restore_unbound(substitute(entry["response"], self.state))
             return {
                 "matched": True,
                 "tool": name,
                 "arguments": copy.deepcopy(args),
-                "response": copy.deepcopy(entry["response"]),
+                "response": response,
+                **({"captured": captured} if captured else {}),
                 "fixture_index": entry["index"],
                 "consume": entry["consume"],
                 "consumed": entry["consume"] == CONSUME_ONCE,

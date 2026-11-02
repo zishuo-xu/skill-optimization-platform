@@ -36,20 +36,44 @@ def test_business_scoring_and_both_api_sides_preserve_warning(package):
     assert trial._side(actual, None)['finish_protocol'] == 'missing'
 
 
-@pytest.mark.parametrize('action', ['no_action', 'clarify'])
-def test_ambiguous_end_cannot_become_no_action(package, action):
+@pytest.mark.parametrize('action,passes', [('no_action', True), ('clarify', False)])
+def test_plain_reply_without_finish_is_no_action(package, action, passes):
     root, manifest = package
-    actual = run_case(make_request(root, manifest), ScriptedAdapter([{'content': '好的'}], capabilities=NATIVE_CAPS))
+    actual = run_case(make_request(root, manifest),
+                      ScriptedAdapter([{'content': '请先上传需要处理的图片'}], capabilities=NATIVE_CAPS))
+    score = score_case({'action': action, 'routes': [[]], 'tool_calls': []}, actual)
+    assert actual['action'] == 'no_action' and actual['finish_protocol'] == 'missing'
+    assert score['passed'] is passes and score['action_ok'] is passes
+
+
+@pytest.mark.parametrize('action', ['no_action', 'clarify'])
+def test_empty_end_cannot_become_no_action(package, action):
+    root, manifest = package
+    actual = run_case(make_request(root, manifest), ScriptedAdapter([{'content': ''}], capabilities=NATIVE_CAPS))
     score = score_case({'action': action, 'routes': [[]], 'tool_calls': []}, actual)
     assert actual['action'] == 'undetermined'
     assert not score['passed'] and not score['action_ok']
+
+
+def test_strict_finish_keeps_plain_reply_a_protocol_failure(package):
+    root, manifest = package
+    request = make_request(root, manifest, loader_config={'mode': 'on_demand', 'strict_finish': True})
+    actual = run_case(request, ScriptedAdapter([{'content': '请先上传图片'}], capabilities=NATIVE_CAPS))
+    assert actual['error']['code'] == 'protocol_error'
+    assert not score_case({'action': 'no_action', 'routes': [[]], 'tool_calls': []}, actual)['passed']
+
+
+def test_finish_skill_summary_mismatch_does_not_fail_business_scoring(package):
+    actual = execute(package, finish_response(selected=()))
+    assert actual['error'] is None and actual['finish_protocol'] == 'mismatch'
+    assert score_case(EXPECTED, actual)['passed']
 
 
 @pytest.mark.parametrize('strict,ending,code', [
     (True, {'content': '完成'}, 'protocol_error'),
     (False, {'content': '未完', 'finish_reason': 'length'}, 'truncated'),
     (False, dict(finish_response(), finish_reason='length'), 'truncated'),
-    (False, finish_response(selected=()), 'protocol_error'),
+    (True, finish_response(selected=()), 'protocol_error'),
 ])
 def test_hard_failures_remain_failures_with_partial_evidence(package, strict, ending, code):
     actual = execute(package, ending, strict)

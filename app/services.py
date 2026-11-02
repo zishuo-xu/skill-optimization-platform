@@ -1108,6 +1108,7 @@ def _metric_block(metrics: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "joint": metrics.get("joint"),
         "diagnostics": metrics.get("diagnostics"),
         "execution": metrics.get("execution"),
+        "protocol": metrics.get("protocol"),
     }
 
 
@@ -1765,6 +1766,8 @@ def _side(row: Mapping[str, Any] | None, events: list[dict[str, Any]] | None = N
         "passed": scores.get("passed"),
         "status": scores.get("status"),
         "finish_protocol": scores.get("finish_protocol") or (row.get("actual") or {}).get("finish_protocol"),
+        "finish_mismatch": (row.get("actual") or {}).get("finish_mismatch"),
+        "route_batches": evaluation.route_batches(row.get("actual") or {}),
         "error_code": row.get("error_code") or scores.get("error_code"),
         "reason": (scores.get("joint") or {}).get("reason") if isinstance(
             scores.get("joint"), dict) else scores.get("reason"),

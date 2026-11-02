@@ -31,6 +31,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .errors import ValidationError
 from .evaluation import compare_rules_error, normalise_judge_criteria
+from .fixtures import capture_error
 from .ids import stable_case_id
 
 SPLITS = ("optimize", "validation", "final_test")
@@ -339,6 +340,27 @@ def _warning(line: int | None, code: str, message: str) -> dict[str, Any]:
     return {"line": line, "code": code, "message": message}
 
 
+def _alternative_routes_warning(case: Mapping[str, Any]) -> str | None:
+    """Flag ``routes`` written as steps although its outer list means "or".
+
+    ``[["A"], ["B"]]`` accepts A alone *or* B alone.  With several expected
+    business calls that is rarely intended: the author usually meant both
+    skills, i.e. one route ``["A", "B"]`` (batched or not, any order unless
+    ``route_ordered``).
+    """
+    expected = case.get("expected") or {}
+    routes = expected.get("routes") or []
+    calls = expected.get("tool_calls") or []
+    singles = [route for route in routes if _is_sequence(route) and len(route) == 1]
+    if len(routes) < 2 or len(singles) != len(routes) or len(calls) < 2:
+        return None
+    names = [route[0] for route in singles]
+    return ("routes 的外层表示可接受的备选答案，" + json.dumps(routes, ensure_ascii=False)
+            + " 的意思是「只选其中一个」；这个案例预期调用 " + str(len(calls))
+            + " 个工具，如果要求这些技能都被选中，请写成一条路线 "
+            + json.dumps([names], ensure_ascii=False) + "（不区分一批还是分批选择）")
+
+
 # --------------------------------------------------------------------------- #
 # case validation
 # --------------------------------------------------------------------------- #
@@ -472,8 +494,17 @@ def _validate_fixtures(fixtures: Any, line: int | None,
             add(f"{fixture_path}.consume", "invalid_consume",
                 f"consume 必须是 always/once，收到: {consume!r}")
             continue
-        result.append({"name": name, "match": dict(match),
-                       "response": fixture.get("response"), "consume": consume})
+        capture = fixture.get("capture")
+        capture_problem = capture_error(capture)
+        if capture_problem:
+            add(f"{fixture_path}.capture", "invalid_fixture_capture", capture_problem)
+            continue
+        entry = {"name": name, "match": dict(match),
+                 "response": fixture.get("response"), "consume": consume}
+        if capture:
+            entry["capture"] = [{"var": item["var"], "from": "arguments", "path": item["path"]}
+                                for item in capture]
+        result.append(entry)
     return result
 
 
@@ -1171,6 +1202,10 @@ def validate_and_prepare(items: Iterable[Mapping[str, Any]], *,
                 f"query 与第 {first_line} 行案例重复（允许保留不同上下文的合理重复）"))
         else:
             seen_queries[query_key] = (line, case_id)
+        route_warning = _alternative_routes_warning(case)
+        if route_warning:
+            warnings.append(_warning(line, "routes_look_like_steps",
+                                     f"{case_id}：{route_warning}"))
         valid_cases.append(case)
 
     split_result = assign_splits(valid_cases, split_config, seed)

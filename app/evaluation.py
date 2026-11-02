@@ -513,6 +513,26 @@ def _actual_route(actual: Mapping[str, Any]) -> list[str]:
     return []
 
 
+def route_batches(actual: Mapping[str, Any]) -> list[list[str]]:
+    """Selected skills grouped by the model turn that selected them.
+
+    Observation only: scoring compares the flattened route (``_actual_route``).
+    Events without a batch number count as one batch.
+    """
+    events = actual.get("route_events") if isinstance(actual, Mapping) else None
+    if not _is_sequence(events):
+        return []
+    batches: dict[Any, list[str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping) or not isinstance(event.get("skill_id"), str):
+            continue
+        key = event.get("batch") if isinstance(event.get("batch"), int) else 0
+        group = batches.setdefault(key, [])
+        if event["skill_id"] not in group:
+            group.append(event["skill_id"])
+    return [batches[key] for key in sorted(batches)]
+
+
 def _actual_action(actual: Mapping[str, Any],
                    business_calls: Sequence[Mapping[str, Any]]) -> str:
     action = actual.get("action")
@@ -1758,6 +1778,7 @@ def aggregate_metrics(results: Iterable[Any], planned: int | None = None,
     tool_counts: Counter[str] = Counter()
     field_counts: Counter[str] = Counter()
     category_counts: Counter[str] = Counter()
+    protocol_counts: Counter[str] = Counter()
     detected_fixture_misses = 0
 
     entries = list(_iter_results(results))
@@ -1794,6 +1815,7 @@ def aggregate_metrics(results: Iterable[Any], planned: int | None = None,
         if status not in ("pass", "fail"):
             continue
         valid += 1
+        protocol_counts[str(score.get("finish_protocol") or "unknown")] += 1
         if score.get("error_kind") == "capability":
             capability_failures += 1
         if action == "tool_call" and _has_expected_routes(expected) \
@@ -1840,6 +1862,22 @@ def aggregate_metrics(results: Iterable[Any], planned: int | None = None,
             "fixture_misses": misses_count,
             "capability_failures": capability_failures,
         },
+        # finish compliance is counted, never part of acceptance: the action is
+        # judged from observed behaviour, the protocol only from finish itself.
+        "protocol": _protocol_metric(protocol_counts),
+    }
+
+
+def _protocol_metric(counts: Counter[str]) -> dict[str, Any]:
+    known = {key: value for key, value in counts.items() if key != "unknown"}
+    total = sum(known.values())
+    ok = known.get("ok", 0)
+    return {
+        "value": (ok / total) if total else None,
+        "status": "ok" if total else "not_evaluated",
+        "ok": ok,
+        "evaluated": total,
+        "counts": dict(counts),
     }
 
 
